@@ -1,12 +1,12 @@
 # yellowsocks
 yellowsocks类似于[redsocks](https://github.com/darkk/redsocks)，是依赖iptables把tcp转换为socks5的全局代理工具。
 
-# 启动
+## 配置代理
 在linux或者路由器上启动，指定监听端口、socks5的地址端口。
 ```
 ./yellowsocks -l :1234 -socks5 127.0.0.1:1080
 ```
-# iptables
+## 配置iptables
 ```
 
 *nat
