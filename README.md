@@ -4,7 +4,7 @@ yellowsocks类似于[redsocks](https://github.com/darkk/redsocks)，是依赖ipt
 # 配置代理
 在linux或者路由器上启动，指定监听端口、socks5的地址端口。
 ```
-./yellowsocks -l :1234 -socks5 127.0.0.1:1080
+./yellowsocks -l :1234 -t 127.0.0.1:1080
 ```
 # 配置iptables
 ```
