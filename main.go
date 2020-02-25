@@ -71,7 +71,7 @@ func process(conn *net.TCPConn, socks5addr *net.TCPAddr) {
 
 	loggo.Info("start conn from %s", conn.RemoteAddr())
 
-	host, port := getConnOldDst(conn)
+	host, port, err := getOriginalDst(conn)
 
 	loggo.Info("parse conn from %s -> %s:%d", conn.RemoteAddr(), host, port)
 
@@ -101,8 +101,4 @@ func transfer(destination io.WriteCloser, source io.ReadCloser) {
 	defer destination.Close()
 	defer source.Close()
 	io.Copy(destination, source)
-}
-
-func getConnOldDst(conn *net.TCPConn) (string, int) {
-	return "", 0
 }
