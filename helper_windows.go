@@ -6,8 +6,8 @@ import (
 
 // just test
 func getOriginalDst(clientConn *net.TCPConn) (host string, port int, err error) {
-	host = "183.232.231.174"
-	port = 443
+	host = "39.106.101.133"
+	port = 22
 	err = nil
 	return
 }

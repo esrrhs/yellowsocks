@@ -100,14 +100,16 @@ func process(conn *net.TCPConn, socks5addr *net.TCPAddr) {
 
 	loggo.Info("SetRequest socks5 conn ok %s -> %s:%d", conn.RemoteAddr(), host, port)
 
-	go transfer(conn, socks5conn)
-	go transfer(socks5conn, conn)
+	go transfer(conn, socks5conn, conn.RemoteAddr().String(), socks5conn.RemoteAddr().String())
+	go transfer(socks5conn, conn, socks5conn.RemoteAddr().String(), conn.RemoteAddr().String())
 
 	loggo.Info("process conn ok %s -> %s:%d", conn.RemoteAddr(), host, port)
 }
 
-func transfer(destination io.WriteCloser, source io.ReadCloser) {
+func transfer(destination io.WriteCloser, source io.ReadCloser, dst string, src string) {
 	defer destination.Close()
 	defer source.Close()
+	loggo.Info("begin transfer from %s -> %s", src, dst)
 	io.Copy(destination, source)
+	loggo.Info("end transfer from %s -> %s", src, dst)
 }
