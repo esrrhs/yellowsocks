@@ -5,10 +5,9 @@ import (
 )
 
 // just test
-func getOriginalDst(clientConn *net.TCPConn) (host string, port int, newTCPConn *net.TCPConn, err error) {
-	host = "39.156.69.79"
+func getOriginalDst(clientConn *net.TCPConn) (host string, port int, err error) {
+	host = "183.232.231.174"
 	port = 443
-	newTCPConn = clientConn
 	err = nil
 	return
 }
