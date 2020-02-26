@@ -77,14 +77,19 @@ func process(conn *net.TCPConn, socks5addr *net.TCPAddr) {
 
 	socks5conn, err := net.DialTCP("tcp", nil, socks5addr)
 	if err != nil {
+		loggo.Info("dial socks5 conn fail %s %v", socks5addr, err)
 		return
 	}
+
+	loggo.Info("dial socks5 conn ok %s -> %s:%d", conn.RemoteAddr(), host, port)
 
 	err = sock5Handshake(socks5conn)
 	if err != nil {
 		loggo.Error("sock5Handshake fail %s", err)
 		return
 	}
+
+	loggo.Info("Handshake socks5 conn ok %s -> %s:%d", conn.RemoteAddr(), host, port)
 
 	err = sock5SetRequest(socks5conn, host, port)
 	if err != nil {
@@ -93,8 +98,12 @@ func process(conn *net.TCPConn, socks5addr *net.TCPAddr) {
 		return
 	}
 
+	loggo.Info("SetRequest socks5 conn ok %s -> %s:%d", conn.RemoteAddr(), host, port)
+
 	go transfer(conn, socks5conn)
 	go transfer(socks5conn, conn)
+
+	loggo.Info("process conn ok %s -> %s:%d", conn.RemoteAddr(), host, port)
 }
 
 func transfer(destination io.WriteCloser, source io.ReadCloser) {
