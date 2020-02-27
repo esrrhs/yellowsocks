@@ -60,7 +60,7 @@ COMMIT
 # openwrt配置
 * 编译yellowsocks成路由器对应版本，如GOOS=linux GOARCH=mipsle go build
 * 部分CPU需要在kernel里打开FPU，重新编译openwrt固件，编译方法参考官网
-* 启动后，在/etc/firewall.user添加转发规则
+* 路由器启动后，在/etc/firewall.user添加转发规则
 ```
 iptables -t nat -N YELLOWSOCKS
 iptables -t nat -A PREROUTING -i br-lan -p tcp -j YELLOWSOCKS
