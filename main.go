@@ -49,12 +49,14 @@ func main() {
 		loggo.Error("Error listening for tcp packets: %s", err)
 		return
 	}
+	loggo.Info("listen ok %s", tcpaddr.String())
 
 	dstaddr, err := net.ResolveTCPAddr("tcp", *target)
 	if err != nil {
 		loggo.Error("target fail %s", err)
 		return
 	}
+	loggo.Info("target %s", dstaddr.String())
 
 	for {
 		conn, err := tcplistenConn.AcceptTCP()
