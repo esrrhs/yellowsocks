@@ -77,7 +77,6 @@ iptables -t nat -A YELLOWSOCKS -d 240.0.0.0/4 -j RETURN
 
 # Redirect all kinds of traffic
 iptables -t nat -A YELLOWSOCKS -p tcp -j REDIRECT --to-ports 4455
-
 ```
 * 启动yellowsocks
 ```
