@@ -71,6 +71,8 @@ func main() {
 
 func process(conn *net.TCPConn, socks5addr *net.TCPAddr) {
 
+	defer common.CrashLog()
+
 	loggo.Info("start conn from %s", conn.RemoteAddr())
 
 	host, port, err := getOriginalDst(conn)
@@ -109,6 +111,7 @@ func process(conn *net.TCPConn, socks5addr *net.TCPAddr) {
 }
 
 func transfer(destination io.WriteCloser, source io.ReadCloser, dst string, src string) {
+	defer common.CrashLog()
 	defer destination.Close()
 	defer source.Close()
 	loggo.Info("begin transfer from %s -> %s", src, dst)
