@@ -93,5 +93,5 @@ uci commit dhcp
 ```
 * 启动pingtunnel，转发dns到远端
 ```
-./pingtunnel -type client -l :53 -s yourserver -t 8.8.8.8:53 -key yourkey -nolog 1 -noprint 1
+./pingtunnel -type client -l :5353 -s yourserver -t 8.8.8.8:53 -key yourkey -nolog 1 -noprint 1
 ```
