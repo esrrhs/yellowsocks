@@ -85,7 +85,6 @@ iptables -t nat -A YELLOWSOCKS -p tcp -j REDIRECT --to-ports 4455
 * 如果上不去网，说明有dns污染，可以通过pingtunnel解决
 * 关闭openwrt自带的dnsmasq的dns功能
 ```
-uci -q delete dhcp.@dnsmasq[0].domain
 uci set dhcp.@dnsmasq[0].port="0"
 uci commit dhcp
 /etc/init.d/dnsmasq restart
