@@ -83,9 +83,11 @@ iptables -t nat -A YELLOWSOCKS -p tcp -j REDIRECT --to-ports 4455
 ./yellowsocks -l :4455 -t sock5的ip:sock5的端口 -nolog 1 -noprint 1
 ```
 * 如果上不去网，说明有dns污染，可以通过pingtunnel解决
-* 关闭openwrt自带的dnsmasq的dns功能
+* 设置openwrt自带的dnsmasq转发
 ```
-uci set dhcp.@dnsmasq[0].port="0"
+uci add_list dhcp.@dnsmasq[0].server="127.0.0.1#5353"
+uci set dhcp.@dnsmasq[0].noresolv="1"
+uci set dhcp.@dnsmasq[0].localuse="1"
 uci commit dhcp
 /etc/init.d/dnsmasq restart
 ```
