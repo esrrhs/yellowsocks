@@ -88,7 +88,7 @@ func process(conn *net.TCPConn, socks5addr *net.TCPAddr) {
 
 	loggo.Info("dial socks5 conn ok %s -> %s:%d", conn.RemoteAddr(), host, port)
 
-	err = network.Sock5Handshake(socks5conn)
+	err = network.Sock5Handshake(socks5conn, 0)
 	if err != nil {
 		loggo.Error("sock5Handshake fail %s", err)
 		return
@@ -96,7 +96,7 @@ func process(conn *net.TCPConn, socks5addr *net.TCPAddr) {
 
 	loggo.Info("Handshake socks5 conn ok %s -> %s:%d", conn.RemoteAddr(), host, port)
 
-	err = network.Sock5SetRequest(socks5conn, host, port)
+	err = network.Sock5SetRequest(socks5conn, host, port, 0)
 	if err != nil {
 		conn.Close()
 		loggo.Error("sock5SetRequest fail %s", err)
