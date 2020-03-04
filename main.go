@@ -4,6 +4,7 @@ import (
 	"flag"
 	"github.com/esrrhs/go-engine/src/common"
 	"github.com/esrrhs/go-engine/src/loggo"
+	"github.com/esrrhs/go-engine/src/network"
 	"io"
 	"net"
 )
@@ -87,7 +88,7 @@ func process(conn *net.TCPConn, socks5addr *net.TCPAddr) {
 
 	loggo.Info("dial socks5 conn ok %s -> %s:%d", conn.RemoteAddr(), host, port)
 
-	err = sock5Handshake(socks5conn)
+	err = network.Sock5Handshake(socks5conn)
 	if err != nil {
 		loggo.Error("sock5Handshake fail %s", err)
 		return
@@ -95,7 +96,7 @@ func process(conn *net.TCPConn, socks5addr *net.TCPAddr) {
 
 	loggo.Info("Handshake socks5 conn ok %s -> %s:%d", conn.RemoteAddr(), host, port)
 
-	err = sock5SetRequest(socks5conn, host, port)
+	err = network.Sock5SetRequest(socks5conn, host, port)
 	if err != nil {
 		conn.Close()
 		loggo.Error("sock5SetRequest fail %s", err)
