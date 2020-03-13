@@ -95,3 +95,4 @@ uci commit dhcp
 ```
 ./pingtunnel -type client -l :5353 -s yourserver -t 8.8.8.8:53 -key yourkey -nolog 1 -noprint 1
 ```
+* 或者参考[yellowdns](https://github.com/esrrhs/yellowdns)
