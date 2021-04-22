@@ -1,4 +1,13 @@
 # yellowsocks
+
+[<img src="https://img.shields.io/github/license/esrrhs/yellowsocks">](https://github.com/esrrhs/yellowsocks)
+[<img src="https://img.shields.io/github/languages/top/esrrhs/yellowsocks">](https://github.com/esrrhs/yellowsocks)
+[![Go Report Card](https://goreportcard.com/badge/github.com/esrrhs/yellowsocks)](https://goreportcard.com/report/github.com/esrrhs/yellowsocks)
+[<img src="https://img.shields.io/github/v/release/esrrhs/yellowsocks">](https://github.com/esrrhs/yellowsocks/releases)
+[<img src="https://img.shields.io/github/downloads/esrrhs/yellowsocks/total">](https://github.com/esrrhs/yellowsocks/releases)
+[<img src="https://img.shields.io/docker/pulls/esrrhs/yellowsocks">](https://hub.docker.com/repository/docker/esrrhs/yellowsocks)
+[<img src="https://img.shields.io/github/workflow/status/esrrhs/yellowsocks/Go">](https://github.com/esrrhs/yellowsocks/actions)
+
 yellowsocks类似于[redsocks](https://github.com/darkk/redsocks)，是依赖iptables把tcp转换为socks5的全局代理工具。
 
 # 配置代理
