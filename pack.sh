@@ -9,6 +9,9 @@ mkdir -p pack
 cross_targets=(
   "linux/amd64/yellowsocks-cli"
   "linux/arm64/yellowsocks-cli"
+  "linux/arm/yellowsocks-cli"
+  "linux/mipsle/yellowsocks-cli"
+  "linux/mips/yellowsocks-cli"
   "windows/amd64/yellowsocks-gui.exe"
   "windows/arm64/yellowsocks-gui.exe"
 )
@@ -20,10 +23,17 @@ for target in "${cross_targets[@]}"; do
 
   echo "==> Building $os/$arch: $bin_name"
 
+  extra_env=""
+  if [ "$arch" == "arm" ]; then
+    extra_env="GOARM=7"
+  elif [ "$arch" == "mips" ] || [ "$arch" == "mipsle" ]; then
+    extra_env="GOMIPS=softfloat"
+  fi
+
   if [ "$os" == "windows" ]; then
     CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -ldflags="-s -w" -o "$bin_name" ./cmd/yellowsocks-gui
   else
-    CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -ldflags="-s -w" -o "$bin_name" ./cmd/yellowsocks-cli
+    env CGO_ENABLED=0 GOOS=$os GOARCH=$arch $extra_env go build -ldflags="-s -w" -o "$bin_name" ./cmd/yellowsocks-cli
   fi
 
   if [ $? -ne 0 ]; then
@@ -32,7 +42,12 @@ for target in "${cross_targets[@]}"; do
   fi
 
   zip_file="${NAME}_${os}_${arch}.zip"
-  zip "$zip_file" "$bin_name"
+  # Include OpenWrt integration scripts for linux targets
+  if [ "$os" == "linux" ]; then
+    zip -r "$zip_file" "$bin_name" openwrt config.example.yaml
+  else
+    zip "$zip_file" "$bin_name"
+  fi
   mv "$zip_file" pack/
   rm -f "$bin_name"
 done

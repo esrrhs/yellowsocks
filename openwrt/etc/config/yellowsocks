@@ -1,0 +1,6 @@
+config yellowsocks 'main'
+	option enabled '0'
+	option config_file '/etc/yellowsocks/config.yaml'
+	option log_level 'info'
+	option enable_tproxy '1'
+	option lan_ifname 'br-lan'

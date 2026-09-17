@@ -1,0 +1,80 @@
+#!/bin/sh /etc/rc.common
+
+START=95
+STOP=10
+USE_PROCD=1
+
+PROG=/usr/bin/yellowsocks-cli
+CONF_DIR=/etc/yellowsocks
+DEFAULT_CONF=$CONF_DIR/config.yaml
+
+start_service() {
+    local enabled
+    local config_file
+    local log_level
+    local enable_tproxy
+    local lan_ifname
+
+    config_load yellowsocks
+    config_get_bool enabled main enabled 0
+    config_get config_file main config_file "$DEFAULT_CONF"
+    config_get log_level main log_level "info"
+    config_get_bool enable_tproxy main enable_tproxy 1
+    config_get lan_ifname main lan_ifname "br-lan"
+
+    if [ "$enabled" -ne 1 ]; then
+        echo "YellowSocks is disabled in /etc/config/yellowsocks"
+        return 0
+    fi
+
+    if [ ! -f "$PROG" ]; then
+        echo "Error: Binary $PROG not found"
+        return 1
+    fi
+
+    if [ ! -f "$config_file" ]; then
+        echo "Error: Configuration file $config_file not found"
+        return 1
+    fi
+
+    # Enable IPv4 Forwarding
+    sysctl -w net.ipv4.ip_forward=1 >/dev/null 2>&1
+
+    # Configure Firewall Rules for LAN Gateway Forwarding
+    if [ "$enable_tproxy" -eq 1 ]; then
+        setup_firewall "$lan_ifname"
+    fi
+
+    procd_open_instance "yellowsocks"
+    procd_set_param command "$PROG" -config "$config_file" -loglevel "$log_level"
+    procd_set_param respawn 3600 5 0
+    procd_set_param file "$config_file"
+    procd_set_param stdout 1
+    procd_set_param stderr 1
+    procd_close_instance
+
+    echo "YellowSocks started successfully on OpenWrt"
+}
+
+stop_service() {
+    cleanup_firewall
+    echo "YellowSocks stopped"
+}
+
+setup_firewall() {
+    local lan="$1"
+    # Allow traffic forwarding through TUN interface
+    iptables -I FORWARD -o tun-yellow -j ACCEPT 2>/dev/null || true
+    iptables -I FORWARD -i tun-yellow -j ACCEPT 2>/dev/null || true
+    iptables -t nat -I POSTROUTING -o tun-yellow -j MASQUERADE 2>/dev/null || true
+}
+
+cleanup_firewall() {
+    iptables -D FORWARD -o tun-yellow -j ACCEPT 2>/dev/null || true
+    iptables -D FORWARD -i tun-yellow -j ACCEPT 2>/dev/null || true
+    iptables -t nat -D POSTROUTING -o tun-yellow -j MASQUERADE 2>/dev/null || true
+}
+
+service_triggers() {
+    procd_add_reload_trigger "yellowsocks"
+}

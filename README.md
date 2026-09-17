@@ -135,10 +135,39 @@ The script outputs `ios/Frameworks/YellowSocks.xcframework`. Then open `ios/Yell
 
 ---
 
+### 6. OpenWrt & Embedded Linux Routers
+
+Run YellowSocks directly on your router as a **transparent gateway**, giving all connected LAN devices (Apple TV, game consoles, smart TVs, IoT, phones) instant acceleration without installing any client software:
+- **Broad Hardware Architecture Support**:
+  - **x86 Soft Routers**: `linux/amd64` (J1900, N5105, PVE, ESXi)
+  - **ARM64 Routers**: `linux/arm64` (NanoPi R2S/R4S/R5S, Raspberry Pi 4/5)
+  - **ARMv7 Routers**: `linux/arm` (ASUS / Netgear routers)
+  - **MIPSLE Routers**: `linux/mipsle` with softfloat (MediaTek MT7621, MT7620, Xiaomi routers)
+  - **MIPS Routers**: `linux/mips` with softfloat (Atheros / Qualcomm routers)
+- **Native OpenWrt Service Integration**:
+  - Standard `procd` service management with automatic respawn on failure.
+  - Integrated `iptables` rules for automatic LAN packet forwarding and masquerade.
+  - Standard UCI configuration `/etc/config/yellowsocks`.
+
+**Quick Install on OpenWrt**:
+```bash
+# 1. Download and extract the matching architecture archive (e.g., mipsle for MT7621)
+# 2. Run the one-click installer:
+cd openwrt && ./install.sh
+
+# 3. Configure your server and start:
+vi /etc/yellowsocks/config.yaml
+uci set yellowsocks.main.enabled='1'
+uci commit yellowsocks
+/etc/init.d/yellowsocks start
+```
+
+---
+
 
 ## 🛠️ Build & Packaging
 
-Build standalone archives for Linux (`amd64`/`arm64`) and Windows (`amd64`/`arm64`):
+Build standalone archives for all architectures (Linux `amd64`/`arm64`/`armv7`/`mipsle`/`mips` and Windows `amd64`/`arm64`):
 ```bash
 ./pack.sh
 ```
