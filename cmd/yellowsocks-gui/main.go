@@ -7,7 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"runtime"
 	"syscall"
 
 	"github.com/esrrhs/gohome/common"
@@ -23,7 +25,7 @@ import (
 //go:embed web/index.html
 var embeddedWebDashboard []byte
 
-// AppConfig GUI 配置
+// AppConfig holds GUI application configuration
 type AppConfig struct {
 	SPPServers   []*sppclient.Node `json:"nodes"`
 	WintunName   string            `json:"wintun_name"`
@@ -69,7 +71,7 @@ func main() {
 		Prefix: "yellowsocks-gui",
 	})
 
-	loggo.Info("Starting YellowSocks Windows Tray & Dashboard GUI...")
+	loggo.Info("Starting YellowSocks Tray & Dashboard GUI...")
 
 	nodes := []*sppclient.Node{}
 	if *sppServer != "" {
@@ -146,7 +148,7 @@ func main() {
 	// 启动本地轻量 Dashboard API
 	go startDashboardAPI()
 
-	// 启动 Windows 真正原生窗口界面
+	// Start the native window / tray (platform-specific)
 	RunNativeWindow()
 }
 
@@ -200,7 +202,7 @@ func onReady() {
 	var isRunning bool
 	var isSysProxyEnabled bool
 
-	// 监听托盘交互
+	// Handle tray menu interactions
 	go func() {
 		for {
 			select {
@@ -229,13 +231,13 @@ func onReady() {
 					if err := sysproxy.SetGlobalProxy(socksAddr); err == nil {
 						isSysProxyEnabled = true
 						mSysProxy.SetTitle("System Proxy: ON")
-						loggo.Info("[SysProxy] Windows system proxy enabled -> %s", socksAddr)
+						loggo.Info("[SysProxy] System proxy enabled -> %s", socksAddr)
 					}
 				} else {
 					_ = sysproxy.ClearSystemProxy()
 					isSysProxyEnabled = false
 					mSysProxy.SetTitle("System Proxy: OFF")
-					loggo.Info("[SysProxy] Windows system proxy disabled")
+					loggo.Info("[SysProxy] System proxy disabled")
 				}
 
 			case <-mFakeIP.ClickedCh:
@@ -247,7 +249,9 @@ func onReady() {
 				}
 
 			case <-mDashboard.ClickedCh:
-				loggo.Info("Web Dashboard available at http://127.0.0.1:%d", appCfg.WebPort)
+				url := fmt.Sprintf("http://127.0.0.1:%d", appCfg.WebPort)
+				openBrowser(url)
+				loggo.Info("Web Dashboard: %s", url)
 
 			case <-mNodes.ClickedCh:
 				loggo.Info("Manage nodes via Dashboard")
@@ -259,7 +263,7 @@ func onReady() {
 		}
 	}()
 
-	// 监听 OS 信号
+	// Listen for OS signals
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
 	go func() {
@@ -275,14 +279,32 @@ func onExit() {
 	loggo.Info("YellowSocks GUI exited.")
 }
 
+// openBrowser opens the given URL in the user's default web browser.
+func openBrowser(url string) {
+	var cmd string
+	var args []string
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = "open"
+		args = []string{url}
+	case "windows":
+		cmd = "cmd"
+		args = []string{"/c", "start", url}
+	default: // linux and others
+		cmd = "xdg-open"
+		args = []string{url}
+	}
+	_ = exec.Command(cmd, args...).Start()
+}
+
 func startDashboardAPI() {
-	// 首页 Web Dashboard
+	// Serve the embedded web dashboard
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write(embeddedWebDashboard)
 	})
 
-	// 实时流量、活跃连接与日志监控 API
+	// Real-time traffic, connections and log API
 	http.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		snapshot := stats.Default.GetSnapshot()
@@ -317,6 +339,22 @@ func startDashboardAPI() {
 			}
 		}
 		w.WriteHeader(http.StatusOK)
+	})
+
+	http.HandleFunc("/api/toggle", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var isRunning bool
+		if engine == nil {
+			isRunning = startProxyEngine() == nil
+		} else {
+			stopProxyEngine()
+			isRunning = false
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]bool{"running": isRunning})
 	})
 
 	_ = http.ListenAndServe(fmt.Sprintf("127.0.0.1:%d", appCfg.WebPort), nil)

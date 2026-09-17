@@ -16,18 +16,20 @@
 - **System-wide Virtual Network Interface (TUN / Wintun)**:
   - **Linux**: Intercepts L3 IP packets via TUN devices and automatically manages system routing tables (`0.0.0.0/1` and `128.0.0.0/1`).
   - **Windows**: High-performance packet capture and routing through `Wintun`.
+  - **macOS**: Manages `utun` TUN interfaces via `/sbin/route` with system-wide routing.
   - **Pure Go User-space Stack**: Powered by gVisor netstack / tun2socks v2 without requiring CGO or MinGW toolchains.
 - **Smart DNS Interception & Fake-IP Mode**:
   - Intercepts all outgoing UDP 53 DNS queries.
   - **Fake-IP Mode**: Delivers instant 0ms responses from `198.18.0.0/15` (RFC 2544 benchmark range) for fast connection establishment and elimination of local DNS leaks and poisoning.
   - **DoH Fallback**: Queries remote DoH resolvers (e.g. `https://1.1.1.1/dns-query`) securely routed through the SPP tunnel.
 - **Universal Routing & Process/App-level Bypass**:
-  - **App Bypass**: Automatically tracks active socket ports to process names (`PID -> Process`), directly bypassing high-concurrency apps, torrent clients, or latency-sensitive games (e.g., `dota2`, `thunder`, etc.).
+  - **App Bypass**: Automatically tracks active socket ports to process names (`PID -> Process`), directly bypassing high-concurrency apps, torrent clients, or latency-sensitive games.
   - **Custom Subnet & Domain Routing**: Supports loading custom direct CIDR lists and domain whitelists for any country or organization.
 - **Modern Desktop UI & Live Dashboard**:
   - **Windows Desktop App**: Modern desktop GUI powered by native Windows Edge WebView2.
+  - **macOS Desktop App**: System tray icon + menu, auto-opens web dashboard in the default browser.
   - **Live Connection & Traffic Monitor**: Real-time tracking of upload/download bandwidth, active sessions, target destinations, and routing rule hits.
-  - **One-Click System Proxy Injection**: Integrates with Windows Internet Settings registry to toggle system proxy on/off.
+  - **One-Click System Proxy**: Toggle system-level SOCKS5 proxy on/off (Windows Internet Settings / macOS `networksetup`).
 
 ---
 
@@ -75,12 +77,38 @@ yellowsocks-gui.exe -config config.yaml
 
 ---
 
-### 3. Android Mobile Client (`yellowsocks-android`)
+### 3. macOS Desktop GUI (`yellowsocks-gui`)
+
+1. Build natively on a macOS host (CGO is required for the system tray):
+```bash
+CGO_ENABLED=1 go build -ldflags="-s -w" -o yellowsocks-gui ./cmd/yellowsocks-gui
+```
+2. Run with root privileges (required for TUN interface creation and route management):
+```bash
+sudo ./yellowsocks-gui -config config.yaml
+```
+3. The app appears as a **menu-bar (tray) icon**. The web dashboard automatically opens in your default browser.
+
+#### Tray Menu Items
+| Item | Description |
+| :--- | :--- |
+| **Start / Stop TUN Proxy** | Enables or disables the virtual TUN tunnel |
+| **System Proxy: OFF / ON** | Toggles system-wide SOCKS5 proxy via `networksetup` |
+| **Fake-IP: ENABLED / DISABLED** | Toggles Fake-IP DNS mode |
+| **Open Web Dashboard** | Opens `http://127.0.0.1:<port>` in the browser |
+| **Quit** | Gracefully stops the engine and exits |
+
+> [!NOTE]
+> The "Start TUN Proxy" button in the web dashboard communicates with the backend via `POST /api/toggle` — no WebView2 dependency on macOS.
+
+---
+
+### 4. Android Mobile Client (`yellowsocks-android`)
 
 The Android version provides system-wide transparent proxy without root permissions:
 - **Zero Root Required**: Uses standard Android `VpnService` to capture packets and pass file descriptors directly to the Go core.
 - **Pure Go User-space Stack**: Integrated `gVisor` + `tun2socks` userspace networking.
-- **Native Per-App Bypass**: Directly excludes games/domestic apps at the OS level (`addDisallowedApplication`).
+- **Native Per-App Bypass**: Directly excludes apps at the OS level (`addDisallowedApplication`).
 - **Live Compose Dashboard**: Built with modern Jetpack Compose for real-time speed monitoring, YAML config editing, and application bypass selection.
 
 **Build AAR library**:
@@ -99,6 +127,9 @@ Build standalone archives for Linux (`amd64`/`arm64`) and Windows (`amd64`/`arm6
 ./pack.sh
 ```
 Compiled archives will be generated in `pack/` and `pack.zip`.
+
+> [!NOTE]
+> **macOS GUI builds** require CGO (for systray Objective-C bindings) and must be compiled natively on a macOS host. See the commented-out darwin section in `pack.sh`.
 
 ---
 
