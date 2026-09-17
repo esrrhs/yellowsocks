@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/esrrhs/gohome/common"
@@ -21,20 +20,6 @@ func main() {
 	sppServer := flag.String("spp-server", "", "SPP remote server address (e.g. 1.2.3.4:8888)")
 	sppProto := flag.String("spp-proto", "tcp", "SPP protocol (tcp, udp, kcp, quic)")
 	sppKey := flag.String("spp-key", "123456", "SPP password / key")
-	sppEncrypt := flag.String("spp-encrypt", "default", "SPP encryption method")
-	sppCompress := flag.Int("spp-compress", 128, "SPP compression threshold")
-
-	tunName := flag.String("tun-name", "tun0", "TUN interface name")
-	tunIP := flag.String("tun-ip", "10.255.0.2", "TUN interface IP")
-	tunGateway := flag.String("tun-gw", "10.255.0.1", "TUN default gateway")
-
-	dnsListen := flag.String("dns-listen", "127.0.0.1:53", "DNS interceptor listen address")
-	directDNS := flag.String("direct-dns", "1.1.1.1:53", "Direct upstream DNS server for direct lookups")
-	dohURL := flag.String("doh-url", "https://1.1.1.1/dns-query", "Remote DoH endpoint routed through SPP")
-	fakeIP := flag.Bool("fake-ip", true, "Enable Fake-IP mode for 0ms domain response (like Clash)")
-	bypassApps := flag.String("bypass-apps", "dota2.exe,dota2,thunder.exe,xunlei.exe,baidunetdisk.exe", "Comma-separated list of process names to bypass proxy")
-	autoRoute := flag.Bool("auto-route", true, "Automatically setup and restore system global routes")
-
 	loglevel := flag.String("loglevel", "info", "Log level (debug, info, warn, error)")
 
 	flag.Parse()
@@ -50,7 +35,9 @@ func main() {
 	}
 
 	level := loggo.LEVEL_INFO
-	if loggo.NameToLevel(*loglevel) >= 0 {
+	if fileCfg != nil && fileCfg.LogLevel != "" && loggo.NameToLevel(fileCfg.LogLevel) >= 0 {
+		level = loggo.NameToLevel(fileCfg.LogLevel)
+	} else if loggo.NameToLevel(*loglevel) >= 0 {
 		level = loggo.NameToLevel(*loglevel)
 	}
 	loggo.Ini(loggo.Config{
@@ -58,33 +45,23 @@ func main() {
 		Prefix: "yellowsocks-cli",
 	})
 
-	var bypassList []string
-	if *bypassApps != "" {
-		for _, part := range strings.Split(*bypassApps, ",") {
-			p := strings.TrimSpace(part)
-			if p != "" {
-				bypassList = append(bypassList, p)
-			}
-		}
-	}
-
+	// Default baseline engine configuration
 	cfg := core.EngineConfig{
-		TunName:      *tunName,
-		TunIP:        *tunIP,
-		TunGateway:   *tunGateway,
+		TunName:      "tun0",
+		TunIP:        "10.255.0.2",
+		TunGateway:   "10.255.0.1",
 		TunMask:      "255.255.255.0",
 		MTU:          1500,
 		SPPServer:    *sppServer,
 		SPPProto:     *sppProto,
 		SPPKey:       *sppKey,
-		SPPEncrypt:   *sppEncrypt,
-		SPPCompress:  *sppCompress,
-		EnableFakeIP: *fakeIP,
-		BypassApps:   bypassList,
-		DNSListen:    *dnsListen,
-		DirectDNS:    *directDNS,
-		RemoteDoH:    *dohURL,
-		SetAutoRoute: *autoRoute,
+		SPPEncrypt:   "default",
+		SPPCompress:  128,
+		EnableFakeIP: true,
+		DNSListen:    "127.0.0.1:53",
+		DirectDNS:    "1.1.1.1:53",
+		RemoteDoH:    "https://1.1.1.1/dns-query",
+		SetAutoRoute: true,
 	}
 
 	if fileCfg != nil {
@@ -92,7 +69,7 @@ func main() {
 	}
 
 	if cfg.SPPServer == "" && len(cfg.SPPNodes) == 0 {
-		fmt.Println("Usage: yellowsocks-cli -spp-server <ip:port> (or specify -config <path>)")
+		fmt.Println("Usage: yellowsocks-cli -config <config.yaml> (or -spp-server <ip:port> -spp-key <key>)")
 		flag.PrintDefaults()
 		return
 	}
