@@ -3,10 +3,13 @@ package core
 import (
 	"fmt"
 	"net"
+	"strconv"
 	"sync"
 
 	"github.com/esrrhs/gohome/loggo"
 	tun2socksCore "github.com/xjasonlyu/tun2socks/v2/core"
+	"github.com/xjasonlyu/tun2socks/v2/core/device"
+	"github.com/xjasonlyu/tun2socks/v2/core/device/fdbased"
 	"github.com/xjasonlyu/tun2socks/v2/core/device/tun"
 	gvisorStack "gvisor.dev/gvisor/pkg/tcpip/stack"
 	appdns "github.com/esrrhs/yellowsocks/core/dns"
@@ -18,6 +21,7 @@ import (
 // EngineConfig 核心配置
 type EngineConfig struct {
 	TunName       string
+	TunFd         int               // 传入的已有 TUN 文件描述符 (如 Android VpnService 提供，>0 时生效)
 	TunIP         string
 	TunGateway    string
 	TunMask       string
@@ -144,13 +148,26 @@ func (e *Engine) Start() error {
 	}
 	e.dnsServer = dnsSrv
 
-	// 3. 打开 TUN 虚拟网卡 (纯 Go 实现，跨平台)
-	loggo.Info("[Engine] Opening TUN virtual network device %s...", e.cfg.TunName)
-	dev, err := tun.Open(e.cfg.TunName, uint32(e.cfg.MTU))
-	if err != nil {
-		_ = e.dnsServer.Stop()
-		e.sppManager.Close()
-		return fmt.Errorf("failed to open TUN device: %w", err)
+	// 3. 打开 TUN 虚拟网卡 (支持根据 TunFd 直接接管，或跨平台打开)
+	var dev device.Device
+	if e.cfg.TunFd > 0 {
+		loggo.Info("[Engine] Opening TUN from existing file descriptor %d (Android mode)...", e.cfg.TunFd)
+		fdev, err := fdbased.Open(strconv.Itoa(e.cfg.TunFd), uint32(e.cfg.MTU), 0)
+		if err != nil {
+			_ = e.dnsServer.Stop()
+			e.sppManager.Close()
+			return fmt.Errorf("failed to open TUN from fd %d: %w", e.cfg.TunFd, err)
+		}
+		dev = fdev
+	} else {
+		loggo.Info("[Engine] Opening TUN virtual network device %s...", e.cfg.TunName)
+		tdev, err := tun.Open(e.cfg.TunName, uint32(e.cfg.MTU))
+		if err != nil {
+			_ = e.dnsServer.Stop()
+			e.sppManager.Close()
+			return fmt.Errorf("failed to open TUN device: %w", err)
+		}
+		dev = tdev
 	}
 
 	// 4. 初始化 tun2socks v2 纯 Go 用户态 TCP/IP 协议栈

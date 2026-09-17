@@ -4,6 +4,16 @@
 *.dll
 *.so
 *.dylib
+*.aar
+
+# Packaging & Android build outputs
+pack/
+pack.zip
+.gradle/
+build/
+android/app/build/
+android/.gradle/
+android/app/libs/*.aar
 
 # Test binary, built with `go test -c`
 *.test
