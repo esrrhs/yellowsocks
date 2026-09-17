@@ -39,12 +39,6 @@ func main() {
 
 	flag.Parse()
 
-	// Track explicitly set flags
-	cliSet := make(map[string]bool)
-	flag.Visit(func(f *flag.Flag) {
-		cliSet[f.Name] = true
-	})
-
 	var fileCfg *config.FileConfig
 	if *configPath != "" {
 		var err error
@@ -94,7 +88,7 @@ func main() {
 	}
 
 	if fileCfg != nil {
-		cfg = fileCfg.MergeWithEngineConfig(cfg, cliSet)
+		cfg = fileCfg.MergeWithEngineConfig(cfg)
 	}
 
 	if cfg.SPPServer == "" && len(cfg.SPPNodes) == 0 {
