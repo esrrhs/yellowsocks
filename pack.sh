@@ -1,48 +1,40 @@
 #! /bin/bash
-#set -x
 NAME="yellowsocks"
-
-export GO111MODULE=off
-
-#go tool dist list
-build_list=$(go tool dist list)
 
 rm pack -rf
 rm pack.zip -f
-mkdir pack
+mkdir -p pack
 
-for line in $build_list; do
-  os=$(echo "$line" | awk -F"/" '{print $1}')
-  arch=$(echo "$line" | awk -F"/" '{print $2}')
-  echo "os="$os" arch="$arch" start build"
-  if [ $os != "linux" ] && [ $os != "windows" ]; then
-    continue
+targets=(
+  "linux/amd64/yellowsocks-cli"
+  "linux/arm64/yellowsocks-cli"
+  "windows/amd64/yellowsocks-gui.exe"
+  "windows/arm64/yellowsocks-gui.exe"
+)
+
+for target in "${targets[@]}"; do
+  os=$(echo "$target" | cut -d'/' -f1)
+  arch=$(echo "$target" | cut -d'/' -f2)
+  bin_name=$(echo "$target" | cut -d'/' -f3)
+
+  echo "==> Building $os/$arch: $bin_name"
+
+  if [ "$os" == "windows" ]; then
+    CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -ldflags="-s -w" -o "$bin_name" ./cmd/yellowsocks-gui
+  else
+    CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -ldflags="-s -w" -o "$bin_name" ./cmd/yellowsocks-cli
   fi
-  CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -ldflags="-s -w"
+
   if [ $? -ne 0 ]; then
-    echo "os="$os" arch="$arch" build fail"
+    echo "Build failed for $os/$arch"
     exit 1
   fi
-  if [ $os = "windows" ]; then
-    zip ${NAME}_"${os}"_"${arch}"".zip" $NAME".exe"
-    if [ $? -ne 0 ]; then
-      echo "os="$os" arch="$arch" zip fail"
-      exit 1
-    fi
-    mv ${NAME}_"${os}"_"${arch}"".zip" pack/
-    rm $NAME".exe" -f
-  else
-    zip ${NAME}_"${os}"_"${arch}"".zip" $NAME
-    if [ $? -ne 0 ]; then
-      echo "os="$os" arch="$arch" zip fail"
-      exit 1
-    fi
-    mv ${NAME}_"${os}"_"${arch}"".zip" pack/
-    rm $NAME -f
-  fi
-  echo "os="$os" arch="$arch" done build"
+
+  zip_file="${NAME}_${os}_${arch}.zip"
+  zip "$zip_file" "$bin_name"
+  mv "$zip_file" pack/
+  rm -f "$bin_name"
 done
 
 zip pack.zip pack/ -r
-
-echo "all done"
+echo "All packages built successfully in pack/ and pack.zip"
