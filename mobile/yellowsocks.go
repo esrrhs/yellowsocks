@@ -47,10 +47,10 @@ func StartEngine(tunFd int, configContent string, cb Callback) error {
 		return fmt.Errorf("failed to parse config: %w", err)
 	}
 
-	// 2. 初始化核心参数 (Android 模式下自动禁用路由表操作，由 VpnService 自动路由接管)
+	// 2. 初始化核心参数 (移动端由系统 VpnService / NetworkExtension 自动路由接管)
 	baseCfg := core.EngineConfig{
 		TunFd:        tunFd,
-		TunName:      "tun-android",
+		TunName:      "tun-mobile",
 		TunIP:        "10.255.0.2",
 		TunGateway:   "10.255.0.1",
 		TunMask:      "255.255.255.0",
@@ -59,12 +59,12 @@ func StartEngine(tunFd int, configContent string, cb Callback) error {
 		DNSListen:    "127.0.0.1:53",
 		DirectDNS:    "1.1.1.1:53",
 		RemoteDoH:    "https://1.1.1.1/dns-query",
-		SetAutoRoute: false, // Android 由 VpnService 自动注入，无需执行宿主 Linux ip route 命令
+		SetAutoRoute: false, // 移动端由系统层自动注入路由，无需执行宿主系统命令行
 	}
 
 	cfg := fileCfg.MergeWithEngineConfig(baseCfg)
 	cfg.TunFd = tunFd
-	cfg.SetAutoRoute = false // 确保 Android 下不执行宿主 ip 命令
+	cfg.SetAutoRoute = false // 确保移动端不执行宿主系统命令
 
 	// 3. 配置日志系统
 	logLevel := loggo.LEVEL_INFO
@@ -73,7 +73,7 @@ func StartEngine(tunFd int, configContent string, cb Callback) error {
 	}
 	loggo.Ini(loggo.Config{
 		Level:  logLevel,
-		Prefix: "yellowsocks-android",
+		Prefix: "yellowsocks-mobile",
 	})
 
 	loggo.Info("[Mobile] Starting YellowSocks Engine with tunFd=%d...", tunFd)

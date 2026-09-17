@@ -6,7 +6,7 @@
 *.dylib
 *.aar
 
-# Packaging & Android build outputs
+# Packaging, Android & iOS build outputs
 pack/
 pack.zip
 .gradle/
@@ -14,6 +14,12 @@ build/
 android/app/build/
 android/.gradle/
 android/app/libs/*.aar
+
+# iOS / Xcode build outputs
+*.xcframework
+xcuserdata/
+*.ipa
+ios/Frameworks/YellowSocks.xcframework
 
 # Test binary, built with `go test -c`
 *.test

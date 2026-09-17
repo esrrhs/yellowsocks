@@ -119,6 +119,22 @@ The resulting library `android/app/libs/yellowsocks.aar` will be automatically i
 
 ---
 
+### 5. iOS & iPadOS Mobile Client (`YellowSocks-iOS`)
+
+The iOS & iPadOS client provides seamless system-wide transparent proxy without jailbreak:
+- **Native NetworkExtension Architecture**: Built on Apple's official `NEPacketTunnelProvider` to capture L3 IP packets directly into the Go core.
+- **Pure Go User-space Stack**: Full `gVisor` + `tun2socks` userspace network stack with SPP multi-node automatic failover.
+- **Responsive SwiftUI Design**: Adapts beautifully to both iPhone and iPad screens with dynamic traffic dials, active SPP latency monitors, and built-in YAML configuration editor.
+- **Background Keepalive & Reconnect**: Integrates system VPN reconnect triggers and AppGroup shared memory statistics.
+
+**Build XCFramework on macOS**:
+```bash
+./build_ios.sh
+```
+The script outputs `ios/Frameworks/YellowSocks.xcframework`. Then open `ios/YellowSocks.xcodeproj` in Xcode and click **Run** to install directly to your connected iPhone / iPad.
+
+---
+
 
 ## 🛠️ Build & Packaging
 
