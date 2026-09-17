@@ -1,14 +1,14 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>YellowSocks 仪表盘</title>
+  <title>YellowSocks Dashboard</title>
   <script src="https://cdn.tailwindcss.com"></script>
 </head>
-<body class="bg-slate-900 text-slate-100 font-sans min-h-screen p-6">
+<body class="bg-slate-900 text-slate-100 font-sans min-h-screen p-6 select-none">
   <div class="max-w-6xl mx-auto space-y-6">
-    <!-- 顶部状态栏 -->
+    <!-- Top Header -->
     <header class="flex items-center justify-between bg-slate-800 p-5 rounded-xl border border-slate-700 shadow-md">
       <div class="flex items-center space-x-3">
         <div class="w-4 h-4 rounded-full bg-emerald-400 animate-pulse"></div>
@@ -16,66 +16,66 @@
       </div>
       <div class="flex items-center space-x-3">
         <button id="btn-toggle-tun" onclick="onToggleTUN()" class="px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition shadow">
-          启动 TUN 虚拟网卡
+          Start TUN Proxy
         </button>
         <span id="fakeip-badge" class="px-3 py-1 text-xs rounded-full bg-indigo-950 text-indigo-300 border border-indigo-800">
-          Fake-IP: 开启
+          Fake-IP: Enabled
         </span>
       </div>
     </header>
 
-    <!-- 速率与流量卡片 -->
+    <!-- Speed & Traffic Cards -->
     <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
       <div class="bg-slate-800 p-5 rounded-xl border border-slate-700">
-        <div class="text-xs text-slate-400 uppercase tracking-wider">实时上传</div>
+        <div class="text-xs text-slate-400 uppercase tracking-wider">Upload Speed</div>
         <div id="up-speed" class="text-2xl font-mono font-bold text-sky-400 mt-2">0 B/s</div>
       </div>
       <div class="bg-slate-800 p-5 rounded-xl border border-slate-700">
-        <div class="text-xs text-slate-400 uppercase tracking-wider">实时下载</div>
+        <div class="text-xs text-slate-400 uppercase tracking-wider">Download Speed</div>
         <div id="down-speed" class="text-2xl font-mono font-bold text-emerald-400 mt-2">0 B/s</div>
       </div>
       <div class="bg-slate-800 p-5 rounded-xl border border-slate-700">
-        <div class="text-xs text-slate-400 uppercase tracking-wider">总上传量</div>
+        <div class="text-xs text-slate-400 uppercase tracking-wider">Total Upload</div>
         <div id="total-up" class="text-2xl font-mono font-bold text-slate-200 mt-2">0 MB</div>
       </div>
       <div class="bg-slate-800 p-5 rounded-xl border border-slate-700">
-        <div class="text-xs text-slate-400 uppercase tracking-wider">总下载量</div>
+        <div class="text-xs text-slate-400 uppercase tracking-wider">Total Download</div>
         <div id="total-down" class="text-2xl font-mono font-bold text-slate-200 mt-2">0 MB</div>
       </div>
     </div>
 
-    <!-- 活跃连接列表 -->
+    <!-- Active Connections Table -->
     <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden shadow-md">
       <div class="p-4 border-b border-slate-700 flex justify-between items-center">
-        <h2 class="font-semibold text-sm tracking-wide text-slate-300">实时网络连接监控 (Process & Destination)</h2>
-        <span id="conn-count" class="text-xs text-slate-400">活跃连接: 0</span>
+        <h2 class="font-semibold text-sm tracking-wide text-slate-300">Active Connections (Process & Destination)</h2>
+        <span id="conn-count" class="text-xs text-slate-400">Active: 0</span>
       </div>
       <div class="overflow-x-auto max-h-96">
         <table class="w-full text-left text-xs text-slate-300 font-mono">
           <thead class="bg-slate-900/50 text-slate-400 uppercase border-b border-slate-700/60 sticky top-0">
             <tr>
-              <th class="p-3">进程 (Application)</th>
-              <th class="p-3">目标地址</th>
-              <th class="p-3">解析域名</th>
-              <th class="p-3">分流策略</th>
-              <th class="p-3">上传</th>
-              <th class="p-3">下载</th>
+              <th class="p-3">Process</th>
+              <th class="p-3">Target Address</th>
+              <th class="p-3">Resolved Domain</th>
+              <th class="p-3">Routing Rule</th>
+              <th class="p-3">Upload</th>
+              <th class="p-3">Download</th>
             </tr>
           </thead>
           <tbody id="conn-tbody" class="divide-y divide-slate-700/40">
             <tr>
-              <td colspan="6" class="p-4 text-center text-slate-500 font-sans">暂无活跃会话</td>
+              <td colspan="6" class="p-4 text-center text-slate-500 font-sans">No active sessions</td>
             </tr>
           </tbody>
         </table>
       </div>
     </div>
 
-    <!-- 实时系统日志 -->
+    <!-- Real-time Logs -->
     <div class="bg-slate-800 rounded-xl border border-slate-700 p-4 shadow-md">
-      <h2 class="font-semibold text-sm tracking-wide text-slate-300 mb-2">实时日志 (Logs)</h2>
+      <h2 class="font-semibold text-sm tracking-wide text-slate-300 mb-2">Live Logs</h2>
       <div id="logs-box" class="bg-slate-950 p-3 rounded-lg text-xs font-mono text-slate-400 h-40 overflow-y-auto space-y-1">
-        <div>[System] YellowSocks Dashboard connected.</div>
+        <div>[System] YellowSocks Dashboard ready.</div>
       </div>
     </div>
   </div>
@@ -95,19 +95,19 @@
         if (!res.ok) return;
         const data = await res.json();
 
-        // 速度与总量
+        // Speed & Totals
         document.getElementById('up-speed').innerText = formatBytes(data.upload_speed) + '/s';
         document.getElementById('down-speed').innerText = formatBytes(data.download_speed) + '/s';
         document.getElementById('total-up').innerText = formatBytes(data.total_upload);
         document.getElementById('total-down').innerText = formatBytes(data.total_download);
 
-        // 连接列表
+        // Connections
         const tbody = document.getElementById('conn-tbody');
         const conns = data.active_connections || [];
-        document.getElementById('conn-count').innerText = `活跃连接: ${conns.length}`;
+        document.getElementById('conn-count').innerText = `Active: ${conns.length}`;
 
         if (conns.length === 0) {
-          tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-slate-500 font-sans">暂无活跃会话</td></tr>';
+          tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-slate-500 font-sans">No active sessions</td></tr>';
         } else {
           tbody.innerHTML = conns.map(c => `
             <tr class="hover:bg-slate-700/30 transition">
@@ -125,7 +125,7 @@
           `).join('');
         }
 
-        // 日志
+        // Logs
         const logsBox = document.getElementById('logs-box');
         if (data.recent_logs && data.recent_logs.length > 0) {
           logsBox.innerHTML = data.recent_logs.slice(-30).map(l => `<div>${l}</div>`).join('');
@@ -142,15 +142,15 @@
         if (window.toggleTUN) {
           const isRunning = await window.toggleTUN();
           if (isRunning) {
-            btn.innerText = '停止 TUN 虚拟网卡';
+            btn.innerText = 'Stop TUN Proxy';
             btn.className = 'px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-rose-600 hover:bg-rose-500 text-white transition shadow';
           } else {
-            btn.innerText = '启动 TUN 虚拟网卡';
+            btn.innerText = 'Start TUN Proxy';
             btn.className = 'px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition shadow';
           }
         }
       } catch (err) {
-        alert("操作失败: " + err);
+        alert("Operation failed: " + err);
       }
     }
 

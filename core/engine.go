@@ -31,10 +31,10 @@ type EngineConfig struct {
 	EnableFakeIP  bool              // 开启 Fake-IP 秒开模式
 	BypassApps    []string          // 排除直连的应用名称列表 (TUN Bypass Apps)
 	LocalSocks5   string            // 本地 SPP 暴露给内核的 socks5 端口
-	DNSListen     string            // DNS 监听 (默认 127.0.0.1:53)
-	ChinaDNS      string            // 境内直连 DNS
-	OverseasDoH   string            // 境外 DoH (默认 https://1.1.1.1/dns-query)
-	SetAutoRoute  bool              // 是否自动配置全局路由
+	DNSListen     string            // DNS listen address (default: 127.0.0.1:53)
+	DirectDNS     string            // Direct resolver for local/domestic domain resolution
+	RemoteDoH     string            // Remote DoH endpoint routed via SPP (default: https://1.1.1.1/dns-query)
+	SetAutoRoute  bool              // Automatically manage system global routes
 }
 
 // Engine 统一网络引擎
@@ -71,11 +71,11 @@ func NewEngine(cfg EngineConfig) *Engine {
 	if cfg.DNSListen == "" {
 		cfg.DNSListen = "127.0.0.1:53"
 	}
-	if cfg.ChinaDNS == "" {
-		cfg.ChinaDNS = "223.5.5.5:53"
+	if cfg.DirectDNS == "" {
+		cfg.DirectDNS = "1.1.1.1:53"
 	}
-	if cfg.OverseasDoH == "" {
-		cfg.OverseasDoH = "https://1.1.1.1/dns-query"
+	if cfg.RemoteDoH == "" {
+		cfg.RemoteDoH = "https://1.1.1.1/dns-query"
 	}
 
 	return &Engine{
@@ -128,8 +128,8 @@ func (e *Engine) Start() error {
 	loggo.Info("[Engine] Starting DNS Interceptor & Cache (Fake-IP: %v)...", e.cfg.EnableFakeIP)
 	dnsSrv, err := appdns.NewServer(appdns.Config{
 		ListenAddr:   e.cfg.DNSListen,
-		DoHURL:       e.cfg.OverseasDoH,
-		ChinaDNS:     e.cfg.ChinaDNS,
+		DoHURL:       e.cfg.RemoteDoH,
+		DirectDNS:    e.cfg.DirectDNS,
 		Socks5Addr:   e.sppManager.Socks5Addr(),
 		Router:       e.router,
 		EnableFakeIP: e.cfg.EnableFakeIP,

@@ -13,7 +13,7 @@ func RunNativeWindow() {
 		Debug:     false,
 		AutoFocus: true,
 		WindowOptions: webview2.WindowOptions{
-			Title:  "YellowSocks - 控制面板",
+			Title:  "YellowSocks - Control Panel",
 			Width:  960,
 			Height: 680,
 			IconId: 2, // 默认应用图标

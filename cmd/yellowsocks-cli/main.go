@@ -27,9 +27,9 @@ func main() {
 	tunGateway := flag.String("tun-gw", "10.255.0.1", "TUN default gateway")
 
 	dnsListen := flag.String("dns-listen", "127.0.0.1:53", "DNS interceptor listen address")
-	chinaDNS := flag.String("china-dns", "223.5.5.5:53", "Domestic DNS server for direct lookup")
-	dohURL := flag.String("doh-url", "https://1.1.1.1/dns-query", "Overseas DoH endpoint routed through SPP")
-	fakeIP := flag.Bool("fake-ip", true, "Enable Fake-IP mode for 0ms overseas domain response (like Clash)")
+	directDNS := flag.String("direct-dns", "1.1.1.1:53", "Direct upstream DNS server for direct lookups")
+	dohURL := flag.String("doh-url", "https://1.1.1.1/dns-query", "Remote DoH endpoint routed through SPP")
+	fakeIP := flag.Bool("fake-ip", true, "Enable Fake-IP mode for 0ms domain response (like Clash)")
 	bypassApps := flag.String("bypass-apps", "dota2.exe,dota2,thunder.exe,xunlei.exe,baidunetdisk.exe", "Comma-separated list of process names to bypass proxy")
 	autoRoute := flag.Bool("auto-route", true, "Automatically setup and restore system global routes")
 
@@ -78,8 +78,8 @@ func main() {
 		EnableFakeIP: *fakeIP,
 		BypassApps:   bypassList,
 		DNSListen:    *dnsListen,
-		ChinaDNS:     *chinaDNS,
-		OverseasDoH:  *dohURL,
+		DirectDNS:    *directDNS,
+		RemoteDoH:    *dohURL,
 		SetAutoRoute: *autoRoute,
 	}
 
