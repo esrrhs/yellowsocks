@@ -1,30 +1,121 @@
-# This workflow will build a golang project
-# For more information see: https://docs.github.com/en/actions/automating-builds-and-tests/building-and-testing-go
-
-name: Go
+name: CI & Multi-Platform Build
 
 on:
   push:
     branches: [ "master" ]
+    tags: [ "v*" ]
   pull_request:
     branches: [ "master" ]
 
-jobs:
+permissions:
+  contents: write
 
-  build:
+jobs:
+  # 1. Linux 单元测试与基础包构建
+  test:
+    name: Test & Verify (Linux)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
       - name: Set up Go
-        uses: actions/setup-go@v3
+        uses: actions/setup-go@v5
         with:
-          go-version: 1.24
+          go-version: 'stable'
+          cache: true
 
-      - name: Build
+      - name: Install Linux GUI Dependencies
         run: |
-          go mod tidy
-          go build -v ./...
+          sudo apt-get update
+          sudo apt-get install -y libayatana-appindicator3-dev libgtk-3-dev
 
-      - name: Test
-        run: go test -v ./...
+      - name: Run Unit Tests
+        run: |
+          go test -v ./core/config/...
+
+      - name: Build Linux CLI & GUI
+        run: |
+          go build -v -ldflags="-s -w" -o yellowsocks-cli ./cmd/yellowsocks-cli
+          go build -v -ldflags="-s -w" -o yellowsocks-gui ./cmd/yellowsocks-gui
+
+  # 2. 交叉编译与自动化打包 (Windows, Linux, OpenWrt 软路由多架构)
+  cross-compile:
+    name: Cross-Compile & Package
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Install zip tool
+        run: sudo apt-get install -y zip
+
+      - name: Run pack.sh
+        run: |
+          chmod +x pack.sh
+          ./pack.sh
+
+      - name: Upload Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: yellowsocks-release-packages
+          path: pack/*.zip
+
+  # 3. macOS 原生 GUI 桌面客户端构建
+  macos-build:
+    name: Native macOS GUI Build
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Build macOS App Bundle
+        run: |
+          chmod +x build_macos.sh
+          ./build_macos.sh
+          zip -r YellowSocks_macOS.zip YellowSocks.app
+
+      - name: Upload macOS Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: YellowSocks_macOS_App
+          path: YellowSocks_macOS.zip
+
+  # 4. 发布 GitHub Release (仅在打 tag 时触发)
+  release:
+    name: Create GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [test, cross-compile, macos-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: release-artifacts
+
+      - name: Prepare Release Files
+        run: |
+          mkdir -p dist
+          find release-artifacts -type f -name "*.zip" -exec cp {} dist/ \;
+          ls -lh dist/
+
+      - name: Publish Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
