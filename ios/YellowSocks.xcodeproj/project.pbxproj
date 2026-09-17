@@ -1,0 +1,420 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		AA010001 /* YellowSocksApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB010001 /* YellowSocksApp.swift */; };
+		AA010002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB010002 /* ContentView.swift */; };
+		AA010003 /* VPNManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB010003 /* VPNManager.swift */; };
+		AA010004 /* ConfigStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB010004 /* ConfigStore.swift */; };
+		AA010005 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB010005 /* NetworkExtension.framework */; };
+		AA020001 /* PacketTunnelProvider.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB020001 /* PacketTunnelProvider.swift */; };
+		AA020002 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB010005 /* NetworkExtension.framework */; };
+		AA020003 /* YellowSocksTunnel.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = BB020000 /* YellowSocksTunnel.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
+		AA020004 /* YellowSocks.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = BB030001 /* YellowSocks.xcframework */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		CC010001 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 00010001 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = BB020000;
+			remoteInfo = YellowSocksTunnel;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		AA030001 /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				AA020003 /* YellowSocksTunnel.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		BB010000 /* YellowSocks.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = YellowSocks.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB010001 /* YellowSocksApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = YellowSocksApp.swift; sourceTree = "<group>"; };
+		BB010002 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		BB010003 /* VPNManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = VPNManager.swift; sourceTree = "<group>"; };
+		BB010004 /* ConfigStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigStore.swift; sourceTree = "<group>"; };
+		BB010005 /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = System/Library/Frameworks/NetworkExtension.framework; sourceTree = SDKROOT; };
+		BB010006 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		BB010007 /* YellowSocks.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = YellowSocks.entitlements; sourceTree = "<group>"; };
+		BB020000 /* YellowSocksTunnel.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = YellowSocksTunnel.appex; sourceTree = BUILT_PRODUCTS_DIR; };
+		BB020001 /* PacketTunnelProvider.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PacketTunnelProvider.swift; sourceTree = "<group>"; };
+		BB020002 /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		BB020003 /* YellowSocksTunnel.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = YellowSocksTunnel.entitlements; sourceTree = "<group>"; };
+		BB030001 /* YellowSocks.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = YellowSocks.xcframework; path = Frameworks/YellowSocks.xcframework; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		AA010000 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA010005 /* NetworkExtension.framework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA020010 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA020002 /* NetworkExtension.framework in Frameworks */,
+				AA020004 /* YellowSocks.xcframework in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		00010000 = {
+			isa = PBXGroup;
+			children = (
+				11010000 /* YellowSocks */,
+				11020000 /* YellowSocksTunnel */,
+				11030000 /* Frameworks */,
+				11040000 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		11010000 /* YellowSocks */ = {
+			isa = PBXGroup;
+			children = (
+				BB010001 /* YellowSocksApp.swift */,
+				BB010002 /* ContentView.swift */,
+				BB010003 /* VPNManager.swift */,
+				BB010004 /* ConfigStore.swift */,
+				BB010006 /* Info.plist */,
+				BB010007 /* YellowSocks.entitlements */,
+			);
+			path = YellowSocks;
+			sourceTree = "<group>";
+		};
+		11020000 /* YellowSocksTunnel */ = {
+			isa = PBXGroup;
+			children = (
+				BB020001 /* PacketTunnelProvider.swift */,
+				BB020002 /* Info.plist */,
+				BB020003 /* YellowSocksTunnel.entitlements */,
+			);
+			path = YellowSocksTunnel;
+			sourceTree = "<group>";
+		};
+		11030000 /* Frameworks */ = {
+			isa = PBXGroup;
+			children = (
+				BB010005 /* NetworkExtension.framework */,
+				BB030001 /* YellowSocks.xcframework */,
+			);
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		11040000 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				BB010000 /* YellowSocks.app */,
+				BB020000 /* YellowSocksTunnel.appex */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		BB010000 /* YellowSocks */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DD010000 /* Build configuration list for PBXNativeTarget "YellowSocks" */;
+			buildPhases = (
+				AA010010 /* Sources */,
+				AA010000 /* Frameworks */,
+				AA030001 /* Embed App Extensions */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				CC010000 /* PBXTargetDependency */,
+			);
+			name = YellowSocks;
+			productName = YellowSocks;
+			productReference = BB010000 /* YellowSocks.app */;
+			productType = "com.apple.product-type.application";
+		};
+		BB020000 /* YellowSocksTunnel */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = DD020000 /* Build configuration list for PBXNativeTarget "YellowSocksTunnel" */;
+			buildPhases = (
+				AA020020 /* Sources */,
+				AA020010 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = YellowSocksTunnel;
+			productName = YellowSocksTunnel;
+			productReference = BB020000 /* YellowSocksTunnel.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		00010001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					BB010000 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+					BB020000 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = DD000000 /* Build configuration list for PBXProject "YellowSocks" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 00010000;
+			productRefGroup = 11040000 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				BB010000 /* YellowSocks */,
+				BB020000 /* YellowSocksTunnel */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		AA010010 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA010001 /* YellowSocksApp.swift in Sources */,
+				AA010002 /* ContentView.swift in Sources */,
+				AA010003 /* VPNManager.swift in Sources */,
+				AA010004 /* ConfigStore.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		AA020020 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				AA020001 /* PacketTunnelProvider.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		CC010000 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = BB020000 /* YellowSocksTunnel */;
+			targetProxy = CC010001 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		DD000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		DD000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				GCC_OPTIMIZATION_LEVEL = s;
+				IPHONEOS_DEPLOYMENT_TARGET = 15.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		DD010001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = YellowSocks/YellowSocks.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = YellowSocks/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.esrrhs.yellowsocks;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		DD010002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				CODE_SIGN_ENTITLEMENTS = YellowSocks/YellowSocks.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = YellowSocks/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.esrrhs.yellowsocks;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+		DD020001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = YellowSocksTunnel/YellowSocksTunnel.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Frameworks",
+				);
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = YellowSocksTunnel/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.esrrhs.yellowsocks.tunnel;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
+		};
+		DD020002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				CODE_SIGN_ENTITLEMENTS = YellowSocksTunnel/YellowSocksTunnel.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = "";
+				FRAMEWORK_SEARCH_PATHS = (
+					"$(inherited)",
+					"$(PROJECT_DIR)/Frameworks",
+				);
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = YellowSocksTunnel/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.esrrhs.yellowsocks.tunnel;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		DD000000 /* Build configuration list for PBXProject "YellowSocks" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DD000001 /* Debug */,
+				DD000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		DD010000 /* Build configuration list for PBXNativeTarget "YellowSocks" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DD010001 /* Debug */,
+				DD010002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		DD020000 /* Build configuration list for PBXNativeTarget "YellowSocksTunnel" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				DD020001 /* Debug */,
+				DD020002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+	};
+	rootObject = 00010001 /* Project object */;
+}
