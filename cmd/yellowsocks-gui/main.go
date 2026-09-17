@@ -189,9 +189,9 @@ func onReady() {
 
 	systray.AddSeparator()
 	mToggle := systray.AddMenuItem("Start TUN Proxy", "Toggle TUN Virtual Network Proxy")
-	mSysProxy := systray.AddMenuItem("System Proxy: OFF", "Toggle Windows System Proxy (Internet Settings)")
+	mSysProxy := systray.AddMenuItem("System Proxy: OFF", "Toggle System Proxy")
 	mFakeIP := systray.AddMenuItem("Fake-IP: ENABLED", "Toggle Fake-IP mode")
-	mDashboard := systray.AddMenuItem(fmt.Sprintf("Open Web Dashboard (:%d)", appCfg.WebPort), "View dashboard")
+	mDashboard := systray.AddMenuItem("Open Control Panel", "Show Native Control Panel")
 
 	systray.AddSeparator()
 	mNodes := systray.AddMenuItem("SPP Nodes", "Switch Active SPP Node")
@@ -250,8 +250,8 @@ func onReady() {
 
 			case <-mDashboard.ClickedCh:
 				url := fmt.Sprintf("http://127.0.0.1:%d", appCfg.WebPort)
-				openBrowser(url)
-				loggo.Info("Web Dashboard: %s", url)
+				openControlPanel(url)
+				loggo.Info("Control Panel opened: %s", url)
 
 			case <-mNodes.ClickedCh:
 				loggo.Info("Manage nodes via Dashboard")

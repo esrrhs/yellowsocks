@@ -2,30 +2,45 @@
 
 package main
 
+/*
+#cgo darwin CFLAGS: -DDARWIN -x objective-c -fobjc-arc
+#cgo darwin LDFLAGS: -framework Cocoa -framework WebKit
+
+#include "window_darwin.h"
+#include <stdlib.h>
+*/
+import "C"
+
 import (
 	"fmt"
-	"os/exec"
 	"time"
+	"unsafe"
 
 	"github.com/getlantern/systray"
 )
 
-// RunNativeWindow on macOS opens the dashboard in the default browser and
-// then hands control to the systray event loop (which must run on the main
-// thread on macOS via NSApplicationMain).
+// RunNativeWindow on macOS sets up the native Cocoa application, registers the
+// systray callbacks, and presents the native macOS WebKit window.
 func RunNativeWindow() {
-	// Open the web dashboard in the system browser after a short pause so the
-	// HTTP server has time to bind its port.
+	// Register systray callbacks without starting an extra run loop
+	systray.Register(onReady, onExit)
+
+	// Automatically open the native UI window once the local HTTP API is running
 	go func() {
-		time.Sleep(500 * time.Millisecond)
+		time.Sleep(300 * time.Millisecond)
 		url := fmt.Sprintf("http://127.0.0.1:%d", appCfg.WebPort)
-		if err := exec.Command("open", url).Run(); err != nil {
-			// Non-fatal — user can open the URL manually from the tray menu.
-			_ = err
-		}
+		openControlPanel(url)
 	}()
 
-	// systray.Run blocks until systray.Quit() is called.  On macOS this call
-	// MUST happen on the main goroutine (it drives the NSRunLoop internally).
-	systray.Run(onReady, onExit)
+	// Run Cocoa NSApplication main loop on the main thread
+	cTitle := C.CString("YellowSocks - Control Panel")
+	defer C.free(unsafe.Pointer(cTitle))
+	C.configureAppWindow(cTitle, C.int(960), C.int(680))
+}
+
+// openControlPanel brings the native macOS WebKit window to the foreground and loads the URL.
+func openControlPanel(url string) {
+	cUrl := C.CString(url)
+	defer C.free(unsafe.Pointer(cUrl))
+	C.showAppWindow(cUrl)
 }

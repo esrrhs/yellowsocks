@@ -3,5 +3,9 @@
 package main
 
 func RunNativeWindow() {
-	// Non-windows stub
+	// Non-windows & non-darwin stub
+}
+
+func openControlPanel(url string) {
+	openBrowser(url)
 }
