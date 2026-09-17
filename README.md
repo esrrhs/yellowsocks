@@ -2,7 +2,6 @@
 
 [<img src="https://img.shields.io/github/license/esrrhs/yellowsocks">](https://github.com/esrrhs/yellowsocks)
 [<img src="https://img.shields.io/github/languages/top/esrrhs/yellowsocks">](https://github.com/esrrhs/yellowsocks)
-[![Go Report Card](https://goreportcard.com/badge/github.com/esrrhs/yellowsocks)](https://goreportcard.com/report/github.com/esrrhs/yellowsocks)
 [<img src="https://img.shields.io/github/v/release/esrrhs/yellowsocks">](https://github.com/esrrhs/yellowsocks/releases)
 [<img src="https://img.shields.io/github/downloads/esrrhs/yellowsocks/total">](https://github.com/esrrhs/yellowsocks/releases)
 
