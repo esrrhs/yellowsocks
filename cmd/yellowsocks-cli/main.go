@@ -11,12 +11,14 @@ import (
 	"github.com/esrrhs/gohome/common"
 	"github.com/esrrhs/gohome/loggo"
 	"github.com/esrrhs/yellowsocks/core"
+	"github.com/esrrhs/yellowsocks/core/config"
 )
 
 func main() {
 	defer common.CrashLog()
 
-	sppServer := flag.String("spp-server", "", "SPP remote server address (e.g. 1.2.3.4:8888) [Required]")
+	configPath := flag.String("config", "", "Path to json/yaml configuration file")
+	sppServer := flag.String("spp-server", "", "SPP remote server address (e.g. 1.2.3.4:8888)")
 	sppProto := flag.String("spp-proto", "tcp", "SPP protocol (tcp, udp, kcp, quic)")
 	sppKey := flag.String("spp-key", "123456", "SPP password / key")
 	sppEncrypt := flag.String("spp-encrypt", "default", "SPP encryption method")
@@ -37,10 +39,20 @@ func main() {
 
 	flag.Parse()
 
-	if *sppServer == "" {
-		fmt.Println("Usage: yellowsocks-cli -spp-server <ip:port> [options]")
-		flag.PrintDefaults()
-		return
+	// Track explicitly set flags
+	cliSet := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) {
+		cliSet[f.Name] = true
+	})
+
+	var fileCfg *config.FileConfig
+	if *configPath != "" {
+		var err error
+		fileCfg, err = config.LoadConfigFile(*configPath)
+		if err != nil {
+			fmt.Printf("Error loading config file: %v\n\n", err)
+			return
+		}
 	}
 
 	level := loggo.LEVEL_INFO
@@ -51,8 +63,6 @@ func main() {
 		Level:  level,
 		Prefix: "yellowsocks-cli",
 	})
-
-	loggo.Info("Starting YellowSocks CLI Engine...")
 
 	var bypassList []string
 	if *bypassApps != "" {
@@ -82,6 +92,18 @@ func main() {
 		RemoteDoH:    *dohURL,
 		SetAutoRoute: *autoRoute,
 	}
+
+	if fileCfg != nil {
+		cfg = fileCfg.MergeWithEngineConfig(cfg, cliSet)
+	}
+
+	if cfg.SPPServer == "" && len(cfg.SPPNodes) == 0 {
+		fmt.Println("Usage: yellowsocks-cli -spp-server <ip:port> (or specify -config <path>)")
+		flag.PrintDefaults()
+		return
+	}
+
+	loggo.Info("Starting YellowSocks CLI Engine...")
 
 	engine := core.NewEngine(cfg)
 	if err := engine.Start(); err != nil {

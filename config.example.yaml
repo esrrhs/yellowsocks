@@ -1,0 +1,50 @@
+# YellowSocks Configuration Example (YAML)
+
+# Remote SPP Upstream Server (Single node)
+spp_server: "1.2.3.4:8888"
+spp_proto: "tcp"
+spp_key: "123456"
+spp_encrypt: "default"
+spp_compress: 128
+
+# Multi-node list with automatic failover (Overrides spp_server if provided)
+# nodes:
+#   - name: "Node-US"
+#     server: "us.example.com:8888"
+#     server_proto: "tcp"
+#     key: "123456"
+#   - name: "Node-EU"
+#     server: "eu.example.com:8888"
+#     server_proto: "udp"
+#     key: "123456"
+
+# Virtual TUN Interface Settings
+tun_name: "tun0"
+tun_ip: "10.255.0.2"
+tun_gw: "10.255.0.1"
+auto_route: true
+
+# DNS & Fake-IP Resolution
+dns_listen: "127.0.0.1:53"
+direct_dns: "1.1.1.1:53"
+doh_url: "https://1.1.1.1/dns-query"
+fake_ip: true
+
+# Process Bypass List (Always direct, bypass proxy)
+bypass_apps:
+  - "dota2.exe"
+  - "dota2"
+  - "thunder.exe"
+  - "xunlei.exe"
+  - "baidunetdisk.exe"
+
+# Custom Direct Routing (Optional)
+# direct_domains:
+#   - "local"
+#   - "internal.corp"
+# direct_cidrs:
+#   - "192.168.0.0/16"
+#   - "10.0.0.0/8"
+
+loglevel: "info"
+web_port: 9090

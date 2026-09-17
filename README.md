@@ -38,20 +38,22 @@
 Run with root privileges to automatically create the TUN interface and configure system routing:
 
 ```bash
+# Start directly with flags:
 sudo ./yellowsocks-cli \
   -spp-server "your_spp_server_ip:8888" \
   -spp-proto "tcp" \
   -spp-key "123456" \
-  -direct-dns "1.1.1.1:53" \
-  -doh-url "https://1.1.1.1/dns-query" \
-  -fake-ip=true \
-  -auto-route=true
+  -fake-ip=true
+
+# Or start with a configuration file (YAML / JSON):
+sudo ./yellowsocks-cli -config config.yaml
 ```
 
 #### CLI Options:
 | Flag | Description | Default |
 | :--- | :--- | :--- |
-| `-spp-server` | Remote SPP server address (`ip:port`) [Required] | None |
+| `-config` | Path to YAML or JSON configuration file | None |
+| `-spp-server` | Remote SPP server address (`ip:port`) | None |
 | `-spp-proto` | SPP protocol (`tcp`, `udp`, `kcp`, `quic`) | `tcp` |
 | `-spp-key` | SPP authentication key/password | `123456` |
 | `-spp-encrypt` | SPP encryption cipher | `default` |

@@ -15,6 +15,7 @@ import (
 	"github.com/esrrhs/gohome/loggo"
 	"github.com/getlantern/systray"
 	"github.com/esrrhs/yellowsocks/core"
+	"github.com/esrrhs/yellowsocks/core/config"
 	"github.com/esrrhs/yellowsocks/core/sppclient"
 	"github.com/esrrhs/yellowsocks/core/stats"
 	"github.com/esrrhs/yellowsocks/core/sysproxy"
@@ -44,6 +45,7 @@ var (
 func main() {
 	defer common.CrashLog()
 
+	configPath := flag.String("config", "", "Path to json/yaml configuration file")
 	sppServer := flag.String("spp-server", "", "Default SPP remote server address")
 	sppProto := flag.String("spp-proto", "tcp", "SPP protocol (tcp, udp, kcp, quic)")
 	sppKey := flag.String("spp-key", "123456", "SPP password / key")
@@ -58,6 +60,20 @@ func main() {
 	webPort := flag.Int("port", 9090, "Local dashboard HTTP API port")
 
 	flag.Parse()
+
+	cliSet := make(map[string]bool)
+	flag.Visit(func(f *flag.Flag) {
+		cliSet[f.Name] = true
+	})
+
+	var fileCfg *config.FileConfig
+	if *configPath != "" {
+		var err error
+		fileCfg, err = config.LoadConfigFile(*configPath)
+		if err != nil {
+			fmt.Printf("Error loading config file: %v\n\n", err)
+		}
+	}
 
 	loggo.Ini(loggo.Config{
 		Level:  loggo.LEVEL_INFO,
@@ -97,6 +113,52 @@ func main() {
 		RemoteDoH:    *dohURL,
 		AutoRoute:    *autoRoute,
 		WebPort:      *webPort,
+	}
+
+	if fileCfg != nil {
+		if len(fileCfg.SPPNodes) > 0 {
+			appCfg.SPPServers = fileCfg.SPPNodes
+		} else if !cliSet["spp-server"] && fileCfg.SPPServer != "" {
+			proto := "tcp"
+			if fileCfg.SPPProto != "" {
+				proto = fileCfg.SPPProto
+			}
+			compress := 128
+			if fileCfg.SPPCompress != nil {
+				compress = *fileCfg.SPPCompress
+			}
+			appCfg.SPPServers = []*sppclient.Node{
+				{
+					Name:        "Default-Server",
+					Server:      fileCfg.SPPServer,
+					ServerProto: proto,
+					Key:         fileCfg.SPPKey,
+					Encrypt:     fileCfg.SPPEncrypt,
+					Compress:    compress,
+				},
+			}
+		}
+		if !cliSet["tun-name"] && fileCfg.TunName != "" {
+			appCfg.WintunName = fileCfg.TunName
+		}
+		if !cliSet["fake-ip"] && fileCfg.EnableFakeIP != nil {
+			appCfg.EnableFakeIP = *fileCfg.EnableFakeIP
+		}
+		if !cliSet["bypass-apps"] && len(fileCfg.BypassApps) > 0 {
+			appCfg.BypassApps = fileCfg.BypassApps
+		}
+		if !cliSet["direct-dns"] && fileCfg.DirectDNS != "" {
+			appCfg.DirectDNS = fileCfg.DirectDNS
+		}
+		if !cliSet["doh-url"] && fileCfg.RemoteDoH != "" {
+			appCfg.RemoteDoH = fileCfg.RemoteDoH
+		}
+		if !cliSet["auto-route"] && fileCfg.AutoRoute != nil {
+			appCfg.AutoRoute = *fileCfg.AutoRoute
+		}
+		if !cliSet["port"] && fileCfg.WebPort != nil {
+			appCfg.WebPort = *fileCfg.WebPort
+		}
 	}
 
 	// 启动本地轻量 Dashboard API
