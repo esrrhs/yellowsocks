@@ -139,18 +139,26 @@
     async function onToggleTUN() {
       const btn = document.getElementById('btn-toggle-tun');
       try {
+        let isRunning;
         if (window.toggleTUN) {
-          const isRunning = await window.toggleTUN();
-          if (isRunning) {
-            btn.innerText = 'Stop TUN Proxy';
-            btn.className = 'px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-rose-600 hover:bg-rose-500 text-white transition shadow';
-          } else {
-            btn.innerText = 'Start TUN Proxy';
-            btn.className = 'px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition shadow';
-          }
+          // WebView2 binding (Windows native window)
+          isRunning = await window.toggleTUN();
+        } else {
+          // HTTP API fallback (macOS / Linux browser, or plain browser access)
+          const res = await fetch('/api/toggle', { method: 'POST' });
+          if (!res.ok) { alert('Toggle failed: ' + res.status); return; }
+          const data = await res.json();
+          isRunning = data.running;
+        }
+        if (isRunning) {
+          btn.innerText = 'Stop TUN Proxy';
+          btn.className = 'px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-rose-600 hover:bg-rose-500 text-white transition shadow';
+        } else {
+          btn.innerText = 'Start TUN Proxy';
+          btn.className = 'px-3.5 py-1.5 text-xs font-semibold rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white transition shadow';
         }
       } catch (err) {
-        alert("Operation failed: " + err);
+        alert('Operation failed: ' + err);
       }
     }
 
