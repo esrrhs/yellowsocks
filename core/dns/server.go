@@ -18,39 +18,39 @@ import (
 	"github.com/esrrhs/yellowsocks/core/router"
 )
 
-// DNSCacheEntry 缓存单元
+// DNSCacheEntry cache item
 type DNSCacheEntry struct {
 	Msg       *dns.Msg
 	ExpiresAt time.Time
 }
 
-// Server DNS 拦截服务
+// Server DNS interception server
 type Server struct {
 	listenAddr    string
 	dohURL        string
-	chinaDNS      string
+	directDNS     string
 	router        *router.Router
-	socks5Addr    string // 用于境外 DoH 请求代理
+	socks5Addr    string
 	udpServer     *dns.Server
 	cache         sync.Map // domain+type -> DNSCacheEntry
-	ipToDomain    sync.Map // ip.String() -> domain (反查分流使用)
+	ipToDomain    sync.Map // ip.String() -> domain
 	fakeIPPool    *FakeIPPool
 	enableFakeIP  bool
 	httpClientDoH *http.Client
 	mu            sync.RWMutex
 }
 
-// Config DNS 服务参数
+// Config DNS server configuration
 type Config struct {
-	ListenAddr   string // 监听地址，如 127.0.0.1:53 或 10.255.0.1:53
-	DoHURL       string // 境外 DoH 解析地址，如 https://1.1.1.1/dns-query
-	ChinaDNS     string // 境内常规 DNS 地址，如 223.5.5.5:53
-	Socks5Addr   string // 境外代理 socks5 地址
+	ListenAddr   string // listen address, e.g. 127.0.0.1:53 or 10.255.0.1:53
+	DoHURL       string // remote DoH resolver, e.g. https://1.1.1.1/dns-query
+	DirectDNS    string // direct domestic/local DNS, e.g. 1.1.1.1:53 or 8.8.8.8:53
+	Socks5Addr   string // upstream proxy socks5 address
 	Router       *router.Router
-	EnableFakeIP bool // 是否开启 Fake-IP 模式 (境外域名秒响应)
+	EnableFakeIP bool // enable Fake-IP mode
 }
 
-// NewServer 创建 DNS 拦截服务器
+// NewServer creates a new DNS interceptor
 func NewServer(cfg Config) (*Server, error) {
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = "127.0.0.1:53"
@@ -58,14 +58,14 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.DoHURL == "" {
 		cfg.DoHURL = "https://1.1.1.1/dns-query"
 	}
-	if cfg.ChinaDNS == "" {
-		cfg.ChinaDNS = "223.5.5.5:53"
+	if cfg.DirectDNS == "" {
+		cfg.DirectDNS = "1.1.1.1:53"
 	}
 
 	s := &Server{
 		listenAddr:   cfg.ListenAddr,
 		dohURL:       cfg.DoHURL,
-		chinaDNS:     cfg.ChinaDNS,
+		directDNS:    cfg.DirectDNS,
 		router:       cfg.Router,
 		socks5Addr:   cfg.Socks5Addr,
 		enableFakeIP: cfg.EnableFakeIP,
@@ -81,7 +81,6 @@ func (s *Server) setupDoHClient() {
 		TLSClientConfig: &tls.Config{InsecureSkipVerify: false},
 	}
 
-	// 如果配置了 Socks5，DoH 请求经由 Socks5 出境
 	if s.socks5Addr != "" {
 		dialer, err := proxy.SOCKS5("tcp", s.socks5Addr, nil, proxy.Direct)
 		if err == nil {
@@ -99,7 +98,7 @@ func (s *Server) setupDoHClient() {
 	}
 }
 
-// UpdateSocks5Addr 动态更新 socks5 代理地址
+// UpdateSocks5Addr updates upstream socks5 address
 func (s *Server) UpdateSocks5Addr(addr string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -107,7 +106,7 @@ func (s *Server) UpdateSocks5Addr(addr string) {
 	s.setupDoHClient()
 }
 
-// Start 启动 UDP DNS 监听
+// Start launches DNS listener
 func (s *Server) Start() error {
 	mux := dns.NewServeMux()
 	mux.HandleFunc(".", s.handleDNSRequest)
@@ -118,7 +117,7 @@ func (s *Server) Start() error {
 		Handler: mux,
 	}
 
-	loggo.Info("[DNS] Interceptor starting on UDP %s (China: %s, DoH: %s)", s.listenAddr, s.chinaDNS, s.dohURL)
+	loggo.Info("[DNS] Interceptor starting on UDP %s (Direct: %s, DoH: %s)", s.listenAddr, s.directDNS, s.dohURL)
 	go func() {
 		if err := s.udpServer.ListenAndServe(); err != nil {
 			loggo.Error("[DNS] ListenAndServe failed: %v", err)
@@ -127,7 +126,7 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// Stop 停止 DNS 监听
+// Stop stops DNS listener
 func (s *Server) Stop() error {
 	if s.udpServer != nil {
 		return s.udpServer.Shutdown()
@@ -144,7 +143,7 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	qName := strings.ToLower(strings.Trim(q.Name, "."))
 	cacheKey := fmt.Sprintf("%s_%d_%d", qName, q.Qtype, q.Qclass)
 
-	// 1. 查缓存
+	// 1. Check cache
 	if val, ok := s.cache.Load(cacheKey); ok {
 		entry := val.(DNSCacheEntry)
 		if time.Now().Before(entry.ExpiresAt) {
@@ -156,15 +155,14 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 		s.cache.Delete(cacheKey)
 	}
 
-	// 2. 根据分流策略选择解析方式
+	// 2. Routing resolution
 	var resp *dns.Msg
 	var err error
 
 	isDirect := s.router != nil && s.router.ShouldDirectDomain(qName)
 	if isDirect {
-		resp, err = s.resolveChinaDNS(r)
+		resp, err = s.resolveDirect(r)
 	} else if s.enableFakeIP && q.Qtype == dns.TypeA {
-		// Fake-IP 模式：直接为境外域名秒级分发 198.18.x.x 虚假 IP
 		fakeIP := s.fakeIPPool.Allocate(qName)
 		resp = new(dns.Msg)
 		resp.SetReply(r)
@@ -180,11 +178,10 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 		resp.Answer = append(resp.Answer, rr)
 		s.ipToDomain.Store(fakeIP.String(), qName)
 	} else {
-		// 境外域名走 DoH (SPP) 远端解析
 		resp, err = s.resolveDoH(r)
 		if err != nil {
 			loggo.Warn("[DNS] DoH failed for %s, falling back to direct DNS: %v", qName, err)
-			resp, err = s.resolveChinaDNS(r)
+			resp, err = s.resolveDirect(r)
 		}
 	}
 
@@ -196,14 +193,14 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	resp.Id = r.Id
 	_ = w.WriteMsg(resp)
 
-	// 3. 记录 IP 映射与缓存
+	// 3. Cache response and mapping
 	s.cacheAndRecordIP(qName, cacheKey, resp)
 }
 
-func (s *Server) resolveChinaDNS(r *dns.Msg) (*dns.Msg, error) {
+func (s *Server) resolveDirect(r *dns.Msg) (*dns.Msg, error) {
 	c := new(dns.Client)
 	c.Timeout = 2 * time.Second
-	in, _, err := c.Exchange(r, s.chinaDNS)
+	in, _, err := c.Exchange(r, s.directDNS)
 	return in, err
 }
 
@@ -271,7 +268,7 @@ func (s *Server) cacheAndRecordIP(domain, key string, msg *dns.Msg) {
 	})
 }
 
-// LookupDomainByIP 反查 IP 对应的解析域名
+// LookupDomainByIP reverse lookup domain by IP
 func (s *Server) LookupDomainByIP(ip string) (string, bool) {
 	if s.fakeIPPool != nil {
 		if d, ok := s.fakeIPPool.LookupDomainByIP(ip); ok {

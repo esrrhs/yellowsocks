@@ -29,8 +29,8 @@ type AppConfig struct {
 	WintunName   string            `json:"wintun_name"`
 	EnableFakeIP bool              `json:"enable_fake_ip"`
 	BypassApps   []string          `json:"bypass_apps"`
-	ChinaDNS     string            `json:"china_dns"`
-	OverseasDoH  string            `json:"overseas_doh"`
+	DirectDNS    string            `json:"direct_dns"`
+	RemoteDoH    string            `json:"remote_doh"`
 	AutoRoute    bool              `json:"auto_route"`
 	WebPort      int               `json:"web_port"`
 }
@@ -50,8 +50,8 @@ func main() {
 	sppEncrypt := flag.String("spp-encrypt", "default", "SPP encryption method")
 	sppCompress := flag.Int("spp-compress", 128, "SPP compression threshold")
 	wintunName := flag.String("tun-name", "YellowSocks", "Wintun adapter name")
-	dohURL := flag.String("doh-url", "https://1.1.1.1/dns-query", "Overseas DoH endpoint")
-	chinaDNS := flag.String("china-dns", "223.5.5.5:53", "China domestic DNS")
+	dohURL := flag.String("doh-url", "https://1.1.1.1/dns-query", "Remote DoH endpoint routed via SPP")
+	directDNS := flag.String("direct-dns", "1.1.1.1:53", "Direct upstream DNS server")
 	fakeIP := flag.Bool("fake-ip", true, "Enable Fake-IP mode (Clash style)")
 	autoRoute := flag.Bool("auto-route", true, "Automatically setup and restore Windows global routes")
 	bypassApps := flag.String("bypass-apps", "dota2.exe,dota2,thunder.exe,xunlei.exe,baidunetdisk.exe,cloudmusic.exe", "Comma-separated process names to bypass")
@@ -93,8 +93,8 @@ func main() {
 		WintunName:   *wintunName,
 		EnableFakeIP: *fakeIP,
 		BypassApps:   bypassList,
-		ChinaDNS:     *chinaDNS,
-		OverseasDoH:  *dohURL,
+		DirectDNS:    *directDNS,
+		RemoteDoH:    *dohURL,
 		AutoRoute:    *autoRoute,
 		WebPort:      *webPort,
 	}
@@ -119,8 +119,8 @@ func startProxyEngine() error {
 		SPPNodes:     appCfg.SPPServers,
 		EnableFakeIP: appCfg.EnableFakeIP,
 		BypassApps:   appCfg.BypassApps,
-		ChinaDNS:     appCfg.ChinaDNS,
-		OverseasDoH:  appCfg.OverseasDoH,
+		DirectDNS:    appCfg.DirectDNS,
+		RemoteDoH:    appCfg.RemoteDoH,
 		SetAutoRoute: appCfg.AutoRoute,
 	}
 	engine = core.NewEngine(cfg)
