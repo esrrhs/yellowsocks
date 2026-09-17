@@ -79,15 +79,18 @@ yellowsocks-gui.exe -config config.yaml
 
 ### 3. macOS Desktop GUI (`yellowsocks-gui`)
 
-1. Build natively on a macOS host (CGO is required for the system tray):
+1. Build natively on a macOS host (CGO is required for systray & WebKit):
 ```bash
-CGO_ENABLED=1 go build -ldflags="-s -w" -o yellowsocks-gui ./cmd/yellowsocks-gui
+./build_macos.sh
+# or build binary directly:
+# CGO_ENABLED=1 go build -ldflags="-s -w" -o yellowsocks-gui ./cmd/yellowsocks-gui
 ```
 2. Run with root privileges (required for TUN interface creation and route management):
 ```bash
 sudo ./yellowsocks-gui -config config.yaml
 ```
-3. The app appears as a **menu-bar (tray) icon**. The web dashboard automatically opens in your default browser.
+3. The app launches with a **menu-bar tray icon** and presents a **native macOS desktop control panel** (powered by Cocoa + WebKit WKWebView, zero external runtime required).
+4. Closing the window minimizes/hides it back to the menu-bar; clicking **Open Control Panel** in the tray menu instantly brings it back to the foreground.
 
 #### Tray Menu Items
 | Item | Description |
@@ -95,11 +98,8 @@ sudo ./yellowsocks-gui -config config.yaml
 | **Start / Stop TUN Proxy** | Enables or disables the virtual TUN tunnel |
 | **System Proxy: OFF / ON** | Toggles system-wide SOCKS5 proxy via `networksetup` |
 | **Fake-IP: ENABLED / DISABLED** | Toggles Fake-IP DNS mode |
-| **Open Web Dashboard** | Opens `http://127.0.0.1:<port>` in the browser |
+| **Open Control Panel** | Shows the native macOS control panel window |
 | **Quit** | Gracefully stops the engine and exits |
-
-> [!NOTE]
-> The "Start TUN Proxy" button in the web dashboard communicates with the backend via `POST /api/toggle` — no WebView2 dependency on macOS.
 
 ---
 

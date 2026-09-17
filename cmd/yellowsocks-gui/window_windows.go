@@ -47,3 +47,8 @@ func RunNativeWindow() {
 	// 运行 Windows UI 消息主循环
 	w.Run()
 }
+
+// openControlPanel brings the control panel window into focus on Windows.
+func openControlPanel(url string) {
+	// On Windows the WebView2 native window is already active and runs the main loop.
+}
