@@ -20,6 +20,7 @@ import (
 	"github.com/esrrhs/yellowsocks/core/sppclient"
 	"github.com/esrrhs/yellowsocks/core/stats"
 	"github.com/esrrhs/yellowsocks/core/sysproxy"
+	"github.com/esrrhs/yellowsocks/core/version"
 )
 
 //go:embed web/index.html
@@ -50,8 +51,15 @@ func main() {
 	sppServer := flag.String("spp-server", "", "Default SPP remote server address")
 	sppProto := flag.String("spp-proto", "tcp", "SPP protocol (tcp, udp, kcp, quic)")
 	sppKey := flag.String("spp-key", "123456", "SPP password / key")
+	showVersion := flag.Bool("v", false, "Print version information and exit")
+	showVersionLong := flag.Bool("version", false, "Print version information and exit")
 
 	flag.Parse()
+
+	if *showVersion || *showVersionLong {
+		fmt.Println(version.String())
+		return
+	}
 
 	var fileCfg *config.FileConfig
 	if *configPath != "" {
@@ -71,7 +79,7 @@ func main() {
 		Prefix: "yellowsocks-gui",
 	})
 
-	loggo.Info("Starting YellowSocks Tray & Dashboard GUI...")
+	loggo.Info("Starting YellowSocks Tray & Dashboard GUI (%s)...", version.String())
 
 	nodes := []*sppclient.Node{}
 	if *sppServer != "" {
@@ -318,6 +326,7 @@ func startDashboardAPI() {
 			activeNode = engine.SPPManager().ActiveNode()
 		}
 		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"version":     version.GetInfo(),
 			"running":     engine != nil,
 			"fake_ip":     appCfg.EnableFakeIP,
 			"active_node": activeNode,

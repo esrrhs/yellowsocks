@@ -16,6 +16,14 @@ cross_targets=(
   "windows/arm64/yellowsocks-gui.exe"
 )
 
+VERSION=$(cat VERSION 2>/dev/null || echo "1.0.0")
+GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+echo "==> Packaging YellowSocks v${VERSION} (Commit: ${GIT_COMMIT}, Built: ${BUILD_TIME})"
+
+LDFLAGS="-s -w -X github.com/esrrhs/yellowsocks/core/version.Version=${VERSION} -X github.com/esrrhs/yellowsocks/core/version.GitCommit=${GIT_COMMIT} -X \"github.com/esrrhs/yellowsocks/core/version.BuildTime=${BUILD_TIME}\""
+
 for target in "${cross_targets[@]}"; do
   os=$(echo "$target" | cut -d'/' -f1)
   arch=$(echo "$target" | cut -d'/' -f2)
@@ -31,9 +39,9 @@ for target in "${cross_targets[@]}"; do
   fi
 
   if [ "$os" == "windows" ]; then
-    CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -ldflags="-s -w" -o "$bin_name" ./cmd/yellowsocks-gui
+    CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -ldflags="$LDFLAGS" -o "$bin_name" ./cmd/yellowsocks-gui
   else
-    env CGO_ENABLED=0 GOOS=$os GOARCH=$arch $extra_env go build -ldflags="-s -w" -o "$bin_name" ./cmd/yellowsocks-cli
+    env CGO_ENABLED=0 GOOS=$os GOARCH=$arch $extra_env go build -ldflags="$LDFLAGS" -o "$bin_name" ./cmd/yellowsocks-cli
   fi
 
   if [ $? -ne 0 ]; then
