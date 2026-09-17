@@ -8,7 +8,6 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/esrrhs/gohome/common"
@@ -49,15 +48,6 @@ func main() {
 	sppServer := flag.String("spp-server", "", "Default SPP remote server address")
 	sppProto := flag.String("spp-proto", "tcp", "SPP protocol (tcp, udp, kcp, quic)")
 	sppKey := flag.String("spp-key", "123456", "SPP password / key")
-	sppEncrypt := flag.String("spp-encrypt", "default", "SPP encryption method")
-	sppCompress := flag.Int("spp-compress", 128, "SPP compression threshold")
-	wintunName := flag.String("tun-name", "YellowSocks", "Wintun adapter name")
-	dohURL := flag.String("doh-url", "https://1.1.1.1/dns-query", "Remote DoH endpoint routed via SPP")
-	directDNS := flag.String("direct-dns", "1.1.1.1:53", "Direct upstream DNS server")
-	fakeIP := flag.Bool("fake-ip", true, "Enable Fake-IP mode (Clash style)")
-	autoRoute := flag.Bool("auto-route", true, "Automatically setup and restore Windows global routes")
-	bypassApps := flag.String("bypass-apps", "dota2.exe,dota2,thunder.exe,xunlei.exe,baidunetdisk.exe,cloudmusic.exe", "Comma-separated process names to bypass")
-	webPort := flag.Int("port", 9090, "Local dashboard HTTP API port")
 
 	flag.Parse()
 
@@ -70,8 +60,12 @@ func main() {
 		}
 	}
 
+	level := loggo.LEVEL_INFO
+	if fileCfg != nil && fileCfg.LogLevel != "" && loggo.NameToLevel(fileCfg.LogLevel) >= 0 {
+		level = loggo.NameToLevel(fileCfg.LogLevel)
+	}
 	loggo.Ini(loggo.Config{
-		Level:  loggo.LEVEL_INFO,
+		Level:  level,
 		Prefix: "yellowsocks-gui",
 	})
 
@@ -84,30 +78,19 @@ func main() {
 			Server:      *sppServer,
 			ServerProto: *sppProto,
 			Key:         *sppKey,
-			Encrypt:     *sppEncrypt,
-			Compress:    *sppCompress,
+			Encrypt:     "default",
+			Compress:    128,
 		})
-	}
-
-	var bypassList []string
-	if *bypassApps != "" {
-		for _, part := range strings.Split(*bypassApps, ",") {
-			p := strings.TrimSpace(part)
-			if p != "" {
-				bypassList = append(bypassList, p)
-			}
-		}
 	}
 
 	appCfg = AppConfig{
 		SPPServers:   nodes,
-		WintunName:   *wintunName,
-		EnableFakeIP: *fakeIP,
-		BypassApps:   bypassList,
-		DirectDNS:    *directDNS,
-		RemoteDoH:    *dohURL,
-		AutoRoute:    *autoRoute,
-		WebPort:      *webPort,
+		WintunName:   "YellowSocks",
+		EnableFakeIP: true,
+		DirectDNS:    "1.1.1.1:53",
+		RemoteDoH:    "https://1.1.1.1/dns-query",
+		AutoRoute:    true,
+		WebPort:      9090,
 	}
 
 	if fileCfg != nil {
@@ -122,13 +105,17 @@ func main() {
 			if fileCfg.SPPCompress != nil {
 				compress = *fileCfg.SPPCompress
 			}
+			encrypt := "default"
+			if fileCfg.SPPEncrypt != "" {
+				encrypt = fileCfg.SPPEncrypt
+			}
 			appCfg.SPPServers = []*sppclient.Node{
 				{
 					Name:        "Default-Server",
 					Server:      fileCfg.SPPServer,
 					ServerProto: proto,
 					Key:         fileCfg.SPPKey,
-					Encrypt:     fileCfg.SPPEncrypt,
+					Encrypt:     encrypt,
 					Compress:    compress,
 				},
 			}

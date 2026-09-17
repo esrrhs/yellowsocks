@@ -38,15 +38,14 @@
 Run with root privileges to automatically create the TUN interface and configure system routing:
 
 ```bash
-# Start directly with flags:
+# Recommended: Start with a configuration file (YAML / JSON):
+sudo ./yellowsocks-cli -config config.yaml
+
+# Or start directly with minimal flags:
 sudo ./yellowsocks-cli \
   -spp-server "your_spp_server_ip:8888" \
   -spp-proto "tcp" \
-  -spp-key "123456" \
-  -fake-ip=true
-
-# Or start with a configuration file (YAML / JSON):
-sudo ./yellowsocks-cli -config config.yaml
+  -spp-key "123456"
 ```
 
 #### CLI Options:
@@ -55,15 +54,11 @@ sudo ./yellowsocks-cli -config config.yaml
 | `-config` | Path to YAML or JSON configuration file | None |
 | `-spp-server` | Remote SPP server address (`ip:port`) | None |
 | `-spp-proto` | SPP protocol (`tcp`, `udp`, `kcp`, `quic`) | `tcp` |
-| `-spp-key` | SPP authentication key/password | `123456` |
-| `-spp-encrypt` | SPP encryption cipher | `default` |
-| `-spp-compress` | SPP compression threshold | `128` |
-| `-tun-name` | Virtual network interface name | `tun0` |
-| `-direct-dns` | Direct DNS resolver for local lookups | `1.1.1.1:53` |
-| `-doh-url` | Remote DoH resolver routed via SPP | `https://1.1.1.1/dns-query` |
-| `-fake-ip` | Enable 0ms Fake-IP mode | `true` |
-| `-bypass-apps` | Comma-separated list of process names to bypass | `dota2.exe,dota2,thunder.exe,...` |
-| `-auto-route` | Automatically set and restore system routes | `true` |
+| `-spp-key` | SPP authentication key / password | `123456` |
+| `-loglevel` | Log level (`debug`, `info`, `warn`, `error`) | `info` |
+
+> [!TIP]
+> Detailed settings such as virtual TUN IP, Fake-IP mode, DNS upstream/DoH endpoints, multi-node automatic failover, and process bypass lists are cleanly managed via the configuration file (`config.example.yaml`).
 
 Press `Ctrl + C` to gracefully stop the engine, delete TUN routes, and restore system networking.
 
@@ -72,9 +67,9 @@ Press `Ctrl + C` to gracefully stop the engine, delete TUN routes, and restore s
 ### 2. Windows Desktop GUI (`yellowsocks-gui`)
 
 1. Download `yellowsocks-gui.exe` and ensure `wintun.dll` is located in the same directory.
-2. Run as Administrator:
+2. Run as Administrator with a config file or server parameters:
 ```cmd
-yellowsocks-gui.exe -spp-server "your_spp_server_ip:8888" -spp-proto "tcp" -spp-key "123456"
+yellowsocks-gui.exe -config config.yaml
 ```
 3. A modern desktop control panel will open showing real-time speeds, active connections, and routing events.
 
