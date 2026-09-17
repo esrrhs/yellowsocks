@@ -26,10 +26,14 @@
   - **App Bypass**: Automatically tracks active socket ports to process names (`PID -> Process`), directly bypassing high-concurrency apps, torrent clients, or latency-sensitive games.
   - **Custom Subnet & Domain Routing**: Supports loading custom direct CIDR lists and domain whitelists for any country or organization.
 - **Modern Desktop UI & Live Dashboard**:
-  - **Windows Desktop App**: Modern desktop GUI powered by native Windows Edge WebView2.
-  - **macOS Desktop App**: System tray icon + menu, auto-opens web dashboard in the default browser.
+  - **Windows Desktop App**: Modern desktop GUI powered by native Windows Edge WebView2 with system tray.
+  - **macOS Desktop App**: Native desktop control panel window (Cocoa + WebKit WKWebView) with menu-bar tray icon and auto-minimize support.
   - **Live Connection & Traffic Monitor**: Real-time tracking of upload/download bandwidth, active sessions, target destinations, and routing rule hits.
   - **One-Click System Proxy**: Toggle system-level SOCKS5 proxy on/off (Windows Internet Settings / macOS `networksetup`).
+- **Comprehensive Cross-Platform Matrix**:
+  - **Desktop**: Windows (x86_64, arm64), macOS (Apple Silicon, Intel), Linux (CLI).
+  - **Mobile**: Android (Jetpack Compose), iOS & iPadOS (SwiftUI + NetworkExtension).
+  - **Routers**: OpenWrt / Embedded Linux (x86, ARM64, ARMv7, MIPS, MIPSLE).
 
 ---
 
