@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/esrrhs/yellowsocks/core"
 	"github.com/esrrhs/yellowsocks/core/sppclient"
@@ -49,22 +48,19 @@ func LoadConfigFile(path string) (*FileConfig, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file %s: %w", path, err)
 	}
+	return ParseConfigContent(data)
+}
 
+// ParseConfigContent parses configuration from byte slice (YAML or JSON)
+func ParseConfigContent(data []byte) (*FileConfig, error) {
 	cfg := &FileConfig{}
-	if strings.HasSuffix(path, ".yaml") || strings.HasSuffix(path, ".yml") {
-		if err := yaml.Unmarshal(data, cfg); err != nil {
-			return nil, fmt.Errorf("invalid YAML config file %s: %w", path, err)
-		}
-	} else {
-		// Default to JSON parser
-		if err := json.Unmarshal(data, cfg); err != nil {
-			// Fallback try YAML parser if JSON fails
-			if yamlErr := yaml.Unmarshal(data, cfg); yamlErr != nil {
-				return nil, fmt.Errorf("invalid config file format %s (JSON err: %v, YAML err: %v)", path, err, yamlErr)
-			}
+	// Try JSON first
+	if err := json.Unmarshal(data, cfg); err != nil {
+		// Fallback to YAML
+		if yamlErr := yaml.Unmarshal(data, cfg); yamlErr != nil {
+			return nil, fmt.Errorf("invalid config format (JSON err: %v, YAML err: %v)", err, yamlErr)
 		}
 	}
-
 	return cfg, nil
 }
 

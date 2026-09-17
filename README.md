@@ -75,6 +75,23 @@ yellowsocks-gui.exe -config config.yaml
 
 ---
 
+### 3. Android Mobile Client (`yellowsocks-android`)
+
+The Android version provides system-wide transparent proxy without root permissions:
+- **Zero Root Required**: Uses standard Android `VpnService` to capture packets and pass file descriptors directly to the Go core.
+- **Pure Go User-space Stack**: Integrated `gVisor` + `tun2socks` userspace networking.
+- **Native Per-App Bypass**: Directly excludes games/domestic apps at the OS level (`addDisallowedApplication`).
+- **Live Compose Dashboard**: Built with modern Jetpack Compose for real-time speed monitoring, YAML config editing, and application bypass selection.
+
+**Build AAR library**:
+```bash
+./build_android.sh
+```
+The resulting library `android/app/libs/yellowsocks.aar` will be automatically integrated into the Android project under `android/`.
+
+---
+
+
 ## 🛠️ Build & Packaging
 
 Build standalone archives for Linux (`amd64`/`arm64`) and Windows (`amd64`/`arm64`):
