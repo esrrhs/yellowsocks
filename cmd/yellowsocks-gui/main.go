@@ -61,11 +61,6 @@ func main() {
 
 	flag.Parse()
 
-	cliSet := make(map[string]bool)
-	flag.Visit(func(f *flag.Flag) {
-		cliSet[f.Name] = true
-	})
-
 	var fileCfg *config.FileConfig
 	if *configPath != "" {
 		var err error
@@ -118,7 +113,7 @@ func main() {
 	if fileCfg != nil {
 		if len(fileCfg.SPPNodes) > 0 {
 			appCfg.SPPServers = fileCfg.SPPNodes
-		} else if !cliSet["spp-server"] && fileCfg.SPPServer != "" {
+		} else if fileCfg.SPPServer != "" {
 			proto := "tcp"
 			if fileCfg.SPPProto != "" {
 				proto = fileCfg.SPPProto
@@ -138,25 +133,25 @@ func main() {
 				},
 			}
 		}
-		if !cliSet["tun-name"] && fileCfg.TunName != "" {
+		if fileCfg.TunName != "" {
 			appCfg.WintunName = fileCfg.TunName
 		}
-		if !cliSet["fake-ip"] && fileCfg.EnableFakeIP != nil {
+		if fileCfg.EnableFakeIP != nil {
 			appCfg.EnableFakeIP = *fileCfg.EnableFakeIP
 		}
-		if !cliSet["bypass-apps"] && len(fileCfg.BypassApps) > 0 {
+		if len(fileCfg.BypassApps) > 0 {
 			appCfg.BypassApps = fileCfg.BypassApps
 		}
-		if !cliSet["direct-dns"] && fileCfg.DirectDNS != "" {
+		if fileCfg.DirectDNS != "" {
 			appCfg.DirectDNS = fileCfg.DirectDNS
 		}
-		if !cliSet["doh-url"] && fileCfg.RemoteDoH != "" {
+		if fileCfg.RemoteDoH != "" {
 			appCfg.RemoteDoH = fileCfg.RemoteDoH
 		}
-		if !cliSet["auto-route"] && fileCfg.AutoRoute != nil {
+		if fileCfg.AutoRoute != nil {
 			appCfg.AutoRoute = *fileCfg.AutoRoute
 		}
-		if !cliSet["port"] && fileCfg.WebPort != nil {
+		if fileCfg.WebPort != nil {
 			appCfg.WebPort = *fileCfg.WebPort
 		}
 	}

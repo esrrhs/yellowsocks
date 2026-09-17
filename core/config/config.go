@@ -68,56 +68,57 @@ func LoadConfigFile(path string) (*FileConfig, error) {
 	return cfg, nil
 }
 
-// MergeWithEngineConfig merges file config with CLI config (CLI flags take precedence)
-func (f *FileConfig) MergeWithEngineConfig(base core.EngineConfig, cliSet map[string]bool) core.EngineConfig {
+// MergeWithEngineConfig merges file config with base EngineConfig.
+// When configuration file specifies a parameter, it takes absolute precedence over CLI flags.
+func (f *FileConfig) MergeWithEngineConfig(base core.EngineConfig) core.EngineConfig {
 	res := base
 
-	if !cliSet["spp-server"] && f.SPPServer != "" {
+	if f.SPPServer != "" {
 		res.SPPServer = f.SPPServer
 	}
-	if !cliSet["spp-proto"] && f.SPPProto != "" {
+	if f.SPPProto != "" {
 		res.SPPProto = f.SPPProto
 	}
-	if !cliSet["spp-key"] && f.SPPKey != "" {
+	if f.SPPKey != "" {
 		res.SPPKey = f.SPPKey
 	}
-	if !cliSet["spp-encrypt"] && f.SPPEncrypt != "" {
+	if f.SPPEncrypt != "" {
 		res.SPPEncrypt = f.SPPEncrypt
 	}
-	if !cliSet["spp-compress"] && f.SPPCompress != nil {
+	if f.SPPCompress != nil {
 		res.SPPCompress = *f.SPPCompress
 	}
 	if len(f.SPPNodes) > 0 {
 		res.SPPNodes = f.SPPNodes
 	}
 
-	if !cliSet["tun-name"] && f.TunName != "" {
+	if f.TunName != "" {
 		res.TunName = f.TunName
 	}
-	if !cliSet["tun-ip"] && f.TunIP != "" {
+	if f.TunIP != "" {
 		res.TunIP = f.TunIP
 	}
-	if !cliSet["tun-gw"] && f.TunGateway != "" {
+	if f.TunGateway != "" {
 		res.TunGateway = f.TunGateway
 	}
-	if !cliSet["auto-route"] && f.AutoRoute != nil {
+	if f.AutoRoute != nil {
 		res.SetAutoRoute = *f.AutoRoute
 	}
 
-	if !cliSet["dns-listen"] && f.DNSListen != "" {
+	if f.DNSListen != "" {
 		res.DNSListen = f.DNSListen
 	}
-	if !cliSet["direct-dns"] && f.DirectDNS != "" {
+	if f.DirectDNS != "" {
 		res.DirectDNS = f.DirectDNS
 	}
-	if !cliSet["doh-url"] && f.RemoteDoH != "" {
+	if f.RemoteDoH != "" {
 		res.RemoteDoH = f.RemoteDoH
 	}
-	if !cliSet["fake-ip"] && f.EnableFakeIP != nil {
+	if f.EnableFakeIP != nil {
 		res.EnableFakeIP = *f.EnableFakeIP
 	}
 
-	if !cliSet["bypass-apps"] && len(f.BypassApps) > 0 {
+	if len(f.BypassApps) > 0 {
 		res.BypassApps = f.BypassApps
 	}
 
