@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/esrrhs/yellowsocks/core"
 )
 
 func TestParseConfigContentYAML(t *testing.T) {
@@ -65,5 +67,47 @@ func TestLoadConfigFileJSON(t *testing.T) {
 	}
 	if cfg.AutoRoute == nil || !*cfg.AutoRoute {
 		t.Errorf("expected AutoRoute true")
+	}
+}
+
+func TestMergeWithEngineConfig(t *testing.T) {
+	fakeIP := true
+	autoRoute := false
+	fileCfg := &FileConfig{
+		SPPServer:    "custom.server:9999",
+		SPPProto:     "quic",
+		SPPKey:       "mykey",
+		TunName:      "tun-custom",
+		EnableFakeIP: &fakeIP,
+		AutoRoute:    &autoRoute,
+	}
+
+	base := core.EngineConfig{
+		SPPServer:    "default.server:8888",
+		SPPProto:     "tcp",
+		SPPKey:       "defaultkey",
+		TunName:      "tun0",
+		SetAutoRoute: true,
+	}
+
+	merged := fileCfg.MergeWithEngineConfig(base)
+
+	if merged.SPPServer != "custom.server:9999" {
+		t.Errorf("expected SPPServer custom.server:9999, got %s", merged.SPPServer)
+	}
+	if merged.SPPProto != "quic" {
+		t.Errorf("expected SPPProto quic, got %s", merged.SPPProto)
+	}
+	if merged.SPPKey != "mykey" {
+		t.Errorf("expected SPPKey mykey, got %s", merged.SPPKey)
+	}
+	if merged.TunName != "tun-custom" {
+		t.Errorf("expected TunName tun-custom, got %s", merged.TunName)
+	}
+	if merged.SetAutoRoute != false {
+		t.Errorf("expected SetAutoRoute false, got %v", merged.SetAutoRoute)
+	}
+	if !merged.EnableFakeIP {
+		t.Errorf("expected EnableFakeIP true")
 	}
 }
