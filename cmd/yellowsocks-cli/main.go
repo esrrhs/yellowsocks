@@ -11,6 +11,7 @@ import (
 	"github.com/esrrhs/gohome/loggo"
 	"github.com/esrrhs/yellowsocks/core"
 	"github.com/esrrhs/yellowsocks/core/config"
+	"github.com/esrrhs/yellowsocks/core/version"
 )
 
 func main() {
@@ -21,8 +22,15 @@ func main() {
 	sppProto := flag.String("spp-proto", "tcp", "SPP protocol (tcp, udp, kcp, quic)")
 	sppKey := flag.String("spp-key", "123456", "SPP password / key")
 	loglevel := flag.String("loglevel", "info", "Log level (debug, info, warn, error)")
+	showVersion := flag.Bool("v", false, "Print version information and exit")
+	showVersionLong := flag.Bool("version", false, "Print version information and exit")
 
 	flag.Parse()
+
+	if *showVersion || *showVersionLong {
+		fmt.Println(version.String())
+		return
+	}
 
 	var fileCfg *config.FileConfig
 	if *configPath != "" {
@@ -74,7 +82,7 @@ func main() {
 		return
 	}
 
-	loggo.Info("Starting YellowSocks CLI Engine...")
+	loggo.Info("Starting YellowSocks CLI Engine (%s)...", version.String())
 
 	engine := core.NewEngine(cfg)
 	if err := engine.Start(); err != nil {

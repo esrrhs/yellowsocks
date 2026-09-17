@@ -3,7 +3,6 @@ name: CI & Multi-Platform Build
 on:
   push:
     branches: [ "master" ]
-    tags: [ "v*" ]
   pull_request:
     branches: [ "master" ]
 
@@ -11,6 +10,37 @@ permissions:
   contents: write
 
 jobs:
+  # ========================================================
+  # 0. 版本号检测：判断是否有未发布的版本变动
+  # ========================================================
+  check-version:
+    name: 0. Check Version Change
+    runs-on: ubuntu-latest
+    outputs:
+      release_needed: ${{ steps.check.outputs.release_needed }}
+      version: ${{ steps.check.outputs.version }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect if VERSION requires a new release
+        id: check
+        run: |
+          VERSION=$(cat VERSION | tr -d '[:space:]')
+          echo "Current version in repository: $VERSION"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+
+          git fetch --tags
+          if git rev-parse "v$VERSION" >/dev/null 2>&1; then
+            echo "Git tag v$VERSION already exists. Skipping release."
+            echo "release_needed=false" >> $GITHUB_OUTPUT
+          else
+            echo "Git tag v$VERSION does not exist. New release required!"
+            echo "release_needed=true" >> $GITHUB_OUTPUT
+          fi
+
   # ========================================================
   # 1. Linux 单元测试与基础包验证
   # ========================================================
@@ -36,10 +66,15 @@ jobs:
         run: |
           go test -v ./core/config/...
 
-      - name: Build Linux CLI & GUI
+      - name: Build Linux CLI & GUI with Version Info
         run: |
-          go build -v -ldflags="-s -w" -o yellowsocks-cli ./cmd/yellowsocks-cli
-          go build -v -ldflags="-s -w" -o yellowsocks-gui ./cmd/yellowsocks-gui
+          VERSION=$(cat VERSION | tr -d '[:space:]')
+          GIT_COMMIT=$(git rev-parse --short HEAD)
+          BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          LDFLAGS="-s -w -X github.com/esrrhs/yellowsocks/core/version.Version=${VERSION} -X github.com/esrrhs/yellowsocks/core/version.GitCommit=${GIT_COMMIT} -X \"github.com/esrrhs/yellowsocks/core/version.BuildTime=${BUILD_TIME}\""
+          go build -v -ldflags="$LDFLAGS" -o yellowsocks-cli ./cmd/yellowsocks-cli
+          go build -v -ldflags="$LDFLAGS" -o yellowsocks-gui ./cmd/yellowsocks-gui
+          ./yellowsocks-cli -v
 
   # ========================================================
   # 2. Windows & OpenWrt 路由器全架构交叉编译打包
@@ -60,7 +95,7 @@ jobs:
       - name: Install zip tool
         run: sudo apt-get install -y zip
 
-      - name: Run pack.sh
+      - name: Run pack.sh (Injects Version, Commit, Build Time)
         run: |
           chmod +x pack.sh
           ./pack.sh
@@ -182,16 +217,24 @@ jobs:
           path: YellowSocks_iOS_Framework.zip
 
   # ========================================================
-  # 6. 聚合所有平台产物发布 GitHub Release (Tag 触发)
+  # 6. 版本号变动时自动发布 GitHub Release
   # ========================================================
   release:
     name: 6. Publish All-Platform GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, cross-compile, macos-build, android-build, ios-build]
+    needs: [check-version, test, cross-compile, macos-build, android-build, ios-build]
+    if: github.ref == 'refs/heads/master' && needs.check-version.outputs.release_needed == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Create Git Tag
+        run: |
+          VERSION="${{ needs.check-version.outputs.version }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git tag -a "v$VERSION" -m "Release YellowSocks v$VERSION"
+          git push origin "v$VERSION"
 
       - name: Download all build artifacts
         uses: actions/download-artifact@v4
@@ -204,8 +247,10 @@ jobs:
           find release-artifacts -type f \( -name "*.zip" -o -name "*.aar" \) -exec cp {} dist/ \;
           ls -lh dist/
 
-      - name: Publish Release
+      - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: "v${{ needs.check-version.outputs.version }}"
+          name: "YellowSocks v${{ needs.check-version.outputs.version }}"
           files: dist/*
           generate_release_notes: true

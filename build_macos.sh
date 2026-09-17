@@ -19,8 +19,16 @@ else
     TARGET_ARCH="arm64"
 fi
 
+VERSION=$(cat VERSION 2>/dev/null || echo "1.0.0")
+GIT_COMMIT=$(git rev-parse --short HEAD 2>/dev/null || echo "unknown")
+BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+
+echo "--> Building Version: ${VERSION} (${GIT_COMMIT})"
 echo "--> Target architecture: ${TARGET_ARCH}"
-GOOS=darwin GOARCH=${TARGET_ARCH} go build -ldflags="-s -w" -o "${BIN_NAME}" ./cmd/yellowsocks-gui
+
+LDFLAGS="-s -w -X github.com/esrrhs/yellowsocks/core/version.Version=${VERSION} -X github.com/esrrhs/yellowsocks/core/version.GitCommit=${GIT_COMMIT} -X \"github.com/esrrhs/yellowsocks/core/version.BuildTime=${BUILD_TIME}\""
+
+GOOS=darwin GOARCH=${TARGET_ARCH} go build -ldflags="$LDFLAGS" -o "${BIN_NAME}" ./cmd/yellowsocks-gui
 
 echo "==> Creating macOS App Bundle (${APP_BUNDLE})..."
 rm -rf "${APP_BUNDLE}"
@@ -45,9 +53,9 @@ cat << 'EOF' > "${APP_BUNDLE}/Contents/Info.plist"
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
-    <string>1.0.0</string>
+    <string>${VERSION}</string>
     <key>CFBundleVersion</key>
-    <string>1</string>
+    <string>${GIT_COMMIT}</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSRequiresAquaSystemAppearance</key>
