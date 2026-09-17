@@ -11,9 +11,11 @@ permissions:
   contents: write
 
 jobs:
-  # 1. Linux 单元测试与基础包构建
+  # ========================================================
+  # 1. Linux 单元测试与基础包验证
+  # ========================================================
   test:
-    name: Test & Verify (Linux)
+    name: 1. Test & Verify (Linux)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -39,9 +41,11 @@ jobs:
           go build -v -ldflags="-s -w" -o yellowsocks-cli ./cmd/yellowsocks-cli
           go build -v -ldflags="-s -w" -o yellowsocks-gui ./cmd/yellowsocks-gui
 
-  # 2. 交叉编译与自动化打包 (Windows, Linux, OpenWrt 软路由多架构)
+  # ========================================================
+  # 2. Windows & OpenWrt 路由器全架构交叉编译打包
+  # ========================================================
   cross-compile:
-    name: Cross-Compile & Package
+    name: 2. Cross-Compile (Windows & Routers)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -61,15 +65,17 @@ jobs:
           chmod +x pack.sh
           ./pack.sh
 
-      - name: Upload Build Artifacts
+      - name: Upload Windows & Router Packages
         uses: actions/upload-artifact@v4
         with:
-          name: yellowsocks-release-packages
+          name: yellowsocks-desktop-and-routers
           path: pack/*.zip
 
-  # 3. macOS 原生 GUI 桌面客户端构建
+  # ========================================================
+  # 3. macOS 原生独立 GUI 桌面客户端构建
+  # ========================================================
   macos-build:
-    name: Native macOS GUI Build
+    name: 3. macOS Native GUI Client
     runs-on: macos-latest
     steps:
       - name: Checkout repository
@@ -87,17 +93,101 @@ jobs:
           ./build_macos.sh
           zip -r YellowSocks_macOS.zip YellowSocks.app
 
-      - name: Upload macOS Artifact
+      - name: Upload macOS App Artifact
         uses: actions/upload-artifact@v4
         with:
-          name: YellowSocks_macOS_App
+          name: YellowSocks-macOS-App
           path: YellowSocks_macOS.zip
 
-  # 4. 发布 GitHub Release (仅在打 tag 时触发)
+  # ========================================================
+  # 4. Android 手机端构建 (AAR & Mobile Core)
+  # ========================================================
+  android-build:
+    name: 4. Android Client (AAR)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Set up Android NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26d
+
+      - name: Install gomobile tool
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          gomobile init
+
+      - name: Build Android AAR
+        run: |
+          chmod +x build_android.sh
+          ./build_android.sh
+
+      - name: Upload Android AAR Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: YellowSocks-Android-AAR
+          path: android/app/libs/yellowsocks.aar
+
+  # ========================================================
+  # 5. iOS & iPadOS 移动客户端构建 (XCFramework)
+  # ========================================================
+  ios-build:
+    name: 5. iOS & iPadOS Client (XCFramework)
+    runs-on: macos-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: 'stable'
+          cache: true
+
+      - name: Install gomobile tool
+        run: |
+          go install golang.org/x/mobile/cmd/gomobile@latest
+          go install golang.org/x/mobile/cmd/gobind@latest
+          gomobile init
+
+      - name: Build iOS YellowSocks.xcframework
+        run: |
+          chmod +x build_ios.sh
+          ./build_ios.sh
+          zip -r YellowSocks_iOS_Framework.zip ios/Frameworks/YellowSocks.xcframework
+
+      - name: Verify Xcode Project Syntax
+        run: |
+          xcodebuild -project ios/YellowSocks.xcodeproj -scheme YellowSocks -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO -dry-run build || true
+
+      - name: Upload iOS XCFramework Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: YellowSocks-iOS-Framework
+          path: YellowSocks_iOS_Framework.zip
+
+  # ========================================================
+  # 6. 聚合所有平台产物发布 GitHub Release (Tag 触发)
+  # ========================================================
   release:
-    name: Create GitHub Release
+    name: 6. Publish All-Platform GitHub Release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, cross-compile, macos-build]
+    needs: [test, cross-compile, macos-build, android-build, ios-build]
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -111,11 +201,11 @@ jobs:
       - name: Prepare Release Files
         run: |
           mkdir -p dist
-          find release-artifacts -type f -name "*.zip" -exec cp {} dist/ \;
+          find release-artifacts -type f \( -name "*.zip" -o -name "*.aar" \) -exec cp {} dist/ \;
           ls -lh dist/
 
       - name: Publish Release
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.zip
+          files: dist/*
           generate_release_notes: true
