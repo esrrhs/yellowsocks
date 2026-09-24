@@ -20,7 +20,7 @@
   - **Pure Go User-space Stack**: Powered by gVisor netstack / tun2socks v2 without requiring CGO or MinGW toolchains.
 - **Smart DNS Interception & Fake-IP Mode**:
   - Intercepts all outgoing UDP 53 DNS queries.
-  - **Fake-IP Mode**: Delivers instant 0ms responses from `198.18.0.0/15` (RFC 2544 benchmark range) for fast connection establishment and elimination of local DNS leaks and poisoning.
+  - **Fake-IP Mode**: Powered by `gohome/dns/fakeip` delivering instant 0ms responses from `198.18.0.0/15` (RFC 2544 benchmark range) with synchronized TTL expiration and reverse lookup for fast connection establishment and elimination of local DNS leaks and poisoning.
   - **DoH Fallback**: Queries remote DoH resolvers (e.g. `https://1.1.1.1/dns-query`) securely routed through the SPP tunnel.
 - **Universal Routing & Process/App-level Bypass**:
   - **App Bypass**: Automatically tracks active socket ports to process names (`PID -> Process`), directly bypassing high-concurrency apps, torrent clients, or latency-sensitive games.

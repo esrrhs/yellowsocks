@@ -3,7 +3,7 @@ module github.com/esrrhs/yellowsocks
 go 1.26.3
 
 require (
-	github.com/esrrhs/gohome v0.0.0-20260914110951-165384768827
+	github.com/esrrhs/gohome v0.0.0-20260924051301-4210dd2c21f5
 	github.com/esrrhs/spp v0.8.1-0.20260914113913-5e3005e2f994
 	github.com/getlantern/systray v1.2.2
 	github.com/jchv/go-webview2 v0.0.0-20260205173254-56598839c808
@@ -31,6 +31,7 @@ require (
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/jchv/go-winloader v0.0.0-20250406163304-c1995be93bd1 // indirect
+	github.com/klauspost/compress v1.18.0 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/klauspost/reedsolomon v1.14.2 // indirect
 	github.com/kr/text v0.2.0 // indirect
@@ -46,7 +47,6 @@ require (
 	github.com/tklauser/go-sysconf v0.3.12 // indirect
 	github.com/tklauser/numcpus v0.6.1 // indirect
 	github.com/xtaci/kcp-go v5.4.20+incompatible // indirect
-	github.com/xtaci/smux v1.5.57 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/exp v0.0.0-20260611194520-c48552f49976 // indirect
