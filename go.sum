@@ -12,8 +12,8 @@ github.com/envoyproxy/go-control-plane v0.9.4/go.mod h1:6rpuAdCZL397s3pYoYcLgu1m
 github.com/envoyproxy/protoc-gen-validate v0.1.0/go.mod h1:iSmxcyjqTsJpI2R4NaDN7+kN2VEUnK/pcBlmesArF7c=
 github.com/esrrhs/gohome v0.0.0-20260924052417-f7be2b22a03d h1:Yoc9r+G74ZWEW1XvBgP83UwMNoIUojQ8s5VeOQVWTdA=
 github.com/esrrhs/gohome v0.0.0-20260924052417-f7be2b22a03d/go.mod h1:tRLY2j9CjI+uML7QckSSpQPs4Tgc+isNTf7g5TMyhLo=
-github.com/esrrhs/spp v0.14.1-0.20260924152515-50825d7a33da h1:UYtmpCv5b34BcWSJzPmblDaaNiycl4UvN7WpJiZ7rz4=
-github.com/esrrhs/spp v0.14.1-0.20260924152515-50825d7a33da/go.mod h1:hbEp2+cMzhqR1fcHL6jK+d8M0X6sQhSpgXVmq0zeYw4=
+github.com/esrrhs/spp v0.14.1 h1:rCnFyijCesmQajnRsIjIgVueD51VTU1zcSB/z/DGkP0=
+github.com/esrrhs/spp v0.14.1/go.mod h1:hbEp2+cMzhqR1fcHL6jK+d8M0X6sQhSpgXVmq0zeYw4=
 github.com/getlantern/context v0.0.0-20190109183933-c447772a6520 h1:NRUJuo3v3WGC/g5YiyF790gut6oQr5f3FBI88Wv0dx4=
 github.com/getlantern/context v0.0.0-20190109183933-c447772a6520/go.mod h1:L+mq6/vvYHKjCX2oez0CgEAJmbq1fbb/oNJIWQkBybY=
 github.com/getlantern/errors v0.0.0-20190325191628-abdb3e3e36f7 h1:6uJ+sZ/e03gkbqZ0kUG6mfKoqDb4XMAzMIwlajq19So=

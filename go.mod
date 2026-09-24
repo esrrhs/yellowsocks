@@ -4,7 +4,7 @@ go 1.26.3
 
 require (
 	github.com/esrrhs/gohome v0.0.0-20260924052417-f7be2b22a03d
-	github.com/esrrhs/spp v0.14.1-0.20260924152515-50825d7a33da
+	github.com/esrrhs/spp v0.14.1
 	github.com/getlantern/systray v1.2.2
 	github.com/jchv/go-webview2 v0.0.0-20260205173254-56598839c808
 	github.com/miekg/dns v1.1.73
