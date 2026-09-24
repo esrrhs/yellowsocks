@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -24,14 +26,16 @@ type DNSCacheEntry struct {
 	ExpiresAt time.Time
 }
 
-// Server DNS interception server
+// Server DNS interception and DoH server
 type Server struct {
 	listenAddr    string
+	dohListenAddr string
 	dohURL        string
 	directDNS     string
 	router        *router.Router
 	socks5Addr    string
 	udpServer     *dns.Server
+	httpServerDoH *http.Server
 	cache         sync.Map // domain+type -> DNSCacheEntry
 	ipToDomain    sync.Map // ip.String() -> domain
 	fakeIPPool    *FakeIPPool
@@ -42,15 +46,16 @@ type Server struct {
 
 // Config DNS server configuration
 type Config struct {
-	ListenAddr   string // listen address, e.g. 127.0.0.1:53 or 10.255.0.1:53
-	DoHURL       string // remote DoH resolver, e.g. https://1.1.1.1/dns-query
-	DirectDNS    string // direct domestic/local DNS, e.g. 1.1.1.1:53 or 8.8.8.8:53
-	Socks5Addr   string // upstream proxy socks5 address
-	Router       *router.Router
-	EnableFakeIP bool // enable Fake-IP mode
+	ListenAddr    string // UDP listen address, e.g. 127.0.0.1:53 or :53
+	DoHListenAddr string // TCP listen address for DoH, e.g. 127.0.0.1:8053 or :8053
+	DoHURL        string // remote DoH resolver, e.g. https://1.1.1.1/dns-query
+	DirectDNS     string // direct domestic/local DNS, e.g. 1.1.1.1:53 or 8.8.8.8:53
+	Socks5Addr    string // upstream proxy socks5 address
+	Router        *router.Router
+	EnableFakeIP  bool // enable Fake-IP mode
 }
 
-// NewServer creates a new DNS interceptor
+// NewServer creates a new DNS interceptor and DoH server
 func NewServer(cfg Config) (*Server, error) {
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = "127.0.0.1:53"
@@ -63,13 +68,14 @@ func NewServer(cfg Config) (*Server, error) {
 	}
 
 	s := &Server{
-		listenAddr:   cfg.ListenAddr,
-		dohURL:       cfg.DoHURL,
-		directDNS:    cfg.DirectDNS,
-		router:       cfg.Router,
-		socks5Addr:   cfg.Socks5Addr,
-		enableFakeIP: cfg.EnableFakeIP,
-		fakeIPPool:   NewFakeIPPool(),
+		listenAddr:    cfg.ListenAddr,
+		dohListenAddr: cfg.DoHListenAddr,
+		dohURL:        cfg.DoHURL,
+		directDNS:     cfg.DirectDNS,
+		router:        cfg.Router,
+		socks5Addr:    cfg.Socks5Addr,
+		enableFakeIP:  cfg.EnableFakeIP,
+		fakeIPPool:    NewFakeIPPool(),
 	}
 
 	s.setupDoHClient()
@@ -106,7 +112,7 @@ func (s *Server) UpdateSocks5Addr(addr string) {
 	s.setupDoHClient()
 }
 
-// Start launches DNS listener
+// Start launches DNS UDP listener and DoH TCP listener
 func (s *Server) Start() error {
 	mux := dns.NewServeMux()
 	mux.HandleFunc(".", s.handleDNSRequest)
@@ -117,26 +123,117 @@ func (s *Server) Start() error {
 		Handler: mux,
 	}
 
-	loggo.Info("[DNS] Interceptor starting on UDP %s (Direct: %s, DoH: %s)", s.listenAddr, s.directDNS, s.dohURL)
+	loggo.Info("[DNS] Interceptor starting on UDP %s (Direct: %s, DoH Upstream: %s)", s.listenAddr, s.directDNS, s.dohURL)
 	go func() {
 		if err := s.udpServer.ListenAndServe(); err != nil {
-			loggo.Error("[DNS] ListenAndServe failed: %v", err)
+			loggo.Info("[DNS] UDP server stopped: %v", err)
 		}
 	}()
+
+	if s.dohListenAddr != "" {
+		muxDoH := http.NewServeMux()
+		muxDoH.HandleFunc("/dns-query", s.handleDoHHTTP)
+		muxDoH.HandleFunc("/", s.handleDoHHTTP)
+
+		s.httpServerDoH = &http.Server{
+			Addr:    s.dohListenAddr,
+			Handler: muxDoH,
+		}
+
+		loggo.Info("[DNS] DoH server starting on TCP %s (/dns-query)", s.dohListenAddr)
+		go func() {
+			if err := s.httpServerDoH.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				loggo.Error("[DNS] DoH ListenAndServe error: %v", err)
+			}
+		}()
+	}
+
 	return nil
 }
 
-// Stop stops DNS listener
+// Stop stops DNS listener and DoH server
 func (s *Server) Stop() error {
+	var err1, err2 error
 	if s.udpServer != nil {
-		return s.udpServer.Shutdown()
+		err1 = s.udpServer.Shutdown()
 	}
-	return nil
+	if s.httpServerDoH != nil {
+		err2 = s.httpServerDoH.Close()
+	}
+	if err1 != nil {
+		return err1
+	}
+	return err2
 }
 
 func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
-	if len(r.Question) == 0 {
+	resp, err := s.ResolveMsg(r)
+	if err != nil || resp == nil {
+		dns.HandleFailed(w, r)
 		return
+	}
+	resp.Id = r.Id
+	_ = w.WriteMsg(resp)
+}
+
+func (s *Server) handleDoHHTTP(w http.ResponseWriter, r *http.Request) {
+	var rawMsg []byte
+	var err error
+
+	switch r.Method {
+	case http.MethodGet:
+		dnsParam := r.URL.Query().Get("dns")
+		if dnsParam == "" {
+			http.Error(w, "missing dns query parameter", http.StatusBadRequest)
+			return
+		}
+		rawMsg, err = base64.RawURLEncoding.DecodeString(dnsParam)
+		if err != nil {
+			rawMsg, err = base64.URLEncoding.DecodeString(dnsParam)
+			if err != nil {
+				http.Error(w, "invalid base64url dns parameter", http.StatusBadRequest)
+				return
+			}
+		}
+	case http.MethodPost:
+		rawMsg, err = io.ReadAll(r.Body)
+		if err != nil || len(rawMsg) == 0 {
+			http.Error(w, "empty or invalid request body", http.StatusBadRequest)
+			return
+		}
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	reqMsg := new(dns.Msg)
+	if err := reqMsg.Unpack(rawMsg); err != nil {
+		http.Error(w, "failed to unpack dns message", http.StatusBadRequest)
+		return
+	}
+
+	respMsg, err := s.ResolveMsg(reqMsg)
+	if err != nil || respMsg == nil {
+		http.Error(w, "dns resolution failed", http.StatusBadGateway)
+		return
+	}
+
+	packed, err := respMsg.Pack()
+	if err != nil {
+		http.Error(w, "failed to pack dns response", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/dns-message")
+	w.Header().Set("Cache-Control", "max-age=60")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(packed)
+}
+
+// ResolveMsg resolves a DNS query message using caching, smart routing, and upstream DoH/Direct
+func (s *Server) ResolveMsg(r *dns.Msg) (*dns.Msg, error) {
+	if len(r.Question) == 0 {
+		return nil, errors.New("empty question")
 	}
 
 	q := r.Question[0]
@@ -149,8 +246,7 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 		if time.Now().Before(entry.ExpiresAt) {
 			resp := entry.Msg.Copy()
 			resp.Id = r.Id
-			_ = w.WriteMsg(resp)
-			return
+			return resp, nil
 		}
 		s.cache.Delete(cacheKey)
 	}
@@ -186,15 +282,13 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	}
 
 	if err != nil || resp == nil {
-		dns.HandleFailed(w, r)
-		return
+		return nil, err
 	}
 
 	resp.Id = r.Id
-	_ = w.WriteMsg(resp)
-
 	// 3. Cache response and mapping
 	s.cacheAndRecordIP(qName, cacheKey, resp)
+	return resp, nil
 }
 
 func (s *Server) resolveDirect(r *dns.Msg) (*dns.Msg, error) {

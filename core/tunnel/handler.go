@@ -3,6 +3,7 @@ package tunnel
 import (
 	"io"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -151,7 +152,85 @@ func (h *Handler) HandleUDP(conn adapter.UDPConn) {
 			}
 			_, _ = uConn.Write(buf[:n])
 		}
+	} else {
+		h.forwardSppUDP(conn, udpAddr)
 	}
+}
+
+func (h *Handler) forwardSppUDP(conn adapter.UDPConn, target *net.UDPAddr) {
+	if h.sppClient == nil || h.sppClient.Socks5Addr() == "" {
+		return
+	}
+
+	sppTCPAddr, err := net.ResolveTCPAddr("tcp", h.sppClient.Socks5Addr())
+	if err != nil {
+		return
+	}
+	sppTCPConn, err := net.DialTCP("tcp", nil, sppTCPAddr)
+	if err != nil {
+		return
+	}
+	defer sppTCPConn.Close()
+
+	if err := network.Sock5Handshake(sppTCPConn, 5000, "", ""); err != nil {
+		return
+	}
+
+	bnd, err := network.Sock5SetUDPRequest(sppTCPConn, "0.0.0.0", 0, 5000)
+	if err != nil {
+		return
+	}
+
+	bndH, bndP, err := net.SplitHostPort(bnd)
+	if err != nil {
+		return
+	}
+	p, _ := strconv.Atoi(bndP)
+	bndIP := net.ParseIP(bndH)
+	if bndIP == nil || bndIP.IsUnspecified() {
+		bndIP = sppTCPConn.RemoteAddr().(*net.TCPAddr).IP
+	}
+	relayTarget := &net.UDPAddr{IP: bndIP, Port: p}
+
+	uConn, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		return
+	}
+	defer uConn.Close()
+
+	done := make(chan struct{})
+
+	go func() {
+		defer close(done)
+		buf := make([]byte, 65535)
+		for {
+			n, _, err := uConn.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			_, _, payload, err := network.Sock5UnpackUDP(buf[:n])
+			if err == nil && len(payload) > 0 {
+				_, _ = conn.Write(payload)
+			}
+		}
+	}()
+
+	go func() {
+		buf := make([]byte, 65535)
+		for {
+			n, err := conn.Read(buf)
+			if err != nil {
+				_ = uConn.Close()
+				return
+			}
+			packed, err := network.Sock5PackUDP(target.IP.String(), target.Port, buf[:n])
+			if err == nil {
+				_, _ = uConn.WriteToUDP(packed, relayTarget)
+			}
+		}
+	}()
+
+	<-done
 }
 
 func (h *Handler) handleDNSUDP(conn adapter.UDPConn, target *net.UDPAddr) {

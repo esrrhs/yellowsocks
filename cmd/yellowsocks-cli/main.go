@@ -21,6 +21,14 @@ func main() {
 	sppServer := flag.String("spp-server", "", "SPP remote server address (e.g. 1.2.3.4:8888)")
 	sppProto := flag.String("spp-proto", "tcp", "SPP protocol (tcp, udp, kcp, quic)")
 	sppKey := flag.String("spp-key", "123456", "SPP password / key")
+	socks5Addr := flag.String("socks5", "127.0.0.1:1080", "Inbound SOCKS5 proxy listen address (TCP+UDP)")
+	httpAddr := flag.String("http", "127.0.0.1:8080", "Inbound HTTP/HTTPS proxy listen address")
+	dnsAddr := flag.String("dns", "127.0.0.1:53", "Inbound DNS UDP listen address")
+	dohAddr := flag.String("doh", "127.0.0.1:8053", "Inbound DNS TCP DoH listen address")
+	disableTun := flag.Bool("disable-tun", false, "Disable TUN device (run proxies and DNS only)")
+	chinaDomains := flag.String("china-domains", "", "Path to china domain list file")
+	gfwDomains := flag.String("gfw-domains", "", "Path to gfw domain list file")
+	geoipFile := flag.String("geoip", "", "Path to GeoLite2-Country.mmdb")
 	loglevel := flag.String("loglevel", "info", "Log level (debug, info, warn, error)")
 	showVersion := flag.Bool("v", false, "Print version information and exit")
 	showVersionLong := flag.Bool("version", false, "Print version information and exit")
@@ -55,21 +63,28 @@ func main() {
 
 	// Default baseline engine configuration
 	cfg := core.EngineConfig{
-		TunName:      "tun0",
-		TunIP:        "10.255.0.2",
-		TunGateway:   "10.255.0.1",
-		TunMask:      "255.255.255.0",
-		MTU:          1500,
-		SPPServer:    *sppServer,
-		SPPProto:     *sppProto,
-		SPPKey:       *sppKey,
-		SPPEncrypt:   "default",
-		SPPCompress:  128,
-		EnableFakeIP: true,
-		DNSListen:    "127.0.0.1:53",
-		DirectDNS:    "1.1.1.1:53",
-		RemoteDoH:    "https://1.1.1.1/dns-query",
-		SetAutoRoute: true,
+		TunName:          "tun0",
+		TunIP:            "10.255.0.2",
+		TunGateway:       "10.255.0.1",
+		TunMask:          "255.255.255.0",
+		MTU:              1500,
+		DisableTun:       *disableTun,
+		SPPServer:        *sppServer,
+		SPPProto:         *sppProto,
+		SPPKey:           *sppKey,
+		SPPEncrypt:       "default",
+		SPPCompress:      128,
+		EnableFakeIP:     true,
+		DNSListen:        *dnsAddr,
+		DoHListen:        *dohAddr,
+		DirectDNS:        "1.1.1.1:53",
+		RemoteDoH:        "https://1.1.1.1/dns-query",
+		SetAutoRoute:     true,
+		Socks5Listen:     *socks5Addr,
+		HTTPListen:       *httpAddr,
+		ChinaDomainsFile: *chinaDomains,
+		GFWDomainsFile:   *gfwDomains,
+		GeoIPFile:        *geoipFile,
 	}
 
 	if fileCfg != nil {

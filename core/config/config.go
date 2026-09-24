@@ -28,14 +28,25 @@ type FileConfig struct {
 
 	// DNS & Fake-IP Settings
 	DNSListen    string `json:"dns_listen" yaml:"dns_listen"`
+	DoHListen    string `json:"doh_listen" yaml:"doh_listen"`
 	DirectDNS    string `json:"direct_dns" yaml:"direct_dns"`
 	RemoteDoH    string `json:"doh_url" yaml:"doh_url"`
 	EnableFakeIP *bool  `json:"fake_ip" yaml:"fake_ip"`
 
+	// Inbound Proxy Settings
+	Socks5Listen  string `json:"socks5_listen" yaml:"socks5_listen"`
+	HTTPListen    string `json:"http_listen" yaml:"http_listen"`
+	ProxyUsername string `json:"proxy_username" yaml:"proxy_username"`
+	ProxyPassword string `json:"proxy_password" yaml:"proxy_password"`
+	DisableTun    *bool  `json:"disable_tun" yaml:"disable_tun"`
+
 	// Routing & App Bypass Rules
-	BypassApps    []string `json:"bypass_apps" yaml:"bypass_apps"`
-	DirectDomains []string `json:"direct_domains" yaml:"direct_domains"`
-	DirectCIDRs   []string `json:"direct_cidrs" yaml:"direct_cidrs"`
+	BypassApps       []string `json:"bypass_apps" yaml:"bypass_apps"`
+	DirectDomains    []string `json:"direct_domains" yaml:"direct_domains"`
+	DirectCIDRs      []string `json:"direct_cidrs" yaml:"direct_cidrs"`
+	GeoIPFile        string   `json:"geoip_file" yaml:"geoip_file"`
+	ChinaDomainsFile string   `json:"china_domains" yaml:"china_domains"`
+	GFWDomainsFile   string   `json:"gfw_domains" yaml:"gfw_domains"`
 
 	// General
 	LogLevel string `json:"loglevel" yaml:"loglevel"`
@@ -104,6 +115,9 @@ func (f *FileConfig) MergeWithEngineConfig(base core.EngineConfig) core.EngineCo
 	if f.DNSListen != "" {
 		res.DNSListen = f.DNSListen
 	}
+	if f.DoHListen != "" {
+		res.DoHListen = f.DoHListen
+	}
 	if f.DirectDNS != "" {
 		res.DirectDNS = f.DirectDNS
 	}
@@ -114,8 +128,39 @@ func (f *FileConfig) MergeWithEngineConfig(base core.EngineConfig) core.EngineCo
 		res.EnableFakeIP = *f.EnableFakeIP
 	}
 
+	if f.Socks5Listen != "" {
+		res.Socks5Listen = f.Socks5Listen
+	}
+	if f.HTTPListen != "" {
+		res.HTTPListen = f.HTTPListen
+	}
+	if f.ProxyUsername != "" {
+		res.ProxyUsername = f.ProxyUsername
+	}
+	if f.ProxyPassword != "" {
+		res.ProxyPassword = f.ProxyPassword
+	}
+	if f.DisableTun != nil {
+		res.DisableTun = *f.DisableTun
+	}
+
 	if len(f.BypassApps) > 0 {
 		res.BypassApps = f.BypassApps
+	}
+	if len(f.DirectDomains) > 0 {
+		res.DirectDomains = f.DirectDomains
+	}
+	if len(f.DirectCIDRs) > 0 {
+		res.DirectCIDRs = f.DirectCIDRs
+	}
+	if f.GeoIPFile != "" {
+		res.GeoIPFile = f.GeoIPFile
+	}
+	if f.ChinaDomainsFile != "" {
+		res.ChinaDomainsFile = f.ChinaDomainsFile
+	}
+	if f.GFWDomainsFile != "" {
+		res.GFWDomainsFile = f.GFWDomainsFile
 	}
 
 	return res

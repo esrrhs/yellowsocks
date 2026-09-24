@@ -105,3 +105,29 @@ func TestRouterCustomDirectCIDR(t *testing.T) {
 		t.Errorf("expected Proxy for IP outside custom CIDR %s", outsideTarget)
 	}
 }
+
+func TestRouterChinaSuffixesAndProxyDomains(t *testing.T) {
+	r := NewRouter()
+	defer r.Close()
+
+	r.AddProxyDomain("blocked.com")
+
+	// CN suffixes should direct
+	if !r.ShouldDirectDomain("baidu.com.cn") {
+		t.Errorf("expected baidu.com.cn to direct")
+	}
+	if !r.ShouldDirectDomain("gov.cn") {
+		t.Errorf("expected gov.cn to direct")
+	}
+	if r.Decide("news.sina.com.cn", net.ParseIP("1.2.3.4")) != Direct {
+		t.Errorf("expected Direct for .cn domain")
+	}
+
+	// GFW/Proxy domain should proxy even if IP is omitted
+	if !r.ShouldProxyDomain("sub.blocked.com") {
+		t.Errorf("expected sub.blocked.com to proxy")
+	}
+	if r.Decide("sub.blocked.com", nil) != Proxy {
+		t.Errorf("expected Proxy for sub.blocked.com")
+	}
+}
