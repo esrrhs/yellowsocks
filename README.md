@@ -5,31 +5,38 @@
 [<img src="https://img.shields.io/github/v/release/esrrhs/yellowsocks">](https://github.com/esrrhs/yellowsocks/releases)
 [<img src="https://img.shields.io/github/downloads/esrrhs/yellowsocks/total">](https://github.com/esrrhs/yellowsocks/releases)
 
-`yellowsocks` is a cross-platform, system-level transparent proxy and intelligent routing engine based on virtual network interfaces (TUN / Wintun), seamlessly integrated with the [esrrhs/spp](https://github.com/esrrhs/spp) protocol.
+`yellowsocks` is a unified cross-platform proxy and intelligent routing suite, combining the capabilities of **SPP**, **YellowDNS**, and **SocksFilter**:
+
+1. **High-Performance DNS Engine**: Listens on UDP (standard DNS) and TCP (DoH - RFC 8484) with intelligent domestic/remote split routing, GeoIP anti-poisoning, and optional Fake-IP mode (`198.18.0.0/15`).
+2. **Inbound SOCKS5 Proxy**: Listens on a local port providing RFC 1928 SOCKS5 service with concurrent **TCP CONNECT** and **UDP ASSOCIATE** forwarding, coupled with intelligent domestic direct vs. remote proxy routing.
+3. **Inbound HTTP/HTTPS Proxy**: Listens on a local port providing standard HTTP method proxying and HTTPS **CONNECT** tunneling, sharing the same intelligent routing rules.
+4. **SPP Upstream Multiplexing**: All traffic marked for proxying (TUN, SOCKS5 TCP/UDP, HTTP, and remote DNS queries) is multiplexed and forwarded to remote SPP servers over TCP, UDP, KCP, or QUIC with encryption and compression.
+5. **Full-Machine Transparent Capture (TUN)**: Leverages virtual network interfaces (TUN / Wintun) and user-space TCP/IP stacks (gVisor netstack / tun2socks v2) to transparently proxy all machine traffic.
 
 ---
 
 ## 🌟 Key Features
 
-- **Integrated SPP Protocol**: Directly connects to `esrrhs/spp` clients over TCP, UDP, KCP, or QUIC with built-in encryption and compression.
+- **Integrated SPP Protocol**: Connects to `esrrhs/spp` servers over TCP, UDP, KCP, or QUIC with built-in encryption and compression.
 - **Multi-Node Failover**: Supports configuring multiple upstream SPP server nodes with concurrent heartbeat latency checks (15s) and automatic failover.
+- **Fast & Accurate DNS Service (UDP + DoH over TCP)**:
+  - **UDP Port**: Provides standard, fast, anti-poisoning DNS services.
+  - **TCP Port**: Provides standard DoH (DNS-over-HTTPS / RFC 8484) services at `/dns-query` (supporting both GET `?dns=<base64url>` and POST `application/dns-message`).
+  - **Fake-IP Mode**: Powered by `gohome/dns/fakeip` delivering instant 0ms responses with synchronized TTL and reverse mapping.
+- **Dual Inbound Proxies with Smart Routing**:
+  - **SOCKS5 Proxy**: Supports both TCP and SOCKS5 UDP Associate forwarding.
+  - **HTTP/HTTPS Proxy**: Supports standard HTTP proxying and HTTPS CONNECT tunneling.
+  - **Smart Routing (Direct vs Proxy)**: Automatically decides whether traffic should go directly or through SPP based on process names, domain lists (China/GFW), CIDRs, and GeoIP.
 - **System-wide Virtual Network Interface (TUN / Wintun)**:
   - **Linux**: Intercepts L3 IP packets via TUN devices and automatically manages system routing tables (`0.0.0.0/1` and `128.0.0.0/1`).
   - **Windows**: High-performance packet capture and routing through `Wintun`.
   - **macOS**: Manages `utun` TUN interfaces via `/sbin/route` with system-wide routing.
   - **Pure Go User-space Stack**: Powered by gVisor netstack / tun2socks v2 without requiring CGO or MinGW toolchains.
-- **Smart DNS Interception & Fake-IP Mode**:
-  - Intercepts all outgoing UDP 53 DNS queries.
-  - **Fake-IP Mode**: Powered by `gohome/dns/fakeip` delivering instant 0ms responses from `198.18.0.0/15` (RFC 2544 benchmark range) with synchronized TTL expiration and reverse lookup for fast connection establishment and elimination of local DNS leaks and poisoning.
-  - **DoH Fallback**: Queries remote DoH resolvers (e.g. `https://1.1.1.1/dns-query`) securely routed through the SPP tunnel.
-- **Universal Routing & Process/App-level Bypass**:
-  - **App Bypass**: Automatically tracks active socket ports to process names (`PID -> Process`), directly bypassing high-concurrency apps, torrent clients, or latency-sensitive games.
-  - **Custom Subnet & Domain Routing**: Supports loading custom direct CIDR lists and domain whitelists for any country or organization.
+- **Process/App-level Bypass**: Automatically tracks active socket ports to process names (`PID -> Process`), directly bypassing high-concurrency apps, torrent clients, or latency-sensitive games.
 - **Modern Desktop UI & Live Dashboard**:
   - **Windows Desktop App**: Modern desktop GUI powered by native Windows Edge WebView2 with system tray.
   - **macOS Desktop App**: Native desktop control panel window (Cocoa + WebKit WKWebView) with menu-bar tray icon and auto-minimize support.
   - **Live Connection & Traffic Monitor**: Real-time tracking of upload/download bandwidth, active sessions, target destinations, and routing rule hits.
-  - **One-Click System Proxy**: Toggle system-level SOCKS5 proxy on/off (Windows Internet Settings / macOS `networksetup`).
 - **Comprehensive Cross-Platform Matrix**:
   - **Desktop**: Windows (x86_64, arm64), macOS (Apple Silicon, Intel), Linux (CLI).
   - **Mobile**: Android (Jetpack Compose), iOS & iPadOS (SwiftUI + NetworkExtension).
@@ -61,6 +68,14 @@ sudo ./yellowsocks-cli \
 | `-spp-server` | Remote SPP server address (`ip:port`) | None |
 | `-spp-proto` | SPP protocol (`tcp`, `udp`, `kcp`, `quic`) | `tcp` |
 | `-spp-key` | SPP authentication key / password | `123456` |
+| `-socks5` | Inbound SOCKS5 proxy listen address (TCP+UDP) | `127.0.0.1:1080` |
+| `-http` | Inbound HTTP/HTTPS proxy listen address | `127.0.0.1:8080` |
+| `-dns` | Inbound DNS UDP listen address | `127.0.0.1:53` |
+| `-doh` | Inbound DNS TCP DoH listen address | `127.0.0.1:8053` |
+| `-disable-tun` | Disable TUN device (run proxies and DNS only) | `false` |
+| `-china-domains` | Path to China domain list file | None |
+| `-gfw-domains` | Path to GFW domain list file | None |
+| `-geoip` | Path to `GeoLite2-Country.mmdb` | None |
 | `-loglevel` | Log level (`debug`, `info`, `warn`, `error`) | `info` |
 
 > [!TIP]

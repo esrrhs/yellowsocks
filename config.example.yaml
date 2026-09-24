@@ -1,4 +1,10 @@
 # YellowSocks Configuration Example (YAML)
+# YellowSocks 是 SPP、YellowDNS 与 SocksFilter 的融合合体，提供：
+# 1. 本地 UDP 端口 DNS 服务 + TCP 端口 DoH 服务 (RFC 8484)
+# 2. 本地 SOCKS5 代理服务 (同时转发 TCP 与 UDP，并支持智能分流)
+# 3. 本地 HTTP/HTTPS 代理服务 (HTTP GET/POST + CONNECT 隧道，并支持智能分流)
+# 4. SPP 组件负责将 Proxy 流量多路复用转发到远端 SPP 服务器
+# 5. 底层 TUN 虚拟网卡全透明代理整机流量
 
 # Remote SPP Upstream Server (Single node)
 spp_server: "1.2.3.4:8888"
@@ -18,17 +24,29 @@ spp_compress: 128
 #     server_proto: "udp"
 #     key: "123456"
 
-# Virtual TUN Interface Settings
+# Inbound SOCKS5 Proxy (TCP CONNECT + UDP ASSOCIATE with Smart Routing)
+socks5_listen: "127.0.0.1:1080"
+
+# Inbound HTTP/HTTPS Proxy (HTTP + HTTPS CONNECT with Smart Routing)
+http_listen: "127.0.0.1:8080"
+
+# Optional Inbound Proxy Authentication (Basic Auth for SOCKS5 and HTTP)
+# proxy_username: "user"
+# proxy_password: "password"
+
+# DNS Services: UDP standard DNS & TCP DoH (RFC 8484)
+dns_listen: "127.0.0.1:53"       # UDP DNS service
+doh_listen: "127.0.0.1:8053"     # TCP DoH service (/dns-query)
+direct_dns: "114.114.114.114:53" # Domestic/direct resolver
+doh_url: "https://1.1.1.1/dns-query" # Remote secure DoH resolver (routed via SPP)
+fake_ip: true                    # Fake-IP mode (instant DNS response)
+
+# Virtual TUN Interface Settings (Full-machine transparent traffic capture)
+disable_tun: false
 tun_name: "tun0"
 tun_ip: "10.255.0.2"
 tun_gw: "10.255.0.1"
 auto_route: true
-
-# DNS & Fake-IP Resolution
-dns_listen: "127.0.0.1:53"
-direct_dns: "1.1.1.1:53"
-doh_url: "https://1.1.1.1/dns-query"
-fake_ip: true
 
 # Process Bypass List (Always direct, bypass proxy)
 bypass_apps:
@@ -37,6 +55,11 @@ bypass_apps:
   - "thunder.exe"
   - "xunlei.exe"
   - "baidunetdisk.exe"
+
+# Routing Rules & Offline Databases
+# geoip_file: "GeoLite2-Country.mmdb"
+# china_domains: "accelerated-domains.china.conf"
+# gfw_domains: "gfw.txt"
 
 # Custom Direct Routing (Optional)
 # direct_domains:

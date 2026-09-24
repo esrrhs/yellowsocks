@@ -13,8 +13,16 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/esrrhs/gohome/dns/matcher"
 	"github.com/esrrhs/gohome/loggo"
 )
+
+var defaultCNSuffixes = []string{
+	".cn",
+	".xn--fiqs8s", // 中国
+	".xn--55qx5d", // 公司
+	".xn--io0a7i", // 网络
+}
 
 // IPNetList represents a list of CIDR network subnets
 type IPNetList []*net.IPNet
@@ -41,6 +49,8 @@ type Router struct {
 	directIPs   atomic.Value // holds IPNetList, supporting atomic lock-free hot swapping
 	directHosts sync.Map     // direct host whitelist
 	proxyHosts  sync.Map     // proxy host list
+	geoDB       *matcher.GeoDB
+	skipCountry string
 	inspector   *ProcessInspector
 
 	cacheFile string // local persistent cache path
@@ -54,21 +64,56 @@ type Options struct {
 	UpdateURL        string        // custom routes update URL
 	UpdateInterval   time.Duration // auto-update interval (<=0 disables auto update)
 	DirectDomains    []string      // custom direct domain suffixes
+	ProxyDomains     []string      // custom proxy domain suffixes
 	DirectCIDRs      []string      // custom direct CIDR subnets
+	GeoIPFile        string        // GeoLite2 mmdb file path
+	ChinaDomainFiles []string      // custom direct domain files (e.g. accelerated-domains.china.conf)
+	GFWDomainFiles   []string      // custom proxy domain files
+	SkipCountry      string        // skip country ISO code (default "CN")
 }
 
 // NewRouterWithOptions creates a router supporting custom routes, caching, and auto-update
 func NewRouterWithOptions(opt Options) *Router {
+	skipCountry := opt.SkipCountry
+	if skipCountry == "" {
+		skipCountry = "CN"
+	}
+
 	r := &Router{
-		cacheFile: opt.DirectRoutesFile,
-		updateURL: opt.UpdateURL,
-		stopCh:    make(chan struct{}),
-		inspector: NewProcessInspector(),
+		cacheFile:   opt.DirectRoutesFile,
+		updateURL:   opt.UpdateURL,
+		stopCh:      make(chan struct{}),
+		skipCountry: skipCountry,
+		inspector:   NewProcessInspector(),
+		geoDB:       matcher.NewGeoDB(),
+	}
+
+	if opt.GeoIPFile != "" {
+		if err := r.geoDB.Open(opt.GeoIPFile); err != nil {
+			loggo.Warn("[Router] Failed to load GeoIP file %s: %v", opt.GeoIPFile, err)
+		} else {
+			loggo.Info("[Router] Loaded GeoIP file: %s", opt.GeoIPFile)
+		}
+	} else if _, err := os.Stat("GeoLite2-Country.mmdb"); err == nil {
+		if err := r.geoDB.Open("GeoLite2-Country.mmdb"); err == nil {
+			loggo.Info("[Router] Loaded default GeoIP file: GeoLite2-Country.mmdb")
+		}
 	}
 
 	// 1. Initialize reserved subnets and configured domains
 	for _, d := range opt.DirectDomains {
 		r.AddDirectDomain(d)
+	}
+	for _, d := range opt.ProxyDomains {
+		r.AddProxyDomain(d)
+	}
+
+	// Load domain files
+	for _, f := range opt.ChinaDomainFiles {
+		_ = r.LoadDomainFile(f, true)
+	}
+	for _, f := range opt.GFWDomainFiles {
+		_ = r.LoadDomainFile(f, false)
 	}
 
 	// 2. Load custom direct routes
@@ -226,6 +271,9 @@ func (r *Router) Close() {
 	if r.inspector != nil {
 		r.inspector.Close()
 	}
+	if r.geoDB != nil {
+		_ = r.geoDB.Close()
+	}
 }
 
 // AddDirectCIDR adds a direct CIDR subnet
@@ -242,7 +290,53 @@ func (r *Router) AddDirectCIDR(cidr string) error {
 
 // AddDirectDomain adds a direct domain suffix
 func (r *Router) AddDirectDomain(domain string) {
-	r.directHosts.Store(strings.ToLower(strings.Trim(domain, ".")), true)
+	d := strings.ToLower(strings.Trim(domain, "."))
+	if d != "" {
+		r.directHosts.Store(d, true)
+	}
+}
+
+// AddProxyDomain adds a proxy domain suffix
+func (r *Router) AddProxyDomain(domain string) {
+	d := strings.ToLower(strings.Trim(domain, "."))
+	if d != "" {
+		r.proxyHosts.Store(d, true)
+	}
+}
+
+// LoadDomainFile loads a domain list file (supports dnsmasq format server=/domain/... or plain domains)
+func (r *Router) LoadDomainFile(filePath string, isDirect bool) error {
+	f, err := os.Open(filePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	scanner := bufio.NewScanner(f)
+	count := 0
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if rest, ok := strings.CutPrefix(line, "server=/"); ok {
+			domain, _, found := strings.Cut(rest, "/")
+			if found && domain != "" {
+				line = domain
+			}
+		}
+		line = strings.ToLower(strings.Trim(line, "."))
+		if line != "" {
+			if isDirect {
+				r.AddDirectDomain(line)
+			} else {
+				r.AddProxyDomain(line)
+			}
+			count++
+		}
+	}
+	loggo.Info("[Router] Loaded %d domain rules from %s (direct: %v)", count, filePath, isDirect)
+	return scanner.Err()
 }
 
 // Inspector returns the process inspector
@@ -250,9 +344,30 @@ func (r *Router) Inspector() *ProcessInspector {
 	return r.inspector
 }
 
-// ShouldDirectDomain checks if domain matches direct whitelist
+// ShouldProxyDomain checks if domain matches proxy domain list
+func (r *Router) ShouldProxyDomain(domain string) bool {
+	domain = strings.ToLower(strings.Trim(domain, "."))
+	parts := strings.Split(domain, ".")
+	for i := 0; i < len(parts); i++ {
+		sub := strings.Join(parts[i:], ".")
+		if _, ok := r.proxyHosts.Load(sub); ok {
+			return true
+		}
+	}
+	return false
+}
+
+// ShouldDirectDomain checks if domain matches direct whitelist or CN suffixes
 func (r *Router) ShouldDirectDomain(domain string) bool {
 	domain = strings.ToLower(strings.Trim(domain, "."))
+	if domain == "" {
+		return false
+	}
+	for _, suffix := range defaultCNSuffixes {
+		if strings.HasSuffix(domain, suffix) {
+			return true
+		}
+	}
 	parts := strings.Split(domain, ".")
 	for i := 0; i < len(parts); i++ {
 		sub := strings.Join(parts[i:], ".")
@@ -295,15 +410,27 @@ func (r *Router) DecideWithPort(destHost string, destIP net.IP, srcPort int) Rou
 
 // Decide determines route action based on host and destination IP
 func (r *Router) Decide(destHost string, destIP net.IP) RouteDecision {
-	if destIP != nil {
-		if r.ShouldDirectIP(destIP) {
-			return Direct
-		}
-	}
+	// If domain is specified, evaluate domain rules first
 	if destHost != "" {
+		if r.ShouldProxyDomain(destHost) {
+			return Proxy
+		}
 		if r.ShouldDirectDomain(destHost) {
 			return Direct
 		}
 	}
+
+	// Evaluate IP rules
+	if destIP != nil {
+		if r.ShouldDirectIP(destIP) {
+			return Direct
+		}
+		if r.geoDB != nil && r.skipCountry != "" {
+			if r.geoDB.IsCountry(destIP, r.skipCountry) {
+				return Direct
+			}
+		}
+	}
+
 	return Proxy
 }
