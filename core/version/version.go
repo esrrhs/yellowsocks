@@ -9,7 +9,7 @@ import (
 var (
 	// Version holds the current semantic version of YellowSocks.
 	// Injected at compile time via -ldflags "-X ...Version=x.y.z"
-	Version = "1.0.0"
+	Version = "1.1.0"
 
 	// GitCommit holds the git commit sha.
 	// Injected at compile time via -ldflags "-X ...GitCommit=abc1234"
