@@ -49,7 +49,13 @@ func NewClient(cfg *Config) (*Client, error) {
 
 	proxyCfg := proxy.DefaultConfig()
 	proxyCfg.Key = cfg.Key
-	proxyCfg.Encrypt = cfg.Encrypt
+	// "default" 与空值都表示关闭加密，与 spp -encrypt 留空的行为一致。
+	// spp 会拒绝 default/password 这类弱密钥，不能原样传进去。
+	enc := strings.TrimSpace(cfg.Encrypt)
+	if strings.EqualFold(enc, "default") {
+		enc = ""
+	}
+	proxyCfg.Encrypt = enc
 	proxyCfg.Compress = cfg.Compress
 
 	// 构造 NewClient 参数
