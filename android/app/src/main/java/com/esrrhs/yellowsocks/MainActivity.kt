@@ -240,6 +240,7 @@ doh_url: "https://1.1.1.1/dns-query"
                 Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Routing & Proxy Engine", fontWeight = FontWeight.Bold)
                     Text("• TUN Provider: Android VpnService", fontSize = 13.sp)
+                    Text("• TCP + UDP Forwarding via SPP", fontSize = 13.sp)
                     Text("• Fake-IP Mode: 0ms DNS Resolution", fontSize = 13.sp)
                     Text("• Upstream: SPP Protocol Tunnel", fontSize = 13.sp)
                     Text("• Active Node: ${YellowSocksVpnService.activeNodeInfo}", fontSize = 13.sp)

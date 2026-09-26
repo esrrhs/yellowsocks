@@ -39,6 +39,9 @@ type EngineConfig struct {
 	LocalSocks5      string            // 本地 SPP 暴露给内核的 socks5 端口 (内部中转)
 	DNSListen        string            // DNS UDP listen address (default: 127.0.0.1:53)
 	DoHListen        string            // DNS TCP DoH listen address (default: 127.0.0.1:8053)
+	DoTListen        string            // DNS-over-TLS listen address (RFC 7858), e.g. :853
+	TLSCertFile      string            // TLS certificate PEM for DoT
+	TLSKeyFile       string            // TLS private key PEM for DoT
 	DirectDNS        string            // Direct resolver for local/domestic domain resolution
 	RemoteDoH        string            // Remote DoH endpoint routed via SPP (default: https://1.1.1.1/dns-query)
 	SetAutoRoute     bool              // Automatically manage system global routes
@@ -51,6 +54,9 @@ type EngineConfig struct {
 	GeoIPFile        string            // GeoLite2-Country.mmdb path
 	ChinaDomainsFile string            // China domain list file
 	GFWDomainsFile   string            // GFW blocked domain list file
+	// ProtectSocket optionally marks an outbound fd so it bypasses the VPN
+	// (Android VpnService.protect). Used for Direct TCP/UDP dials from TUN.
+	ProtectSocket func(fd int) bool
 }
 
 // Engine 统一网络引擎
@@ -157,12 +163,15 @@ func (e *Engine) Start() error {
 	}
 	e.sppManager = mgr
 
-	// 3. 启动本地 DNS 服务 (UDP 端口提供快速准确 DNS + TCP 端口提供 DoH 服务)
-	loggo.Info("[Engine] Starting DNS Server (UDP: %s, DoH TCP: %s, Fake-IP: %v)...",
-		e.cfg.DNSListen, e.cfg.DoHListen, e.cfg.EnableFakeIP)
+	// 3. 启动本地 DNS 服务 (UDP DNS + TCP DoH + 可选 DoT)
+	loggo.Info("[Engine] Starting DNS Server (UDP: %s, DoH TCP: %s, DoT: %s, Fake-IP: %v)...",
+		e.cfg.DNSListen, e.cfg.DoHListen, e.cfg.DoTListen, e.cfg.EnableFakeIP)
 	dnsSrv, err := appdns.NewServer(appdns.Config{
 		ListenAddr:    e.cfg.DNSListen,
 		DoHListenAddr: e.cfg.DoHListen,
+		DoTListenAddr: e.cfg.DoTListen,
+		TLSCertFile:   e.cfg.TLSCertFile,
+		TLSKeyFile:    e.cfg.TLSKeyFile,
 		DoHURL:        e.cfg.RemoteDoH,
 		DirectDNS:     e.cfg.DirectDNS,
 		Socks5Addr:    e.sppManager.Socks5Addr(),
@@ -237,6 +246,7 @@ func (e *Engine) Start() error {
 		}
 
 		handler := tunnel.NewHandler(e.router, e.dnsServer, e.sppManager)
+		handler.SetProtectSocket(e.cfg.ProtectSocket)
 		stack, err := tun2socksCore.CreateStack(&tun2socksCore.Config{
 			LinkEndpoint:     dev,
 			TransportHandler: handler,

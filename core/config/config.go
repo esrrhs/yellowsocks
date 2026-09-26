@@ -29,6 +29,9 @@ type FileConfig struct {
 	// DNS & Fake-IP Settings
 	DNSListen    string `json:"dns_listen" yaml:"dns_listen"`
 	DoHListen    string `json:"doh_listen" yaml:"doh_listen"`
+	DoTListen    string `json:"dot_listen" yaml:"dot_listen"`
+	TLSCertFile  string `json:"tls_cert" yaml:"tls_cert"`
+	TLSKeyFile   string `json:"tls_key" yaml:"tls_key"`
 	DirectDNS    string `json:"direct_dns" yaml:"direct_dns"`
 	RemoteDoH    string `json:"doh_url" yaml:"doh_url"`
 	EnableFakeIP *bool  `json:"fake_ip" yaml:"fake_ip"`
@@ -117,6 +120,15 @@ func (f *FileConfig) MergeWithEngineConfig(base core.EngineConfig) core.EngineCo
 	}
 	if f.DoHListen != "" {
 		res.DoHListen = f.DoHListen
+	}
+	if f.DoTListen != "" {
+		res.DoTListen = f.DoTListen
+	}
+	if f.TLSCertFile != "" {
+		res.TLSCertFile = f.TLSCertFile
+	}
+	if f.TLSKeyFile != "" {
+		res.TLSKeyFile = f.TLSKeyFile
 	}
 	if f.DirectDNS != "" {
 		res.DirectDNS = f.DirectDNS

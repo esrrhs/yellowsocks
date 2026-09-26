@@ -3,6 +3,7 @@ package sppclient
 import (
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -14,12 +15,23 @@ import (
 type Node struct {
 	Name        string        `json:"name"`
 	Server      string        `json:"server"` // ip:port
-	ServerProto string        `json:"server_proto"` // tcp, udp, kcp, quic
+	ServerProto string        `json:"server_proto"` // tcp, udp, rudp, kcp, quic
 	Key         string        `json:"key"`
 	Encrypt     string        `json:"encrypt"`
 	Compress    int           `json:"compress"`
 	Latency     time.Duration `json:"latency"`
 	Alive       bool          `json:"alive"`
+}
+
+// dialNetworkForProto returns the IP protocol used to reach an SPP server.
+// Only plain "tcp" is TCP; udp/rudp/kcp/quic all ride on UDP.
+func dialNetworkForProto(proto string) string {
+	switch strings.ToLower(strings.TrimSpace(proto)) {
+	case "", "tcp":
+		return "tcp"
+	default:
+		return "udp"
+	}
 }
 
 // Manager 维护多 SPP 节点池、心跳探测与自动故障转移
@@ -130,16 +142,17 @@ func (m *Manager) checkAllNodes() {
 		go func(idx int) {
 			defer wg.Done()
 			node := m.nodes[idx]
+			network := dialNetworkForProto(node.ServerProto)
 			start := time.Now()
-			conn, err := net.DialTimeout("tcp", node.Server, 3*time.Second)
+			conn, err := net.DialTimeout(network, node.Server, 3*time.Second)
 			if err != nil {
 				node.Alive = false
 				node.Latency = 0
-			} else {
-				node.Alive = true
-				node.Latency = time.Since(start)
-				conn.Close()
+				return
 			}
+			node.Alive = true
+			node.Latency = time.Since(start)
+			conn.Close()
 		}(i)
 	}
 	wg.Wait()

@@ -80,6 +80,9 @@ func TestMergeWithEngineConfig(t *testing.T) {
 		TunName:      "tun-custom",
 		EnableFakeIP: &fakeIP,
 		AutoRoute:    &autoRoute,
+		DoTListen:    ":853",
+		TLSCertFile:  "/certs/fullchain.pem",
+		TLSKeyFile:   "/certs/privkey.pem",
 	}
 
 	base := core.EngineConfig{
@@ -109,5 +112,30 @@ func TestMergeWithEngineConfig(t *testing.T) {
 	}
 	if !merged.EnableFakeIP {
 		t.Errorf("expected EnableFakeIP true")
+	}
+	if merged.DoTListen != ":853" {
+		t.Errorf("expected DoTListen :853, got %s", merged.DoTListen)
+	}
+	if merged.TLSCertFile != "/certs/fullchain.pem" || merged.TLSKeyFile != "/certs/privkey.pem" {
+		t.Errorf("unexpected TLS paths: %s %s", merged.TLSCertFile, merged.TLSKeyFile)
+	}
+}
+
+func TestParseConfigDoTFields(t *testing.T) {
+	yamlContent := `
+dot_listen: ":853"
+tls_cert: "/path/cert.pem"
+tls_key: "/path/key.pem"
+dns_listen: ":53"
+`
+	cfg, err := ParseConfigContent([]byte(yamlContent))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if cfg.DoTListen != ":853" || cfg.TLSCertFile != "/path/cert.pem" || cfg.TLSKeyFile != "/path/key.pem" {
+		t.Fatalf("unexpected DoT fields: %+v", cfg)
+	}
+	if cfg.DNSListen != ":53" {
+		t.Fatalf("dns_listen=%q", cfg.DNSListen)
 	}
 }

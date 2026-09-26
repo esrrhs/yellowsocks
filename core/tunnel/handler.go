@@ -1,10 +1,12 @@
 package tunnel
 
 import (
+	"context"
 	"io"
 	"net"
 	"strconv"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/esrrhs/gohome/common"
@@ -26,6 +28,7 @@ type Handler struct {
 	router    *router.Router
 	dnsServer *appdns.Server
 	sppClient Socks5Provider
+	protect   func(fd int) bool
 }
 
 func NewHandler(r *router.Router, dnsSrv *appdns.Server, spp Socks5Provider) *Handler {
@@ -34,6 +37,26 @@ func NewHandler(r *router.Router, dnsSrv *appdns.Server, spp Socks5Provider) *Ha
 		dnsServer: dnsSrv,
 		sppClient: spp,
 	}
+}
+
+// SetProtectSocket registers an optional VpnService.protect-style callback.
+func (h *Handler) SetProtectSocket(fn func(fd int) bool) {
+	h.protect = fn
+}
+
+func (h *Handler) controlProtect(_ string, _ string, c syscall.RawConn) error {
+	if h.protect == nil {
+		return nil
+	}
+	var protectErr error
+	if err := c.Control(func(fd uintptr) {
+		if !h.protect(int(fd)) {
+			protectErr = syscall.EPERM
+		}
+	}); err != nil {
+		return err
+	}
+	return protectErr
 }
 
 // HandleTCP 处理来自 TUN 虚拟网卡的 TCP 连接
@@ -70,6 +93,10 @@ func (h *Handler) HandleTCP(conn adapter.TCPConn) {
 	if h.router != nil {
 		decision = h.router.DecideWithPort(destHost, destIP, srcPort)
 	}
+	// Fake-IP 不可在底盘直连，必须走代理并用域名恢复目标
+	if appdns.IsFakeIP(destIP) {
+		decision = router.Proxy
+	}
 
 	ruleStr := "Proxy (SPP)"
 	if decision == router.Direct {
@@ -99,7 +126,7 @@ func (h *Handler) HandleTCP(conn adapter.TCPConn) {
 	}
 }
 
-// HandleUDP 处理来自 TUN 虚拟网卡的 UDP 会话/数据报
+// HandleUDP 处理来自 TUN 虚拟网卡的 UDP 会话/数据报（含 Fake-IP 反查与 SPP UDP 转发）
 func (h *Handler) HandleUDP(conn adapter.UDPConn) {
 	defer common.CrashLog()
 	defer conn.Close()
@@ -116,49 +143,82 @@ func (h *Handler) HandleUDP(conn adapter.UDPConn) {
 
 	// 拦截 UDP 53 端口的 DNS 请求
 	if udpAddr.Port == 53 {
-		h.handleDNSUDP(conn, udpAddr)
+		h.handleDNSUDP(conn)
 		return
 	}
 
-	// 其他境外 UDP 如果是境内则直连
-	decision := router.Proxy
-	if h.router != nil {
-		decision = h.router.Decide("", udpAddr.IP)
+	destHost := ""
+	if h.dnsServer != nil {
+		if host, ok := h.dnsServer.LookupDomainByIP(udpAddr.IP.String()); ok {
+			destHost = host
+		}
 	}
 
+	decision := router.Proxy
+	if h.router != nil {
+		decision = h.router.Decide(destHost, udpAddr.IP)
+	}
+	// Fake-IP 地址段不可直连，强制走 SPP，并用域名作为 SOCKS5 UDP 目标
+	if appdns.IsFakeIP(udpAddr.IP) {
+		decision = router.Proxy
+	}
+
+	ruleStr := "Proxy (SPP)"
 	if decision == router.Direct {
-		uConn, err := net.DialUDP("udp", nil, udpAddr)
-		if err != nil {
-			return
-		}
-		defer uConn.Close()
+		ruleStr = "Direct"
+	}
+	loggo.Info("[Tunnel] UDP %s -> %s (Domain: %s, Decision: %s)",
+		conn.LocalAddr(), udpAddr.String(), destHost, ruleStr)
 
-		go func() {
-			buf := make([]byte, 2048)
-			for {
-				n, err := uConn.Read(buf)
-				if err != nil {
-					break
-				}
-				_, _ = conn.Write(buf[:n])
-			}
-		}()
-
-		buf := make([]byte, 2048)
-		for {
-			n, err := conn.Read(buf)
-			if err != nil {
-				break
-			}
-			_, _ = uConn.Write(buf[:n])
-		}
+	if decision == router.Direct {
+		h.forwardDirectUDP(conn, udpAddr)
 	} else {
-		h.forwardSppUDP(conn, udpAddr)
+		h.forwardSppUDP(conn, udpAddr, destHost)
 	}
 }
 
-func (h *Handler) forwardSppUDP(conn adapter.UDPConn, target *net.UDPAddr) {
+func (h *Handler) forwardDirectUDP(conn adapter.UDPConn, target *net.UDPAddr) {
+	dialer := &net.Dialer{Timeout: 5 * time.Second, Control: h.controlProtect}
+	raw, err := dialer.Dial("udp", target.String())
+	if err != nil {
+		loggo.Warn("[Tunnel] Direct UDP dial %s failed: %v", target.String(), err)
+		return
+	}
+	uConn := raw.(*net.UDPConn)
+	defer uConn.Close()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		buf := make([]byte, 65535)
+		for {
+			n, err := uConn.Read(buf)
+			if err != nil {
+				return
+			}
+			if _, err := conn.Write(buf[:n]); err != nil {
+				return
+			}
+		}
+	}()
+
+	buf := make([]byte, 65535)
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			_ = uConn.Close()
+			break
+		}
+		if _, err := uConn.Write(buf[:n]); err != nil {
+			break
+		}
+	}
+	<-done
+}
+
+func (h *Handler) forwardSppUDP(conn adapter.UDPConn, target *net.UDPAddr, targetHost string) {
 	if h.sppClient == nil || h.sppClient.Socks5Addr() == "" {
+		loggo.Warn("[Tunnel] No SPP upstream for UDP %s", target.String())
 		return
 	}
 
@@ -168,16 +228,19 @@ func (h *Handler) forwardSppUDP(conn adapter.UDPConn, target *net.UDPAddr) {
 	}
 	sppTCPConn, err := net.DialTCP("tcp", nil, sppTCPAddr)
 	if err != nil {
+		loggo.Warn("[Tunnel] Dial SPP socks5 for UDP failed: %v", err)
 		return
 	}
 	defer sppTCPConn.Close()
 
 	if err := network.Sock5Handshake(sppTCPConn, 5000, "", ""); err != nil {
+		loggo.Warn("[Tunnel] SPP socks5 handshake for UDP failed: %v", err)
 		return
 	}
 
 	bnd, err := network.Sock5SetUDPRequest(sppTCPConn, "0.0.0.0", 0, 5000)
 	if err != nil {
+		loggo.Warn("[Tunnel] SPP UDP ASSOCIATE failed: %v", err)
 		return
 	}
 
@@ -192,11 +255,20 @@ func (h *Handler) forwardSppUDP(conn adapter.UDPConn, target *net.UDPAddr) {
 	}
 	relayTarget := &net.UDPAddr{IP: bndIP, Port: p}
 
-	uConn, err := net.ListenUDP("udp", nil)
+	// ListenUDP is local; protect so replies aren't captured by the VPN interface.
+	lc := net.ListenConfig{Control: h.controlProtect}
+	pktConn, err := lc.ListenPacket(context.Background(), "udp", ":0")
 	if err != nil {
+		loggo.Warn("[Tunnel] Listen UDP for SPP relay failed: %v", err)
 		return
 	}
+	uConn := pktConn.(*net.UDPConn)
 	defer uConn.Close()
+
+	dstHost := target.IP.String()
+	if targetHost != "" {
+		dstHost = targetHost
+	}
 
 	done := make(chan struct{})
 
@@ -210,7 +282,9 @@ func (h *Handler) forwardSppUDP(conn adapter.UDPConn, target *net.UDPAddr) {
 			}
 			_, _, payload, err := network.Sock5UnpackUDP(buf[:n])
 			if err == nil && len(payload) > 0 {
-				_, _ = conn.Write(payload)
+				if _, wErr := conn.Write(payload); wErr != nil {
+					return
+				}
 			}
 		}
 	}()
@@ -223,7 +297,7 @@ func (h *Handler) forwardSppUDP(conn adapter.UDPConn, target *net.UDPAddr) {
 				_ = uConn.Close()
 				return
 			}
-			packed, err := network.Sock5PackUDP(target.IP.String(), target.Port, buf[:n])
+			packed, err := network.Sock5PackUDP(dstHost, target.Port, buf[:n])
 			if err == nil {
 				_, _ = uConn.WriteToUDP(packed, relayTarget)
 			}
@@ -233,8 +307,11 @@ func (h *Handler) forwardSppUDP(conn adapter.UDPConn, target *net.UDPAddr) {
 	<-done
 }
 
-func (h *Handler) handleDNSUDP(conn adapter.UDPConn, target *net.UDPAddr) {
+func (h *Handler) handleDNSUDP(conn adapter.UDPConn) {
 	localDNSAddr := "127.0.0.1:53"
+	if h.dnsServer != nil && h.dnsServer.UDPAddr() != "" {
+		localDNSAddr = h.dnsServer.UDPAddr()
+	}
 	rAddr, err := net.ResolveUDPAddr("udp", localDNSAddr)
 	if err != nil {
 		return
@@ -242,31 +319,49 @@ func (h *Handler) handleDNSUDP(conn adapter.UDPConn, target *net.UDPAddr) {
 
 	uConn, err := net.DialUDP("udp", nil, rAddr)
 	if err != nil {
+		loggo.Warn("[Tunnel] Dial local DNS %s failed: %v", localDNSAddr, err)
 		return
 	}
 	defer uConn.Close()
 
-	buf := make([]byte, 2048)
-	n, err := conn.Read(buf)
-	if err != nil || n == 0 {
-		return
-	}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		respBuf := make([]byte, 65535)
+		for {
+			_ = uConn.SetReadDeadline(time.Now().Add(5 * time.Second))
+			rn, err := uConn.Read(respBuf)
+			if err != nil {
+				return
+			}
+			if rn > 0 {
+				if _, wErr := conn.Write(respBuf[:rn]); wErr != nil {
+					return
+				}
+			}
+		}
+	}()
 
-	_, err = uConn.Write(buf[:n])
-	if err != nil {
-		return
+	buf := make([]byte, 65535)
+	for {
+		n, err := conn.Read(buf)
+		if err != nil {
+			_ = uConn.Close()
+			break
+		}
+		if n == 0 {
+			continue
+		}
+		if _, err := uConn.Write(buf[:n]); err != nil {
+			break
+		}
 	}
-
-	_ = uConn.SetReadDeadline(time.Now().Add(3 * time.Second))
-	respBuf := make([]byte, 4096)
-	rn, err := uConn.Read(respBuf)
-	if err == nil && rn > 0 {
-		_, _ = conn.Write(respBuf[:rn])
-	}
+	<-done
 }
 
 func (h *Handler) forwardDirectTCP(conn net.Conn, target *net.TCPAddr, connID string) {
-	outConn, err := net.DialTimeout("tcp", target.String(), 5*time.Second)
+	dialer := &net.Dialer{Timeout: 5 * time.Second, Control: h.controlProtect}
+	outConn, err := dialer.Dial("tcp", target.String())
 	if err != nil {
 		loggo.Error("[Tunnel] Direct dial %s failed: %v", target.String(), err)
 		return

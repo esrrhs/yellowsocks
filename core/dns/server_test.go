@@ -2,15 +2,71 @@ package dns
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/pem"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
 	"github.com/miekg/dns"
 )
+
+func writeTestTLSCert(t *testing.T, dir string) (certFile, keyFile string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		DNSNames:     []string{"localhost"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+	certFile = filepath.Join(dir, "cert.pem")
+	keyFile = filepath.Join(dir, "key.pem")
+	certOut, err := os.Create(certFile)
+	if err != nil {
+		t.Fatalf("create cert file: %v", err)
+	}
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
+		t.Fatalf("encode cert: %v", err)
+	}
+	_ = certOut.Close()
+
+	keyBytes, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal key: %v", err)
+	}
+	keyOut, err := os.Create(keyFile)
+	if err != nil {
+		t.Fatalf("create key file: %v", err)
+	}
+	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes}); err != nil {
+		t.Fatalf("encode key: %v", err)
+	}
+	_ = keyOut.Close()
+	return certFile, keyFile
+}
 
 func TestDNSServerUDPAndDoH(t *testing.T) {
 	// Pick free ports for UDP DNS and TCP DoH
@@ -134,5 +190,64 @@ func TestDNSServerUDPAndDoH(t *testing.T) {
 	}
 	if len(postRespMsg.Answer) == 0 {
 		t.Fatalf("expected answer in DoH POST response, got 0")
+	}
+}
+
+func TestDNSServerDoT(t *testing.T) {
+	udpL, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	udpAddr := udpL.LocalAddr().String()
+	_ = udpL.Close()
+
+	tcpL, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen tcp: %v", err)
+	}
+	dotAddr := tcpL.Addr().String()
+	_ = tcpL.Close()
+
+	certFile, keyFile := writeTestTLSCert(t, t.TempDir())
+	srv, err := NewServer(Config{
+		ListenAddr:    udpAddr,
+		DoTListenAddr: dotAddr,
+		TLSCertFile:   certFile,
+		TLSKeyFile:    keyFile,
+		EnableFakeIP:  true,
+	})
+	if err != nil {
+		t.Fatalf("create server: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start server: %v", err)
+	}
+	defer srv.Stop()
+	time.Sleep(100 * time.Millisecond)
+
+	c := &dns.Client{
+		Net: "tcp-tls",
+		TLSConfig: &tls.Config{
+			InsecureSkipVerify: true,
+			ServerName:         "localhost",
+			NextProtos:         []string{"dot"},
+		},
+		Timeout: 2 * time.Second,
+	}
+	m := new(dns.Msg)
+	m.SetQuestion("example.com.", dns.TypeA)
+	resp, _, err := c.Exchange(m, dotAddr)
+	if err != nil {
+		t.Fatalf("DoT exchange failed: %v", err)
+	}
+	if len(resp.Answer) == 0 {
+		t.Fatalf("expected DoT answer, got 0")
+	}
+}
+
+func TestNewServerDoTRequiresCert(t *testing.T) {
+	_, err := NewServer(Config{DoTListenAddr: ":853"})
+	if err == nil {
+		t.Fatal("expected error when DoT enabled without cert/key")
 	}
 }
