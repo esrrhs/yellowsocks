@@ -7,7 +7,7 @@
 
 `yellowsocks` is a unified cross-platform proxy and intelligent routing suite, combining the capabilities of **SPP**, **YellowDNS**, and **SocksFilter**:
 
-1. **High-Performance DNS Engine**: Listens on UDP (standard DNS) and TCP (DoH - RFC 8484) with intelligent domestic/remote split routing, GeoIP anti-poisoning, and optional Fake-IP mode (`198.18.0.0/15`).
+1. **High-Performance DNS Engine**: Listens on UDP (standard DNS), TCP DoH (RFC 8484), and optional DoT (RFC 7858 / Android Private DNS) with intelligent domestic/remote split routing, GeoIP anti-poisoning, and optional Fake-IP mode (`198.18.0.0/15`).
 2. **Inbound SOCKS5 Proxy**: Listens on a local port providing RFC 1928 SOCKS5 service with concurrent **TCP CONNECT** and **UDP ASSOCIATE** forwarding, coupled with intelligent domestic direct vs. remote proxy routing.
 3. **Inbound HTTP/HTTPS Proxy**: Listens on a local port providing standard HTTP method proxying and HTTPS **CONNECT** tunneling, sharing the same intelligent routing rules.
 4. **SPP Upstream Multiplexing**: All traffic marked for proxying (TUN, SOCKS5 TCP/UDP, HTTP, and remote DNS queries) is multiplexed and forwarded to remote SPP servers over TCP, UDP, KCP, or QUIC with encryption and compression.
@@ -19,9 +19,10 @@
 
 - **Integrated SPP Protocol**: Connects to `esrrhs/spp` servers over TCP, UDP, KCP, or QUIC with built-in encryption and compression.
 - **Multi-Node Failover**: Supports configuring multiple upstream SPP server nodes with concurrent heartbeat latency checks (15s) and automatic failover.
-- **Fast & Accurate DNS Service (UDP + DoH over TCP)**:
+- **Fast & Accurate DNS Service (UDP + DoH + DoT)**:
   - **UDP Port**: Provides standard, fast, anti-poisoning DNS services.
   - **TCP Port**: Provides standard DoH (DNS-over-HTTPS / RFC 8484) services at `/dns-query` (supporting both GET `?dns=<base64url>` and POST `application/dns-message`).
+  - **DoT Port**: Optional DNS-over-TLS (RFC 7858) for Android Private DNS / 专用 DNS (requires public CA cert).
   - **Fake-IP Mode**: Powered by `gohome/dns/fakeip` delivering instant 0ms responses with synchronized TTL and reverse mapping.
 - **Dual Inbound Proxies with Smart Routing**:
   - **SOCKS5 Proxy**: Supports both TCP and SOCKS5 UDP Associate forwarding.
@@ -72,6 +73,9 @@ sudo ./yellowsocks-cli \
 | `-http` | Inbound HTTP/HTTPS proxy listen address | `127.0.0.1:8080` |
 | `-dns` | Inbound DNS UDP listen address | `127.0.0.1:53` |
 | `-doh` | Inbound DNS TCP DoH listen address | `127.0.0.1:8053` |
+| `-dot` | Inbound DNS-over-TLS listen address | _(empty)_ |
+| `-tls-cert` | TLS certificate PEM for DoT | _(empty)_ |
+| `-tls-key` | TLS private key PEM for DoT | _(empty)_ |
 | `-disable-tun` | Disable TUN device (run proxies and DNS only) | `false` |
 | `-china-domains` | Path to China domain list file | None |
 | `-gfw-domains` | Path to GFW domain list file | None |
@@ -127,6 +131,7 @@ sudo ./yellowsocks-gui -config config.yaml
 The Android version provides system-wide transparent proxy without root permissions:
 - **Zero Root Required**: Uses standard Android `VpnService` to capture packets and pass file descriptors directly to the Go core.
 - **Pure Go User-space Stack**: Integrated `gVisor` + `tun2socks` userspace networking.
+- **TCP + UDP Forwarding**: TUN-path TCP/UDP with Fake-IP reverse lookup and SPP SOCKS5 UDP ASSOCIATE; Direct sockets use `VpnService.protect` to avoid routing loops.
 - **Native Per-App Bypass**: Directly excludes apps at the OS level (`addDisallowedApplication`).
 - **Live Compose Dashboard**: Built with modern Jetpack Compose for real-time speed monitoring, YAML config editing, and application bypass selection.
 

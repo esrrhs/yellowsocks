@@ -34,9 +34,13 @@ http_listen: "127.0.0.1:8080"
 # proxy_username: "user"
 # proxy_password: "password"
 
-# DNS Services: UDP standard DNS & TCP DoH (RFC 8484)
+# DNS Services: UDP standard DNS, TCP DoH (RFC 8484), optional DoT (RFC 7858)
 dns_listen: "127.0.0.1:53"       # UDP DNS service
 doh_listen: "127.0.0.1:8053"     # TCP DoH service (/dns-query)
+# Android Private DNS (专用 DNS) needs DoT on :853 with a public CA cert for the hostname
+# dot_listen: ":853"
+# tls_cert: "/etc/letsencrypt/live/example.com/fullchain.pem"
+# tls_key: "/etc/letsencrypt/live/example.com/privkey.pem"
 direct_dns: "114.114.114.114:53" # Domestic/direct resolver
 doh_url: "https://1.1.1.1/dns-query" # Remote secure DoH resolver (routed via SPP)
 fake_ip: true                    # Fake-IP mode (instant DNS response)

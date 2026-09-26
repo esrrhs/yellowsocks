@@ -107,6 +107,11 @@ class YellowSocksVpnService : VpnService() {
                 override fun onActiveNodeChanged(name: String, server: String, proto: String, latencyMs: Long) {
                     activeNodeInfo = "$name (${latencyMs}ms)"
                 }
+
+                override fun protect(fd: Int): Boolean {
+                    // Bypass VPN for Direct UDP/TCP and SPP relay sockets
+                    return this@YellowSocksVpnService.protect(fd)
+                }
             })
 
             isRunning = true

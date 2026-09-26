@@ -3,11 +3,21 @@ package core
 import (
 	"bufio"
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/base64"
+	"encoding/pem"
 	"fmt"
 	"io"
+	"math/big"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 	"time"
@@ -149,13 +159,16 @@ func TestEngineFullIntegration(t *testing.T) {
 		return addr
 	}
 
+	upstreamAddr, cleanupUpstream := startMockUpstream(t)
+	defer cleanupUpstream()
+
 	dnsUDPPort := getFreePort("udp")
 	dohTCPPort := getFreePort("tcp")
+	dotTCPPort := getFreePort("tcp")
 	socks5Port := getFreePort("tcp")
 	httpPort := getFreePort("tcp")
 
-	upstreamAddr, cleanupUpstream := startMockUpstream(t)
-	defer cleanupUpstream()
+	certFile, keyFile := writeIntegrationTLSCert(t)
 
 	// 2. Start TCP and UDP echo targets
 	tcpEchoL, err := net.Listen("tcp", "127.0.0.1:0")
@@ -203,10 +216,14 @@ func TestEngineFullIntegration(t *testing.T) {
 				Name:        "mock-node",
 				Server:      upstreamAddr,
 				ServerProto: "tcp",
+				Key:         "testkey",
 			},
 		},
 		DNSListen:    dnsUDPPort,
 		DoHListen:    dohTCPPort,
+		DoTListen:    dotTCPPort,
+		TLSCertFile:  certFile,
+		TLSKeyFile:   keyFile,
 		Socks5Listen: socks5Port,
 		HTTPListen:   httpPort,
 		EnableFakeIP: true,
@@ -355,4 +372,69 @@ func TestEngineFullIntegration(t *testing.T) {
 	if string(tunnelReply) != string(tunnelData) {
 		t.Errorf("expected %s, got %s", tunnelData, tunnelReply)
 	}
+
+	// --- Test Feature 3: DoT (DNS-over-TLS) ---
+	dotClient := &dns.Client{
+		Net: "tcp-tls",
+		TLSConfig: &tls.Config{
+			InsecureSkipVerify: true,
+			NextProtos:         []string{"dot"},
+		},
+		Timeout: 3 * time.Second,
+	}
+	dotMsg := new(dns.Msg)
+	dotMsg.SetQuestion("dot.yellowsocks.io.", dns.TypeA)
+	dotResp, _, err := dotClient.Exchange(dotMsg, dotTCPPort)
+	if err != nil {
+		t.Fatalf("DoT exchange failed: %v", err)
+	}
+	if len(dotResp.Answer) == 0 {
+		t.Fatal("expected DoT answer, got 0")
+	}
+}
+
+func writeIntegrationTLSCert(t *testing.T) (certFile, keyFile string) {
+	t.Helper()
+	dir := t.TempDir()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "localhost"},
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+		DNSNames:     []string{"localhost"},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create cert: %v", err)
+	}
+	certFile = filepath.Join(dir, "cert.pem")
+	keyFile = filepath.Join(dir, "key.pem")
+	certOut, err := os.Create(certFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pem.Encode(certOut, &pem.Block{Type: "CERTIFICATE", Bytes: der}); err != nil {
+		t.Fatal(err)
+	}
+	_ = certOut.Close()
+	keyBytes, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyOut, err := os.Create(keyFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := pem.Encode(keyOut, &pem.Block{Type: "EC PRIVATE KEY", Bytes: keyBytes}); err != nil {
+		t.Fatal(err)
+	}
+	_ = keyOut.Close()
+	return certFile, keyFile
 }

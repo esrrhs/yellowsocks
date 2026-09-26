@@ -17,6 +17,9 @@ type Callback interface {
 	OnStatusChanged(running bool, message string)
 	OnBandwidthUpdate(uploadBps, downloadBps, totalUpload, totalDownload int64)
 	OnActiveNodeChanged(name, server, proto string, latencyMs int64)
+	// Protect marks an outbound socket fd so it bypasses the VPN tunnel
+	// (VpnService.protect). Required for Direct UDP/TCP from the TUN path.
+	Protect(fd int32) bool
 }
 
 var (
@@ -65,6 +68,11 @@ func StartEngine(tunFd int, configContent string, cb Callback) error {
 	cfg := fileCfg.MergeWithEngineConfig(baseCfg)
 	cfg.TunFd = tunFd
 	cfg.SetAutoRoute = false // 确保移动端不执行宿主系统命令
+	if cb != nil {
+		cfg.ProtectSocket = func(fd int) bool {
+			return cb.Protect(int32(fd))
+		}
+	}
 
 	// 3. 配置日志系统
 	logLevel := loggo.LEVEL_INFO

@@ -26,15 +26,19 @@ type DNSCacheEntry struct {
 	ExpiresAt time.Time
 }
 
-// Server DNS interception and DoH server
+// Server DNS interception, DoH and DoT server
 type Server struct {
 	listenAddr    string
 	dohListenAddr string
+	dotListenAddr string
+	tlsCertFile   string
+	tlsKeyFile    string
 	dohURL        string
 	directDNS     string
 	router        *router.Router
 	socks5Addr    string
 	udpServer     *dns.Server
+	dotServer     *dns.Server
 	httpServerDoH *http.Server
 	cache         sync.Map // domain+type -> DNSCacheEntry
 	ipToDomain    sync.Map // ip.String() -> domain
@@ -48,6 +52,9 @@ type Server struct {
 type Config struct {
 	ListenAddr    string // UDP listen address, e.g. 127.0.0.1:53 or :53
 	DoHListenAddr string // TCP listen address for DoH, e.g. 127.0.0.1:8053 or :8053
+	DoTListenAddr string // TCP-TLS listen address for DoT (RFC 7858), e.g. :853
+	TLSCertFile   string // PEM certificate for DoT (required when DoTListenAddr is set)
+	TLSKeyFile    string // PEM private key for DoT (required when DoTListenAddr is set)
 	DoHURL        string // remote DoH resolver, e.g. https://1.1.1.1/dns-query
 	DirectDNS     string // direct domestic/local DNS, e.g. 1.1.1.1:53 or 8.8.8.8:53
 	Socks5Addr    string // upstream proxy socks5 address
@@ -55,7 +62,7 @@ type Config struct {
 	EnableFakeIP  bool // enable Fake-IP mode
 }
 
-// NewServer creates a new DNS interceptor and DoH server
+// NewServer creates a new DNS interceptor and DoH/DoT server
 func NewServer(cfg Config) (*Server, error) {
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = "127.0.0.1:53"
@@ -66,10 +73,16 @@ func NewServer(cfg Config) (*Server, error) {
 	if cfg.DirectDNS == "" {
 		cfg.DirectDNS = "1.1.1.1:53"
 	}
+	if cfg.DoTListenAddr != "" && (cfg.TLSCertFile == "" || cfg.TLSKeyFile == "") {
+		return nil, fmt.Errorf("dot_listen requires tls_cert and tls_key")
+	}
 
 	s := &Server{
 		listenAddr:    cfg.ListenAddr,
 		dohListenAddr: cfg.DoHListenAddr,
+		dotListenAddr: cfg.DoTListenAddr,
+		tlsCertFile:   cfg.TLSCertFile,
+		tlsKeyFile:    cfg.TLSKeyFile,
 		dohURL:        cfg.DoHURL,
 		directDNS:     cfg.DirectDNS,
 		router:        cfg.Router,
@@ -112,7 +125,7 @@ func (s *Server) UpdateSocks5Addr(addr string) {
 	s.setupDoHClient()
 }
 
-// Start launches DNS UDP listener and DoH TCP listener
+// Start launches DNS UDP, DoH TCP and optional DoT (DNS-over-TLS) listeners
 func (s *Server) Start() error {
 	mux := dns.NewServeMux()
 	mux.HandleFunc(".", s.handleDNSRequest)
@@ -148,22 +161,53 @@ func (s *Server) Start() error {
 		}()
 	}
 
+	if s.dotListenAddr != "" {
+		cert, err := tls.LoadX509KeyPair(s.tlsCertFile, s.tlsKeyFile)
+		if err != nil {
+			return fmt.Errorf("load DoT TLS certificate: %w", err)
+		}
+		tlsConfig := &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+			// RFC 7858 / Android Private DNS ALPN
+			NextProtos: []string{"dot"},
+		}
+		s.dotServer = &dns.Server{
+			Addr:      s.dotListenAddr,
+			Net:       "tcp-tls",
+			TLSConfig: tlsConfig,
+			Handler:   mux,
+		}
+		loggo.Info("[DNS] DoT server starting on TCP-TLS %s (cert=%s)", s.dotListenAddr, s.tlsCertFile)
+		go func() {
+			if err := s.dotServer.ListenAndServe(); err != nil {
+				loggo.Error("[DNS] DoT ListenAndServe error: %v", err)
+			}
+		}()
+	}
+
 	return nil
 }
 
-// Stop stops DNS listener and DoH server
+// Stop stops DNS, DoH and DoT servers
 func (s *Server) Stop() error {
-	var err1, err2 error
+	var firstErr error
 	if s.udpServer != nil {
-		err1 = s.udpServer.Shutdown()
+		if err := s.udpServer.Shutdown(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
 	if s.httpServerDoH != nil {
-		err2 = s.httpServerDoH.Close()
+		if err := s.httpServerDoH.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	if err1 != nil {
-		return err1
+	if s.dotServer != nil {
+		if err := s.dotServer.Shutdown(); err != nil && firstErr == nil {
+			firstErr = err
+		}
 	}
-	return err2
+	return firstErr
 }
 
 func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
@@ -374,4 +418,9 @@ func (s *Server) LookupDomainByIP(ip string) (string, bool) {
 		return "", false
 	}
 	return val.(string), true
+}
+
+// UDPAddr returns the UDP DNS listen address (e.g. 127.0.0.1:53).
+func (s *Server) UDPAddr() string {
+	return s.listenAddr
 }

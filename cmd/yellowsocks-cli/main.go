@@ -25,6 +25,9 @@ func main() {
 	httpAddr := flag.String("http", "127.0.0.1:8080", "Inbound HTTP/HTTPS proxy listen address")
 	dnsAddr := flag.String("dns", "127.0.0.1:53", "Inbound DNS UDP listen address")
 	dohAddr := flag.String("doh", "127.0.0.1:8053", "Inbound DNS TCP DoH listen address")
+	dotAddr := flag.String("dot", "", "Inbound DNS-over-TLS listen address (e.g. :853)")
+	tlsCert := flag.String("tls-cert", "", "TLS certificate PEM for DoT")
+	tlsKey := flag.String("tls-key", "", "TLS private key PEM for DoT")
 	disableTun := flag.Bool("disable-tun", false, "Disable TUN device (run proxies and DNS only)")
 	chinaDomains := flag.String("china-domains", "", "Path to china domain list file")
 	gfwDomains := flag.String("gfw-domains", "", "Path to gfw domain list file")
@@ -77,6 +80,9 @@ func main() {
 		EnableFakeIP:     true,
 		DNSListen:        *dnsAddr,
 		DoHListen:        *dohAddr,
+		DoTListen:        *dotAddr,
+		TLSCertFile:      *tlsCert,
+		TLSKeyFile:       *tlsKey,
 		DirectDNS:        "1.1.1.1:53",
 		RemoteDoH:        "https://1.1.1.1/dns-query",
 		SetAutoRoute:     true,
