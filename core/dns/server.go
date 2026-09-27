@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/esrrhs/gohome/loggo"
+	"github.com/esrrhs/yellowsocks/core/router"
 	"github.com/miekg/dns"
 	"golang.org/x/net/proxy"
-	"github.com/esrrhs/yellowsocks/core/router"
 )
 
 // DNSCacheEntry cache item
@@ -37,6 +37,8 @@ type Server struct {
 	directDNS     string
 	router        *router.Router
 	socks5Addr    string
+	socks5User    string
+	socks5Pass    string
 	udpServer     *dns.Server
 	dotServer     *dns.Server
 	httpServerDoH *http.Server
@@ -44,6 +46,8 @@ type Server struct {
 	ipToDomain    sync.Map // ip.String() -> domain
 	fakeIPPool    *FakeIPPool
 	enableFakeIP  bool
+	whitelist     sync.Map // proxy server domain -> struct{}, never Fake-IP
+	realIP        sync.Map // proxy server domain -> real IPv4
 	httpClientDoH *http.Client
 	mu            sync.RWMutex
 }
@@ -58,9 +62,14 @@ type Config struct {
 	DoHURL        string // remote DoH resolver, e.g. https://1.1.1.1/dns-query
 	DirectDNS     string // direct domestic/local DNS, e.g. 1.1.1.1:53 or 8.8.8.8:53
 	Socks5Addr    string // upstream proxy socks5 address
+	Socks5User    string
+	Socks5Pass    string
 	Router        *router.Router
 	EnableFakeIP  bool // enable Fake-IP mode
+	FakeIPPool    *FakeIPPool
 }
+
+var processFakeIP = NewFakeIPPool()
 
 // NewServer creates a new DNS interceptor and DoH/DoT server
 func NewServer(cfg Config) (*Server, error) {
@@ -87,8 +96,13 @@ func NewServer(cfg Config) (*Server, error) {
 		directDNS:     cfg.DirectDNS,
 		router:        cfg.Router,
 		socks5Addr:    cfg.Socks5Addr,
+		socks5User:    cfg.Socks5User,
+		socks5Pass:    cfg.Socks5Pass,
 		enableFakeIP:  cfg.EnableFakeIP,
-		fakeIPPool:    NewFakeIPPool(),
+		fakeIPPool:    cfg.FakeIPPool,
+	}
+	if s.fakeIPPool == nil {
+		s.fakeIPPool = processFakeIP
 	}
 
 	s.setupDoHClient()
@@ -101,7 +115,11 @@ func (s *Server) setupDoHClient() {
 	}
 
 	if s.socks5Addr != "" {
-		dialer, err := proxy.SOCKS5("tcp", s.socks5Addr, nil, proxy.Direct)
+		var auth *proxy.Auth
+		if s.socks5User != "" {
+			auth = &proxy.Auth{User: s.socks5User, Password: s.socks5Pass}
+		}
+		dialer, err := proxy.SOCKS5("tcp", s.socks5Addr, auth, proxy.Direct)
 		if err == nil {
 			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 				return dialer.Dial(network, addr)
@@ -118,10 +136,12 @@ func (s *Server) setupDoHClient() {
 }
 
 // UpdateSocks5Addr updates upstream socks5 address
-func (s *Server) UpdateSocks5Addr(addr string) {
+func (s *Server) UpdateSocks5Addr(addr, user, pass string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.socks5Addr = addr
+	s.socks5User = user
+	s.socks5Pass = pass
 	s.setupDoHClient()
 }
 
@@ -136,9 +156,18 @@ func (s *Server) Start() error {
 		Handler: mux,
 	}
 
+	pc, err := net.ListenPacket("udp", s.listenAddr)
+	if err != nil {
+		return fmt.Errorf("listen udp %s: %w", s.listenAddr, err)
+	}
+	s.udpServer.PacketConn = pc
+	if s.enableFakeIP && s.fakeIPPool != nil {
+		s.fakeIPPool.Allocate("reserved.invalid")
+		s.fakeIPPool.Allocate("dns.invalid")
+	}
 	loggo.Info("[DNS] Interceptor starting on UDP %s (Direct: %s, DoH Upstream: %s)", s.listenAddr, s.directDNS, s.dohURL)
 	go func() {
-		if err := s.udpServer.ListenAndServe(); err != nil {
+		if err := s.udpServer.ActivateAndServe(); err != nil {
 			loggo.Info("[DNS] UDP server stopped: %v", err)
 		}
 	}()
@@ -169,7 +198,7 @@ func (s *Server) Start() error {
 		tlsConfig := &tls.Config{
 			Certificates: []tls.Certificate{cert},
 			MinVersion:   tls.VersionTLS12,
-			// RFC 7858 / Android Private DNS ALPN
+			// RFC 7858 DoT ALPN
 			NextProtos: []string{"dot"},
 		}
 		s.dotServer = &dns.Server{
@@ -192,8 +221,15 @@ func (s *Server) Start() error {
 // Stop stops DNS, DoH and DoT servers
 func (s *Server) Stop() error {
 	var firstErr error
+	if s.udpServer != nil && s.udpServer.PacketConn != nil {
+		// Shutdown() ignores a PacketConn when ActivateAndServe has not marked
+		// the server started yet, which would leak the UDP listen port.
+		if err := s.udpServer.PacketConn.Close(); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
 	if s.udpServer != nil {
-		if err := s.udpServer.Shutdown(); err != nil && firstErr == nil {
+		if err := s.udpServer.Shutdown(); err != nil && firstErr == nil && !strings.Contains(err.Error(), "not started") {
 			firstErr = err
 		}
 	}
@@ -299,6 +335,23 @@ func (s *Server) ResolveMsg(r *dns.Msg) (*dns.Msg, error) {
 	var resp *dns.Msg
 	var err error
 
+	if s.whitelisted(qName) {
+		// Proxy endpoints stay on the real resolver. A Fake-IP here loops the tunnel into itself.
+		if q.Qtype != dns.TypeA {
+			return emptyReply(r), nil
+		}
+		if ip := s.pinnedA(qName); ip != nil {
+			loggo.Info("[DNS] %s -> %s (whitelist)", qName, ip)
+			return aReply(r, ip), nil
+		}
+		resp, err = s.resolveDirect(r)
+		if err != nil || resp == nil {
+			return nil, err
+		}
+		resp.Id = r.Id
+		return resp, nil
+	}
+
 	isDirect := s.router != nil && s.router.ShouldDirectDomain(qName)
 	if isDirect {
 		resp, err = s.resolveDirect(r)
@@ -311,12 +364,16 @@ func (s *Server) ResolveMsg(r *dns.Msg) (*dns.Msg, error) {
 				Name:   q.Name,
 				Rrtype: dns.TypeA,
 				Class:  dns.ClassINET,
-				Ttl:    60,
+				Ttl:    600,
 			},
 			A: fakeIP,
 		}
 		resp.Answer = append(resp.Answer, rr)
 		s.ipToDomain.Store(fakeIP.String(), qName)
+		loggo.Info("[DNS] %s -> %s", qName, fakeIP)
+	} else if s.enableFakeIP {
+		// AAAA / HTTPS / SVCB would block the client on an upstream lookup. Empty answer keeps the A record.
+		resp = emptyReply(r)
 	} else {
 		resp, err = s.resolveDoH(r)
 		if err != nil {
@@ -335,9 +392,102 @@ func (s *Server) ResolveMsg(r *dns.Msg) (*dns.Msg, error) {
 	return resp, nil
 }
 
+// WhitelistDomain keeps a proxy hostname out of the Fake-IP pool.
+func (s *Server) WhitelistDomain(domain string) {
+	domain = strings.ToLower(strings.Trim(domain, "."))
+	if domain == "" || net.ParseIP(domain) != nil {
+		return
+	}
+	s.whitelist.Store(domain, struct{}{})
+}
+
+func (s *Server) whitelisted(domain string) bool {
+	_, ok := s.whitelist.Load(domain)
+	return ok
+}
+
+// PinRealIP forces a whitelisted hostname to its real A record.
+func (s *Server) PinRealIP(domain string, ip net.IP) {
+	domain = strings.ToLower(strings.Trim(domain, "."))
+	v4 := ip.To4()
+	if domain == "" || v4 == nil || IsFakeIP(v4) {
+		return
+	}
+	s.WhitelistDomain(domain)
+	s.realIP.Store(domain, append(net.IP(nil), v4...))
+}
+
+func (s *Server) pinnedA(domain string) net.IP {
+	v, ok := s.realIP.Load(domain)
+	if !ok {
+		return nil
+	}
+	return v.(net.IP)
+}
+
+func aReply(r *dns.Msg, ip net.IP) *dns.Msg {
+	resp := new(dns.Msg)
+	resp.SetReply(r)
+	resp.Answer = append(resp.Answer, &dns.A{
+		Hdr: dns.RR_Header{
+			Name:   r.Question[0].Name,
+			Rrtype: dns.TypeA,
+			Class:  dns.ClassINET,
+			Ttl:    60,
+		},
+		A: ip,
+	})
+	return resp
+}
+
+func emptyReply(r *dns.Msg) *dns.Msg {
+	resp := new(dns.Msg)
+	resp.SetReply(r)
+	return resp
+}
+
+// ResolvePublicA returns a real A record for display. Proxied names prefer DoH.
+func (s *Server) ResolvePublicA(host string, direct bool) (string, error) {
+	if !direct {
+		q := new(dns.Msg)
+		q.SetQuestion(dns.Fqdn(host), dns.TypeA)
+		if in, err := s.resolveDoH(q); err == nil {
+			for _, ans := range in.Answer {
+				if a, ok := ans.(*dns.A); ok && a.A != nil && !IsFakeIP(a.A) {
+					return a.A.String(), nil
+				}
+			}
+		}
+	}
+	ip, err := ResolveDirectA(s.directDNS, host)
+	if err != nil {
+		return "", err
+	}
+	return ip.String(), nil
+}
+
+// ResolveDirectA looks up an A record at directDNS, not via the system resolver.
+func ResolveDirectA(directDNS, host string) (net.IP, error) {
+	if directDNS == "" {
+		directDNS = "114.114.114.114:53"
+	}
+	m := new(dns.Msg)
+	m.SetQuestion(dns.Fqdn(host), dns.TypeA)
+	c := &dns.Client{Net: "udp", Timeout: 3 * time.Second}
+	in, _, err := c.Exchange(m, directDNS)
+	if err != nil {
+		return nil, err
+	}
+	for _, ans := range in.Answer {
+		if a, ok := ans.(*dns.A); ok && a.A.To4() != nil && !IsFakeIP(a.A) {
+			return append(net.IP(nil), a.A.To4()...), nil
+		}
+	}
+	return nil, fmt.Errorf("no A record for %s", host)
+}
+
 func (s *Server) resolveDirect(r *dns.Msg) (*dns.Msg, error) {
-	c := new(dns.Client)
-	c.Timeout = 2 * time.Second
+	c := &dns.Client{Net: "udp", Timeout: 2 * time.Second}
 	in, _, err := c.Exchange(r, s.directDNS)
 	return in, err
 }

@@ -251,3 +251,72 @@ func TestNewServerDoTRequiresCert(t *testing.T) {
 		t.Fatal("expected error when DoT enabled without cert/key")
 	}
 }
+
+func TestFakeIPKeepsUpstreamRealAndSkipsOtherTypes(t *testing.T) {
+	s, err := NewServer(Config{EnableFakeIP: true, ListenAddr: "127.0.0.1:0", DirectDNS: "127.0.0.1:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.WhitelistDomain("node.example")
+	s.PinRealIP("bwh.example", net.ParseIP("67.216.197.46"))
+
+	ask := func(name string, qtype uint16) *dns.Msg {
+		m := new(dns.Msg)
+		m.SetQuestion(dns.Fqdn(name), qtype)
+		resp, err := s.ResolveMsg(m)
+		if err != nil {
+			t.Fatalf("%s type %d: %v", name, qtype, err)
+		}
+		return resp
+	}
+
+	up := ask("bwh.example", dns.TypeA)
+	a, ok := up.Answer[0].(*dns.A)
+	if !ok || !a.A.Equal(net.ParseIP("67.216.197.46")) {
+		t.Fatalf("upstream A = %v", up.Answer)
+	}
+	if IsFakeIP(a.A) {
+		t.Fatal("upstream was fake-ip")
+	}
+
+	web := ask("www.google.com", dns.TypeA)
+	fa, ok := web.Answer[0].(*dns.A)
+	if !ok || !IsFakeIP(fa.A) {
+		t.Fatalf("google A = %v", web.Answer)
+	}
+	if len(ask("www.google.com", dns.TypeAAAA).Answer) != 0 {
+		t.Fatal("AAAA should be empty in fake-ip mode")
+	}
+	if len(ask("www.google.com", dns.TypeHTTPS).Answer) != 0 {
+		t.Fatal("HTTPS should be empty in fake-ip mode")
+	}
+
+	miss := new(dns.Msg)
+	miss.SetQuestion("node.example.", dns.TypeA)
+	if _, err := s.ResolveMsg(miss); err == nil {
+		t.Fatal("unresolved whitelist domain must not be answered with a fake-ip")
+	}
+}
+
+func TestFakeIPMappingSurvivesNewServer(t *testing.T) {
+	pool := NewFakeIPPool()
+	s1, err := NewServer(Config{EnableFakeIP: true, ListenAddr: "127.0.0.1:0", DirectDNS: "127.0.0.1:1", FakeIPPool: pool})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := new(dns.Msg)
+	m.SetQuestion("persist.example.", dns.TypeA)
+	resp, err := s1.ResolveMsg(m)
+	if err != nil || len(resp.Answer) == 0 {
+		t.Fatalf("alloc: %v %v", err, resp)
+	}
+	ip := resp.Answer[0].(*dns.A).A.String()
+	s2, err := NewServer(Config{EnableFakeIP: true, ListenAddr: "127.0.0.1:0", DirectDNS: "127.0.0.1:1", FakeIPPool: pool})
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, ok := s2.LookupDomainByIP(ip)
+	if !ok || (host != "persist.example" && host != "persist.example.") {
+		t.Fatalf("lookup after new server: %q %v", host, ok)
+	}
+}

@@ -24,6 +24,29 @@ var defaultCNSuffixes = []string{
 	".xn--io0a7i", // 网络
 }
 
+// builtinDirectDomains are common Chinese sites and domestic IP lookups.
+// They stay off Fake-IP so their latency is the direct path.
+var builtinDirectDomains = []string{
+	"baidu.com",
+	"qq.com",
+	"taobao.com",
+	"bilibili.com",
+	"jd.com",
+	"163.com",
+	"alipay.com",
+	"aliyun.com",
+	"weibo.com",
+	"iqiyi.com",
+	"youku.com",
+	"zhihu.com",
+	"ipip.net",
+	"3322.net",
+	"alicdn.com",
+	"gtimg.com",
+	"bdstatic.com",
+	"hdslb.com",
+}
+
 // IPNetList represents a list of CIDR network subnets
 type IPNetList []*net.IPNet
 
@@ -44,14 +67,13 @@ const (
 	Proxy
 )
 
-// Router handles IP, domain, and process-based routing decisions
+// Router handles IP and domain routing decisions.
 type Router struct {
 	directIPs   atomic.Value // holds IPNetList, supporting atomic lock-free hot swapping
 	directHosts sync.Map     // direct host whitelist
 	proxyHosts  sync.Map     // proxy host list
 	geoDB       *matcher.GeoDB
 	skipCountry string
-	inspector   *ProcessInspector
 
 	cacheFile string // local persistent cache path
 	updateURL string // remote routes update URL
@@ -66,6 +88,7 @@ type Options struct {
 	DirectDomains    []string      // custom direct domain suffixes
 	ProxyDomains     []string      // custom proxy domain suffixes
 	DirectCIDRs      []string      // custom direct CIDR subnets
+	DisableBuiltin   bool          // skip built-in direct domains; caller supplies Rules
 	GeoIPFile        string        // GeoLite2 mmdb file path
 	ChinaDomainFiles []string      // custom direct domain files (e.g. accelerated-domains.china.conf)
 	GFWDomainFiles   []string      // custom proxy domain files
@@ -84,7 +107,6 @@ func NewRouterWithOptions(opt Options) *Router {
 		updateURL:   opt.UpdateURL,
 		stopCh:      make(chan struct{}),
 		skipCountry: skipCountry,
-		inspector:   NewProcessInspector(),
 		geoDB:       matcher.NewGeoDB(),
 	}
 
@@ -100,7 +122,15 @@ func NewRouterWithOptions(opt Options) *Router {
 		}
 	}
 
-	// 1. Initialize reserved subnets and configured domains
+	// Initialize reserved subnets and configured domains.
+	if !opt.DisableBuiltin {
+		for _, d := range builtinDirectDomains {
+			r.AddDirectDomain(d)
+		}
+		for _, d := range defaultCNSuffixes {
+			r.AddDirectDomain(d)
+		}
+	}
 	for _, d := range opt.DirectDomains {
 		r.AddDirectDomain(d)
 	}
@@ -268,9 +298,6 @@ func (r *Router) Close() {
 	default:
 		close(r.stopCh)
 	}
-	if r.inspector != nil {
-		r.inspector.Close()
-	}
 	if r.geoDB != nil {
 		_ = r.geoDB.Close()
 	}
@@ -339,39 +366,31 @@ func (r *Router) LoadDomainFile(filePath string, isDirect bool) error {
 	return scanner.Err()
 }
 
-// Inspector returns the process inspector
-func (r *Router) Inspector() *ProcessInspector {
-	return r.inspector
-}
-
 // ShouldProxyDomain checks if domain matches proxy domain list
 func (r *Router) ShouldProxyDomain(domain string) bool {
-	domain = strings.ToLower(strings.Trim(domain, "."))
-	parts := strings.Split(domain, ".")
-	for i := 0; i < len(parts); i++ {
-		sub := strings.Join(parts[i:], ".")
-		if _, ok := r.proxyHosts.Load(sub); ok {
-			return true
-		}
-	}
-	return false
+	return matchListed(&r.proxyHosts, domain)
 }
 
-// ShouldDirectDomain checks if domain matches direct whitelist or CN suffixes
+// ShouldDirectDomain checks if domain matches direct whitelist or suffix rules.
 func (r *Router) ShouldDirectDomain(domain string) bool {
+	return matchListed(&r.directHosts, domain)
+}
+
+func matchListed(hosts *sync.Map, domain string) bool {
 	domain = strings.ToLower(strings.Trim(domain, "."))
 	if domain == "" {
 		return false
 	}
-	for _, suffix := range defaultCNSuffixes {
-		if strings.HasSuffix(domain, suffix) {
-			return true
-		}
-	}
+	// Label-boundary suffix match, not substring and not regexp.
+	// baidu.com matches www.baidu.com, not notbaidu.com.
+	// A leading-dot rule (.cn) is stored as cn and matches that whole label.
 	parts := strings.Split(domain, ".")
 	for i := 0; i < len(parts); i++ {
 		sub := strings.Join(parts[i:], ".")
-		if _, ok := r.directHosts.Load(sub); ok {
+		if _, ok := hosts.Load(sub); ok {
+			return true
+		}
+		if _, ok := hosts.Load("." + sub); ok {
 			return true
 		}
 	}
@@ -389,23 +408,6 @@ func (r *Router) ShouldDirectIP(ip net.IP) bool {
 	}
 	list := val.(IPNetList)
 	return list.Contains(ip)
-}
-
-// AddBypassApp adds a process to bypass proxy
-func (r *Router) AddBypassApp(name string) {
-	if r.inspector != nil {
-		r.inspector.AddBypassApp(name)
-	}
-}
-
-// DecideWithPort checks process bypass before IP/domain routing
-func (r *Router) DecideWithPort(destHost string, destIP net.IP, srcPort int) RouteDecision {
-	if srcPort > 0 && r.inspector != nil {
-		if r.inspector.IsBypassPort(srcPort) {
-			return Direct
-		}
-	}
-	return r.Decide(destHost, destIP)
 }
 
 // Decide determines route action based on host and destination IP

@@ -8,15 +8,21 @@ import (
 
 // ConnectionRecord 活跃连接记录
 type ConnectionRecord struct {
-	ID        string    `json:"id"`
-	Process   string    `json:"process"`
-	Source    string    `json:"source"`
-	Target    string    `json:"target"`
-	Domain    string    `json:"domain"`
-	Rule      string    `json:"rule"` // Direct or Proxy (SPP)
-	Upload    int64     `json:"upload"`
-	Download  int64     `json:"download"`
-	StartTime time.Time `json:"start_time"`
+	ID            string    `json:"id"`
+	Process       string    `json:"process"`
+	Source        string    `json:"source"`
+	Target        string    `json:"target"`
+	Domain        string    `json:"domain"`
+	Rule          string    `json:"rule"` // Direct or Proxy (SPP)
+	Node          string    `json:"node"`
+	RealIP        string    `json:"real_ip"`
+	Upload        int64     `json:"upload"`
+	Download      int64     `json:"download"`
+	UploadSpeed   int64     `json:"upload_speed"`
+	DownloadSpeed int64     `json:"download_speed"`
+	StartTime     time.Time `json:"start_time"`
+	lastUpload    int64
+	lastDownload  int64
 }
 
 // Manager 全局流量统计与连接监控器
@@ -31,6 +37,7 @@ type Manager struct {
 
 	mu          sync.RWMutex
 	connections map[string]*ConnectionRecord
+	closers     map[string]func()
 	recentLogs  []string
 	maxLogs     int
 	stopCh      chan struct{}
@@ -41,8 +48,9 @@ var Default = NewManager()
 func NewManager() *Manager {
 	m := &Manager{
 		connections: make(map[string]*ConnectionRecord),
+		closers:     make(map[string]func()),
 		recentLogs:  make([]string, 0),
-		maxLogs:     200,
+		maxLogs:     1000,
 		stopCh:      make(chan struct{}),
 	}
 	go m.speedCalculator()
@@ -58,11 +66,30 @@ func (m *Manager) speedCalculator() {
 		case <-m.stopCh:
 			return
 		case <-ticker.C:
-			up := atomic.SwapInt64(&m.periodUpload, 0)
-			down := atomic.SwapInt64(&m.periodDownload, 0)
-			atomic.StoreInt64(&m.uploadSpeed, up)
-			atomic.StoreInt64(&m.downloadSpeed, down)
+			m.tickSpeeds()
 		}
+	}
+}
+
+func (m *Manager) tickSpeeds() {
+	up := atomic.SwapInt64(&m.periodUpload, 0)
+	down := atomic.SwapInt64(&m.periodDownload, 0)
+	atomic.StoreInt64(&m.uploadSpeed, up)
+	atomic.StoreInt64(&m.downloadSpeed, down)
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, conn := range m.connections {
+		conn.UploadSpeed = conn.Upload - conn.lastUpload
+		conn.DownloadSpeed = conn.Download - conn.lastDownload
+		if conn.UploadSpeed < 0 {
+			conn.UploadSpeed = 0
+		}
+		if conn.DownloadSpeed < 0 {
+			conn.DownloadSpeed = 0
+		}
+		conn.lastUpload = conn.Upload
+		conn.lastDownload = conn.Download
 	}
 }
 
@@ -79,7 +106,7 @@ func (m *Manager) AddTraffic(upload, download int64) {
 }
 
 // TrackConnection 记录新连接
-func (m *Manager) TrackConnection(id, proc, src, target, domain, rule string) {
+func (m *Manager) TrackConnection(id, proc, src, target, domain, rule, node string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -90,7 +117,43 @@ func (m *Manager) TrackConnection(id, proc, src, target, domain, rule string) {
 		Target:    target,
 		Domain:    domain,
 		Rule:      rule,
+		Node:      node,
 		StartTime: time.Now(),
+	}
+}
+
+// BindClose remembers how to drop a live connection when its proxy is turned off.
+func (m *Manager) BindClose(id string, fn func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.connections[id]; ok && fn != nil {
+		m.closers[id] = fn
+	}
+}
+
+// SetRealIP records the address behind a Fake-IP.
+func (m *Manager) SetRealIP(id, ip string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if conn, ok := m.connections[id]; ok {
+		conn.RealIP = ip
+	}
+}
+
+// CloseNode drops every live connection currently using that proxy.
+func (m *Manager) CloseNode(node string) {
+	m.mu.Lock()
+	var fns []func()
+	for id, conn := range m.connections {
+		if conn.Node == node {
+			if fn := m.closers[id]; fn != nil {
+				fns = append(fns, fn)
+			}
+		}
+	}
+	m.mu.Unlock()
+	for _, fn := range fns {
+		fn()
 	}
 }
 
@@ -111,6 +174,7 @@ func (m *Manager) RemoveConnection(id string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	delete(m.connections, id)
+	delete(m.closers, id)
 }
 
 // AddLog 添加最近日志
@@ -139,7 +203,8 @@ func (m *Manager) GetSnapshot() Snapshot {
 
 	conns := make([]*ConnectionRecord, 0, len(m.connections))
 	for _, c := range m.connections {
-		conns = append(conns, c)
+		cp := *c
+		conns = append(conns, &cp)
 	}
 
 	logs := make([]string, len(m.recentLogs))

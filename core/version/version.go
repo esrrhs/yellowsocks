@@ -48,6 +48,12 @@ func String() string {
 		Version, GitCommit, BuildTime, runtime.GOOS, runtime.GOARCH, runtime.Version())
 }
 
+// ServiceID is stable across rebuilds of the same git commit, unlike String()
+// which includes the build timestamp.
+func ServiceID() string {
+	return fmt.Sprintf("%s-%s", Version, GitCommit)
+}
+
 // JSON returns version information as JSON string
 func JSON() string {
 	data, _ := json.Marshal(GetInfo())

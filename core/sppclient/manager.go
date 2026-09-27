@@ -11,10 +11,10 @@ import (
 	"github.com/esrrhs/gohome/loggo"
 )
 
-// Node SPP 节点定义
+// Node is one upstream SPP server.
 type Node struct {
 	Name        string        `json:"name"`
-	Server      string        `json:"server"` // ip:port
+	Server      string        `json:"server"`
 	ServerProto string        `json:"server_proto"` // tcp, udp, rudp, kcp, quic
 	Key         string        `json:"key"`
 	Encrypt     string        `json:"encrypt"`
@@ -34,7 +34,7 @@ func dialNetworkForProto(proto string) string {
 	}
 }
 
-// Manager 维护多 SPP 节点池、心跳探测与自动故障转移
+// Manager keeps the SPP node list, exposes one local SOCKS5, and fails over.
 type Manager struct {
 	nodes        []*Node
 	activeClient *Client
@@ -44,7 +44,7 @@ type Manager struct {
 	mu           sync.RWMutex
 }
 
-// NewManager 初始化多节点管理器
+// NewManager starts the first SPP node and a local SOCKS5 for DNS and inbound proxies.
 func NewManager(nodes []*Node, localSocks5 string) (*Manager, error) {
 	if len(nodes) == 0 {
 		return nil, fmt.Errorf("no spp nodes provided")
@@ -54,21 +54,18 @@ func NewManager(nodes []*Node, localSocks5 string) (*Manager, error) {
 	}
 
 	m := &Manager{
-		nodes:        nodes,
-		localSocks5:  localSocks5,
-		checkStopCh:  make(chan struct{}),
-		activeIndex:  0,
+		nodes:       nodes,
+		localSocks5: localSocks5,
+		checkStopCh: make(chan struct{}),
+		activeIndex: 0,
 	}
 
-	// 启动首个活跃节点
 	if err := m.switchNode(0); err != nil {
 		loggo.Warn("[SPP Manager] Initial active node 0 connect failed: %v, will try fallback", err)
 		m.tryFallback()
 	}
 
-	// 开启后台心跳检测与健康检查
 	go m.startHealthCheck(15 * time.Second)
-
 	return m, nil
 }
 
@@ -80,9 +77,9 @@ func (m *Manager) switchNode(index int) error {
 	target := m.nodes[index]
 	loggo.Info("[SPP Manager] Switching active node to [%s] (%s via %s)...", target.Name, target.Server, target.ServerProto)
 
-	// 关闭旧客户端
 	if m.activeClient != nil {
 		_ = m.activeClient.Close()
+		m.activeClient = nil
 	}
 
 	cfg := &Config{
@@ -110,7 +107,7 @@ func (m *Manager) switchNode(index int) error {
 
 func (m *Manager) tryFallback() {
 	for i, node := range m.nodes {
-		if i == int(atomic.LoadInt32(&m.activeIndex)) {
+		if i == int(atomic.LoadInt32(&m.activeIndex)) && m.activeClient != nil {
 			continue
 		}
 		if err := m.switchNode(i); err == nil {
@@ -157,40 +154,48 @@ func (m *Manager) checkAllNodes() {
 	}
 	wg.Wait()
 
-	// 检查当前节点是否存活，若已挂断则触发故障转移
 	currIdx := int(atomic.LoadInt32(&m.activeIndex))
-	if !m.nodes[currIdx].Alive {
-		loggo.Warn("[SPP Manager] Current node [%s] is down, initiating automatic failover...", m.nodes[currIdx].Name)
-		m.mu.Lock()
-		m.tryFallback()
-		m.mu.Unlock()
+	if currIdx < 0 || currIdx >= len(m.nodes) || m.nodes[currIdx].Alive {
+		return
 	}
+	loggo.Warn("[SPP Manager] Current node [%s] is down, initiating automatic failover...", m.nodes[currIdx].Name)
+	m.mu.Lock()
+	m.tryFallback()
+	m.mu.Unlock()
 }
 
-// Socks5Addr 当前活跃节点的本地 Socks5 地址
+// Socks5Addr is the local SOCKS5 address exposed by the active SPP client.
 func (m *Manager) Socks5Addr() string {
 	return m.localSocks5
 }
 
-// ActiveNode 返回当前正在使用的节点信息
+// Socks5Auth is empty. The local SPP SOCKS5 does not require a username.
+func (m *Manager) Socks5Auth() (string, string) {
+	return "", ""
+}
+
+// ActiveNode returns the node currently used for proxied traffic.
 func (m *Manager) ActiveNode() *Node {
 	idx := atomic.LoadInt32(&m.activeIndex)
+	if idx < 0 || int(idx) >= len(m.nodes) {
+		return nil
+	}
 	return m.nodes[idx]
 }
 
-// GetAllNodes 获取所有节点状态列表
+// GetAllNodes returns every configured node.
 func (m *Manager) GetAllNodes() []*Node {
 	return m.nodes
 }
 
-// SwitchToNode 手动切换指定节点
+// SwitchToNode selects a node.
 func (m *Manager) SwitchToNode(index int) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.switchNode(index)
 }
 
-// Close 关闭管理器
+// Close stops health checks and the active SPP client.
 func (m *Manager) Close() {
 	select {
 	case <-m.checkStopCh:
@@ -201,5 +206,6 @@ func (m *Manager) Close() {
 	defer m.mu.Unlock()
 	if m.activeClient != nil {
 		_ = m.activeClient.Close()
+		m.activeClient = nil
 	}
 }

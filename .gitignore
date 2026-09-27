@@ -1,34 +1,19 @@
-# Binaries for programs and plugins
+# Binaries
 *.exe
 *.exe~
 *.dll
 *.so
 *.dylib
-*.aar
 
-# Packaging, Android & iOS build outputs
+# Packaging
 pack/
 pack.zip
-.gradle/
-build/
-android/app/build/
-android/.gradle/
-android/app/libs/*.aar
-
-# iOS / Xcode build outputs
-*.xcframework
-xcuserdata/
-*.ipa
-ios/Frameworks/YellowSocks.xcframework
 
 # Test binary, built with `go test -c`
 *.test
 
-# Output of the go coverage tool, specifically when used with LiteIDE
+# Coverage
 *.out
-
-# Dependency directories (remove the comment below to include it)
-# vendor/
 
 # Logs
 *.log
