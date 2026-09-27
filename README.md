@@ -5,31 +5,29 @@
 [<img src="https://img.shields.io/github/v/release/esrrhs/yellowsocks">](https://github.com/esrrhs/yellowsocks/releases)
 [<img src="https://img.shields.io/github/downloads/esrrhs/yellowsocks/total">](https://github.com/esrrhs/yellowsocks/releases)
 
-Linux 代理，当前版本 **2.0.0**。本机提供 DNS、DoT、DoH、SOCKS5 和 HTTP 代理，需要转发的流量经 [SPP](https://github.com/esrrhs/spp) 送到远端。
+Linux proxy, version **2.0.0**. It serves DNS, DoT, DoH, SOCKS5, and HTTP on the local machine, and forwards proxied traffic to a remote [SPP](https://github.com/esrrhs/spp) server.
 
-2.0 只保留 Linux。不再提供 Windows、macOS、Android、iOS、OpenWrt 客户端，也不再创建虚拟网卡。
+## Features
 
-## 功能
+- **DNS**: standard UDP queries
+- **DoH**: TCP `/dns-query` (RFC 8484, GET and POST)
+- **DoT**: optional DNS-over-TLS (RFC 7858)
+- **SOCKS5**: TCP CONNECT and UDP ASSOCIATE
+- **HTTP proxy**: plain HTTP requests and HTTPS CONNECT
+- **SPP upstream**: `tcp`, `udp`, `kcp`, or `quic`, with multiple nodes and automatic failover
+- **Routing**: domain, CIDR, and GeoIP rules choose a direct connection or SPP
 
-- **DNS**：UDP 标准查询
-- **DoH**：TCP，路径 `/dns-query`（RFC 8484，支持 GET 与 POST）
-- **DoT**：可选的 DNS-over-TLS（RFC 7858）
-- **SOCKS5**：TCP CONNECT 与 UDP ASSOCIATE
-- **HTTP 代理**：普通 HTTP 请求与 HTTPS CONNECT
-- **SPP 上游**：`tcp`、`udp`、`kcp`、`quic`，可配置多个节点并自动故障转移
-- **分流**：按域名、CIDR 和 GeoIP 决定直连或走 SPP
+Domestic domains and private addresses go direct. Everything else goes through SPP.
 
-国内域名和私网地址默认直连，其余走 SPP。
+## Run
 
-## 启动
-
-把 `config.example.yaml` 复制成 `config.yaml`，填上 SPP 服务器后：
+Copy `config.example.yaml` to `config.yaml`, set the SPP server, then:
 
 ```bash
 sudo ./yellowsocks-cli -config config.yaml
 ```
 
-也可以直接传参数：
+Or pass the server on the command line:
 
 ```bash
 sudo ./yellowsocks-cli \
@@ -38,32 +36,32 @@ sudo ./yellowsocks-cli \
   -spp-key "123456"
 ```
 
-监听 `53` 端口需要 root。`Ctrl+C` 退出。
+Listening on port `53` requires root. Press `Ctrl+C` to stop.
 
-### 命令行参数
+### Flags
 
-| 参数 | 说明 | 默认 |
+| Flag | Description | Default |
 | :--- | :--- | :--- |
-| `-config` | YAML 或 JSON 配置文件 | 无 |
-| `-spp-server` | 远端 SPP 地址 | 无 |
-| `-spp-proto` | `tcp`、`udp`、`kcp`、`quic` | `tcp` |
-| `-spp-key` | SPP 密钥 | `123456` |
-| `-socks5` | 入站 SOCKS5 | `127.0.0.1:1080` |
-| `-http` | 入站 HTTP 代理 | `127.0.0.1:8080` |
+| `-config` | YAML or JSON config file | none |
+| `-spp-server` | Remote SPP address | none |
+| `-spp-proto` | `tcp`, `udp`, `kcp`, or `quic` | `tcp` |
+| `-spp-key` | SPP key | `123456` |
+| `-socks5` | Inbound SOCKS5 | `127.0.0.1:1080` |
+| `-http` | Inbound HTTP proxy | `127.0.0.1:8080` |
 | `-dns` | DNS UDP | `127.0.0.1:53` |
 | `-doh` | DoH TCP | `127.0.0.1:8053` |
-| `-dot` | DoT 监听地址 | 空，不启用 |
-| `-tls-cert` | DoT 证书 PEM | 空 |
-| `-tls-key` | DoT 私钥 PEM | 空 |
-| `-china-domains` | 国内域名列表 | 无 |
-| `-gfw-domains` | 需要代理的域名列表 | 无 |
-| `-geoip` | `GeoLite2-Country.mmdb` | 无 |
-| `-loglevel` | `debug`、`info`、`warn`、`error` | `info` |
-| `-v`、`-version` | 打印版本后退出 | |
+| `-dot` | DoT listen address | empty, disabled |
+| `-tls-cert` | DoT certificate PEM | empty |
+| `-tls-key` | DoT private key PEM | empty |
+| `-china-domains` | Domestic domain list | none |
+| `-gfw-domains` | Proxied domain list | none |
+| `-geoip` | `GeoLite2-Country.mmdb` | none |
+| `-loglevel` | `debug`, `info`, `warn`, `error` | `info` |
+| `-v`, `-version` | Print the version and exit | |
 
-配置文件里的同名项会覆盖命令行。多节点、入站认证、加密和压缩见 `config.example.yaml`。
+Values in the config file override the matching flags. Multiple nodes, inbound authentication, encryption, and compression are documented in `config.example.yaml`.
 
-### 配置示例
+### Example
 
 ```yaml
 spp_server: "1.2.3.4:8888"
@@ -79,21 +77,21 @@ direct_dns: "114.114.114.114:53"
 doh_url: "https://1.1.1.1/dns-query"
 ```
 
-启用 DoT 时同时填写 `dot_listen`、`tls_cert` 和 `tls_key`。
+To enable DoT, set `dot_listen`, `tls_cert`, and `tls_key` together.
 
-## 编译
+## Build
 
 ```bash
 ./pack.sh
 ```
 
-产物在 `pack/`：
+Archives are written to `pack/`:
 
 - `yellowsocks_linux_amd64.zip`
 - `yellowsocks_linux_arm64.zip`
 - `yellowsocks_linux_arm.zip`
 
-每个压缩包里是 `yellowsocks-cli` 和 `config.example.yaml`。
+Each archive contains `yellowsocks-cli` and `config.example.yaml`.
 
 ## License
 
