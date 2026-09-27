@@ -1,4 +1,4 @@
-name: CI & Multi-Platform Build
+name: CI
 
 on:
   push:
@@ -10,11 +10,8 @@ permissions:
   contents: write
 
 jobs:
-  # ========================================================
-  # 0. 版本号检测：判断是否有未发布的版本变动
-  # ========================================================
   check-version:
-    name: 0. Check Version Change
+    name: Check Version
     runs-on: ubuntu-latest
     outputs:
       release_needed: ${{ steps.check.outputs.release_needed }}
@@ -41,11 +38,8 @@ jobs:
             echo "release_needed=true" >> $GITHUB_OUTPUT
           fi
 
-  # ========================================================
-  # 1. Linux 单元测试与基础包验证
-  # ========================================================
   test:
-    name: 1. Test & Verify (Linux)
+    name: Test (Linux)
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -57,30 +51,20 @@ jobs:
           go-version: 'stable'
           cache: true
 
-      - name: Install Linux GUI Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y libayatana-appindicator3-dev libgtk-3-dev
+      - name: Run tests
+        run: go test -race ./...
 
-      - name: Run Unit Tests with Race Detector
-        run: |
-          go test -v -race ./core/...
-
-      - name: Build Linux CLI & GUI with Version Info
+      - name: Build Linux CLI
         run: |
           VERSION=$(cat VERSION | tr -d '[:space:]')
           GIT_COMMIT=$(git rev-parse --short HEAD)
           BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
           LDFLAGS="-s -w -X github.com/esrrhs/yellowsocks/core/version.Version=${VERSION} -X github.com/esrrhs/yellowsocks/core/version.GitCommit=${GIT_COMMIT} -X \"github.com/esrrhs/yellowsocks/core/version.BuildTime=${BUILD_TIME}\""
-          go build -v -ldflags="$LDFLAGS" -o yellowsocks-cli ./cmd/yellowsocks-cli
-          go build -v -ldflags="$LDFLAGS" -o yellowsocks-gui ./cmd/yellowsocks-gui
+          go build -ldflags="$LDFLAGS" -o yellowsocks-cli ./cmd/yellowsocks-cli
           ./yellowsocks-cli -v
 
-  # ========================================================
-  # 2. Windows & OpenWrt 路由器全架构交叉编译打包
-  # ========================================================
-  cross-compile:
-    name: 2. Cross-Compile (Windows & Routers)
+  package:
+    name: Package Linux
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -92,136 +76,23 @@ jobs:
           go-version: 'stable'
           cache: true
 
-      - name: Install zip tool
+      - name: Install zip
         run: sudo apt-get install -y zip
 
-      - name: Run pack.sh (Injects Version, Commit, Build Time)
+      - name: Build Linux packages
         run: |
           chmod +x pack.sh
           ./pack.sh
 
-      - name: Upload Windows & Router Packages
+      - name: Upload Linux packages
         uses: actions/upload-artifact@v4
         with:
-          name: yellowsocks-desktop-and-routers
+          name: yellowsocks-linux
           path: pack/*.zip
 
-  # ========================================================
-  # 3. macOS 原生独立 GUI 桌面客户端构建
-  # ========================================================
-  macos-build:
-    name: 3. macOS Native GUI Client
-    runs-on: macos-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: 'stable'
-          cache: true
-
-      - name: Build macOS App Bundle
-        run: |
-          chmod +x build_macos.sh
-          ./build_macos.sh
-          zip -r YellowSocks_macOS.zip YellowSocks.app
-
-      - name: Upload macOS App Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: YellowSocks-macOS-App
-          path: YellowSocks_macOS.zip
-
-  # ========================================================
-  # 4. Android 手机端构建 (AAR & Mobile Core)
-  # ========================================================
-  android-build:
-    name: 4. Android Client (AAR)
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: 'stable'
-          cache: true
-
-      - name: Set up Java 17
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Set up Android NDK
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r26d
-
-      - name: Install gomobile tool
-        run: |
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
-          gomobile init
-
-      - name: Build Android AAR
-        run: |
-          chmod +x build_android.sh
-          ./build_android.sh
-
-      - name: Upload Android AAR Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: YellowSocks-Android-AAR
-          path: android/app/libs/yellowsocks.aar
-
-  # ========================================================
-  # 5. iOS & iPadOS 移动客户端构建 (XCFramework)
-  # ========================================================
-  ios-build:
-    name: 5. iOS & iPadOS Client (XCFramework)
-    runs-on: macos-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: 'stable'
-          cache: true
-
-      - name: Install gomobile tool
-        run: |
-          go install golang.org/x/mobile/cmd/gomobile@latest
-          go install golang.org/x/mobile/cmd/gobind@latest
-          gomobile init
-
-      - name: Build iOS YellowSocks.xcframework
-        run: |
-          chmod +x build_ios.sh
-          ./build_ios.sh
-          zip -r YellowSocks_iOS_Framework.zip ios/Frameworks/YellowSocks.xcframework
-
-      - name: Verify Xcode Project Syntax
-        run: |
-          xcodebuild -project ios/YellowSocks.xcodeproj -scheme YellowSocks -destination 'generic/platform=iOS' CODE_SIGNING_ALLOWED=NO -dry-run build || true
-
-      - name: Upload iOS XCFramework Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: YellowSocks-iOS-Framework
-          path: YellowSocks_iOS_Framework.zip
-
-  # ========================================================
-  # 6. 版本号变动时自动发布 GitHub Release
-  # ========================================================
   release:
-    name: 6. Publish All-Platform GitHub Release
-    needs: [check-version, test, cross-compile, macos-build, android-build, ios-build]
+    name: Publish GitHub Release
+    needs: [check-version, test, package]
     if: github.ref == 'refs/heads/master' && needs.check-version.outputs.release_needed == 'true'
     runs-on: ubuntu-latest
     steps:
@@ -236,7 +107,7 @@ jobs:
           git tag -a "v$VERSION" -m "Release YellowSocks v$VERSION"
           git push origin "v$VERSION"
 
-      - name: Download all build artifacts
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           path: release-artifacts
@@ -244,7 +115,7 @@ jobs:
       - name: Prepare Release Files
         run: |
           mkdir -p dist
-          find release-artifacts -type f \( -name "*.zip" -o -name "*.aar" \) -exec cp {} dist/ \;
+          find release-artifacts -type f -name "*.zip" -exec cp {} dist/ \;
           ls -lh dist/
 
       - name: Publish GitHub Release

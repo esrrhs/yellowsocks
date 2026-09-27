@@ -24,6 +24,10 @@ func (m *mockUpstream) Socks5Addr() string {
 	return m.addr
 }
 
+func (m *mockUpstream) Socks5Auth() (string, string) {
+	return "", ""
+}
+
 // Start a lightweight mock upstream SOCKS5 server supporting CONNECT and UDP ASSOCIATE
 func startMockUpstreamSocks5(t *testing.T) (string, func()) {
 	tcpL, err := net.Listen("tcp", "127.0.0.1:0")

@@ -76,6 +76,9 @@ func TestRouterCustomDirectDomains(t *testing.T) {
 	if r.ShouldDirectDomain("notexample.com") {
 		t.Errorf("expected notexample.com to NOT be direct")
 	}
+	if !r.ShouldDirectDomain("www.baidu.com") {
+		t.Errorf("expected www.baidu.com to be direct")
+	}
 	if r.ShouldDirectDomain("google.com") {
 		t.Errorf("expected google.com to NOT be direct")
 	}
@@ -129,5 +132,56 @@ func TestRouterChinaSuffixesAndProxyDomains(t *testing.T) {
 	}
 	if r.Decide("sub.blocked.com", nil) != Proxy {
 		t.Errorf("expected Proxy for sub.blocked.com")
+	}
+}
+
+func TestSetPolicyReplacesBuiltin(t *testing.T) {
+	r := NewRouterWithOptions(Options{DisableBuiltin: true})
+	defer r.Close()
+	r.SetPolicy([]Rule{
+		{Kind: "domain", Value: "example.com", Action: "direct"},
+		{Kind: "domain", Value: ".test", Action: "direct"},
+		{Kind: "domain", Value: "forced.net", Action: "proxy"},
+		{Kind: "app", Value: "Safari", Action: "proxy"},
+	})
+	if !r.ShouldDirectDomain("a.example.com") {
+		t.Fatal("example.com should direct")
+	}
+	if !r.ShouldDirectDomain("shop.test") {
+		t.Fatal(".test suffix should direct")
+	}
+	if r.ShouldDirectDomain("www.baidu.com") {
+		t.Fatal("builtin baidu.com should be gone")
+	}
+	if r.ShouldDirectDomain("gov.cn") {
+		t.Fatal("builtin .cn should be gone")
+	}
+	if r.Decide("forced.net", nil) != Proxy {
+		t.Fatal("forced.net should proxy")
+	}
+	if got := NormalizeRules([]Rule{{Kind: "domain", Value: "Example.com", Action: "nope"}}); len(got) != 1 || got[0].Action != "direct" || got[0].Value != "example.com" {
+		t.Fatalf("normalize: %+v", got)
+	}
+}
+
+func TestDomainMatchIsSuffixNotSubstring(t *testing.T) {
+	r := NewRouterWithOptions(Options{DisableBuiltin: true})
+	defer r.Close()
+	r.AddDirectDomain("baidu.com")
+	r.AddDirectDomain(".cn")
+	if !r.ShouldDirectDomain("www.baidu.com") {
+		t.Fatal("subdomain should match")
+	}
+	if r.ShouldDirectDomain("notbaidu.com") {
+		t.Fatal("substring host must not match")
+	}
+	if r.ShouldDirectDomain("baidu.com.evil") {
+		t.Fatal("suffix host must not match parent as a prefix")
+	}
+	if !r.ShouldDirectDomain("news.qq.com.cn") {
+		t.Fatal(".cn suffix should match")
+	}
+	if r.ShouldDirectDomain("cnn.com") {
+		t.Fatal("cnn.com must not match cn")
 	}
 }

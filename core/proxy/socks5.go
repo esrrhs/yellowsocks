@@ -21,6 +21,7 @@ import (
 // UpstreamProvider provides upstream proxy address (e.g. from SPP Manager)
 type UpstreamProvider interface {
 	Socks5Addr() string
+	Socks5Auth() (string, string)
 }
 
 // Socks5Config configures the SOCKS5 server
@@ -238,7 +239,7 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 	}
 
 	connID := clientConn.RemoteAddr().String() + "->" + targetAddr
-	stats.Default.TrackConnection(connID, "socks5", clientConn.RemoteAddr().String(), targetAddr, realHost, ruleStr)
+	stats.Default.TrackConnection(connID, "socks5", clientConn.RemoteAddr().String(), targetAddr, realHost, ruleStr, "")
 	defer stats.Default.RemoveConnection(connID)
 
 	loggo.Info("[SOCKS5] TCP CONNECT %s -> %s (%s, Decision: %s)",
@@ -280,7 +281,11 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 		}
 		defer sppConn.Close()
 
-		if err := network.Sock5Handshake(sppConn, 5000, "", ""); err != nil {
+		user, pass := "", ""
+		if s.cfg.Upstream != nil {
+			user, pass = s.cfg.Upstream.Socks5Auth()
+		}
+		if err := network.Sock5Handshake(sppConn, 5000, user, pass); err != nil {
 			loggo.Error("[SOCKS5] SPP upstream handshake failed: %v", err)
 			_ = network.Sock5SendConnectReply(clientConn, 0x01, "0.0.0.0:0")
 			return
@@ -383,7 +388,11 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 			return nil, nil, err
 		}
 
-		if err := network.Sock5Handshake(tcpUp, 5000, "", ""); err != nil {
+		user, pass := "", ""
+		if s.cfg.Upstream != nil {
+			user, pass = s.cfg.Upstream.Socks5Auth()
+		}
+		if err := network.Sock5Handshake(tcpUp, 5000, user, pass); err != nil {
 			_ = tcpUp.Close()
 			return nil, nil, err
 		}

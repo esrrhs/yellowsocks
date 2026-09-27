@@ -276,7 +276,7 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, targetHost string, targe
 	}
 
 	connID := clientConn.RemoteAddr().String() + "->" + targetAddr
-	stats.Default.TrackConnection(connID, "http_connect", clientConn.RemoteAddr().String(), targetAddr, realHost, ruleStr)
+	stats.Default.TrackConnection(connID, "http_connect", clientConn.RemoteAddr().String(), targetAddr, realHost, ruleStr, "")
 	defer stats.Default.RemoveConnection(connID)
 
 	loggo.Info("[HTTP Proxy] CONNECT %s -> %s (%s, Decision: %s)",
@@ -323,7 +323,11 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, targetHost string, targe
 		}
 		defer sppConn.Close()
 
-		if err := network.Sock5Handshake(sppConn, 5000, "", ""); err != nil {
+		user, pass := "", ""
+		if s.cfg.Upstream != nil {
+			user, pass = s.cfg.Upstream.Socks5Auth()
+		}
+		if err := network.Sock5Handshake(sppConn, 5000, user, pass); err != nil {
 			const http502 = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
 			_, _ = clientConn.Write([]byte(http502))
 			return
@@ -388,7 +392,11 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 		if rErr == nil {
 			sppConn, dialErr := net.DialTCP("tcp", nil, sppTCPAddr)
 			if dialErr == nil {
-				if hsErr := network.Sock5Handshake(sppConn, 5000, "", ""); hsErr == nil {
+				user, pass := "", ""
+				if s.cfg.Upstream != nil {
+					user, pass = s.cfg.Upstream.Socks5Auth()
+				}
+				if hsErr := network.Sock5Handshake(sppConn, 5000, user, pass); hsErr == nil {
 					if reqErr := network.Sock5SetRequest(sppConn, targetHost, targetPort, 10000); reqErr == nil {
 						targetConn = sppConn
 					}

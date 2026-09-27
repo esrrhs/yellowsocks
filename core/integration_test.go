@@ -27,123 +27,6 @@ import (
 	"github.com/miekg/dns"
 )
 
-// Start mock upstream SOCKS5 server for integration testing
-func startMockUpstream(t *testing.T) (string, func()) {
-	tcpL, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("failed to listen mock upstream: %v", err)
-	}
-
-	stopCh := make(chan struct{})
-
-	go func() {
-		for {
-			conn, err := tcpL.Accept()
-			if err != nil {
-				select {
-				case <-stopCh:
-					return
-				default:
-					return
-				}
-			}
-
-			go func(c net.Conn) {
-				defer c.Close()
-				_ = network.Sock5HandshakeBy(c, "", "")
-
-				var head [4]byte
-				if _, err := io.ReadFull(c, head[:]); err != nil {
-					return
-				}
-				cmd := head[1]
-				atyp := head[3]
-				var host string
-				switch atyp {
-				case 0x01:
-					var ip [4]byte
-					_, _ = io.ReadFull(c, ip[:])
-					host = net.IP(ip[:]).String()
-				case 0x03:
-					var l [1]byte
-					_, _ = io.ReadFull(c, l[:])
-					buf := make([]byte, int(l[0]))
-					_, _ = io.ReadFull(c, buf)
-					host = string(buf)
-				case 0x04:
-					var ip [16]byte
-					_, _ = io.ReadFull(c, ip[:])
-					host = net.IP(ip[:]).String()
-				}
-				var pBuf [2]byte
-				_, _ = io.ReadFull(c, pBuf[:])
-				port := int(pBuf[0])<<8 | int(pBuf[1])
-
-				if cmd == network.Socks5CmdConnect {
-					target := net.JoinHostPort(host, strconv.Itoa(port))
-					dstConn, err := net.DialTimeout("tcp", target, 5*time.Second)
-					if err != nil {
-						_ = network.Sock5SendConnectReply(c, 0x05, "0.0.0.0:0")
-						return
-					}
-					defer dstConn.Close()
-					_ = network.Sock5SendConnectReply(c, 0x00, "0.0.0.0:0")
-					go func() { _, _ = io.Copy(dstConn, c) }()
-					_, _ = io.Copy(c, dstConn)
-				} else if cmd == network.Socks5CmdUDPAssociate {
-					uRelay, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
-					if err != nil {
-						return
-					}
-					defer uRelay.Close()
-
-					relayPort := uRelay.LocalAddr().(*net.UDPAddr).Port
-					_ = network.Sock5SendConnectReply(c, 0x00, net.JoinHostPort("127.0.0.1", strconv.Itoa(relayPort)))
-
-					go func() {
-						buf := make([]byte, 65535)
-						for {
-							n, clientSrc, err := uRelay.ReadFromUDP(buf)
-							if err != nil {
-								return
-							}
-							dstH, dstP, payload, err := network.Sock5UnpackUDP(buf[:n])
-							if err != nil {
-								continue
-							}
-							tDst, err := net.ResolveUDPAddr("udp", net.JoinHostPort(dstH, strconv.Itoa(dstP)))
-							if err != nil {
-								continue
-							}
-							fwdConn, err := net.ListenUDP("udp", nil)
-							if err != nil {
-								continue
-							}
-							_, _ = fwdConn.WriteToUDP(payload, tDst)
-							respBuf := make([]byte, 65535)
-							_ = fwdConn.SetReadDeadline(time.Now().Add(2 * time.Second))
-							rn, fromAddr, rErr := fwdConn.ReadFromUDP(respBuf)
-							fwdConn.Close()
-							if rErr == nil && rn > 0 {
-								packed, _ := network.Sock5PackUDP(fromAddr.IP.String(), fromAddr.Port, respBuf[:rn])
-								_, _ = uRelay.WriteToUDP(packed, clientSrc)
-							}
-						}
-					}()
-
-					dummy := make([]byte, 1)
-					_, _ = c.Read(dummy)
-				}
-			}(conn)
-		}
-	}()
-
-	return tcpL.Addr().String(), func() {
-		close(stopCh)
-		_ = tcpL.Close()
-	}
-}
-
 func TestEngineFullIntegration(t *testing.T) {
 	// 1. Pick unused ports
 	getFreePort := func(networkType string) string {
@@ -158,9 +41,6 @@ func TestEngineFullIntegration(t *testing.T) {
 		_ = l.Close()
 		return addr
 	}
-
-	upstreamAddr, cleanupUpstream := startMockUpstream(t)
-	defer cleanupUpstream()
 
 	dnsUDPPort := getFreePort("udp")
 	dohTCPPort := getFreePort("tcp")
@@ -205,28 +85,31 @@ func TestEngineFullIntegration(t *testing.T) {
 		}
 	}()
 
-	// 3. Configure and start Engine with DisableTun: true
+	directDNS := startStubDNS(t)
+
+	// SPP is not required for these direct destinations. Point it at a closed
+	// port so the manager comes up without a live tunnel.
 	engineCfg := EngineConfig{
-		DisableTun:   true,
-		SPPServer:    upstreamAddr,
-		SPPProto:     "tcp",
-		LocalSocks5:  upstreamAddr, // use mock upstream directly for SPP socks5
+		SPPServer:   "127.0.0.1:1",
+		SPPProto:    "tcp",
+		LocalSocks5: getFreePort("tcp"),
 		SPPNodes: []*sppclient.Node{
 			{
 				Name:        "mock-node",
-				Server:      upstreamAddr,
+				Server:      "127.0.0.1:1",
 				ServerProto: "tcp",
 				Key:         "testkey",
 			},
 		},
-		DNSListen:    dnsUDPPort,
-		DoHListen:    dohTCPPort,
-		DoTListen:    dotTCPPort,
-		TLSCertFile:  certFile,
-		TLSKeyFile:   keyFile,
-		Socks5Listen: socks5Port,
-		HTTPListen:   httpPort,
-		EnableFakeIP: true,
+		DNSListen:     dnsUDPPort,
+		DoHListen:     dohTCPPort,
+		DoTListen:     dotTCPPort,
+		TLSCertFile:   certFile,
+		TLSKeyFile:    keyFile,
+		DirectDNS:     directDNS,
+		DirectDomains: []string{"yellowsocks.io"},
+		Socks5Listen:  socks5Port,
+		HTTPListen:    httpPort,
 	}
 
 	engine := NewEngine(engineCfg)
@@ -391,6 +274,47 @@ func TestEngineFullIntegration(t *testing.T) {
 	if len(dotResp.Answer) == 0 {
 		t.Fatal("expected DoT answer, got 0")
 	}
+}
+
+func startStubDNS(t *testing.T) string {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("stub dns listen: %v", err)
+	}
+	t.Cleanup(func() { _ = pc.Close() })
+	go func() {
+		buf := make([]byte, 1500)
+		for {
+			n, addr, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			req := new(dns.Msg)
+			if err := req.Unpack(buf[:n]); err != nil || len(req.Question) == 0 {
+				continue
+			}
+			resp := new(dns.Msg)
+			resp.SetReply(req)
+			if req.Question[0].Qtype == dns.TypeA {
+				resp.Answer = append(resp.Answer, &dns.A{
+					Hdr: dns.RR_Header{
+						Name:   req.Question[0].Name,
+						Rrtype: dns.TypeA,
+						Class:  dns.ClassINET,
+						Ttl:    60,
+					},
+					A: net.ParseIP("1.2.3.4"),
+				})
+			}
+			packed, err := resp.Pack()
+			if err != nil {
+				continue
+			}
+			_, _ = pc.WriteTo(packed, addr)
+		}
+	}()
+	return pc.LocalAddr().String()
 }
 
 func writeIntegrationTLSCert(t *testing.T) (certFile, keyFile string) {

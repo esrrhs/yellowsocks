@@ -1,9 +1,9 @@
-FROM golang AS build-env
+FROM golang:1.26 AS build-env
 
-RUN GO111MODULE=off go get -u github.com/esrrhs/yellowsocks
-RUN GO111MODULE=off go get -u github.com/esrrhs/yellowsocks/...
-RUN GO111MODULE=off go install github.com/esrrhs/yellowsocks
+WORKDIR /src
+COPY . .
+RUN CGO_ENABLED=0 go build -o /yellowsocks-cli ./cmd/yellowsocks-cli
 
-FROM debian
-COPY --from=build-env /go/bin/yellowsocks .
-WORKDIR ./
+FROM debian:stable-slim
+COPY --from=build-env /yellowsocks-cli /usr/local/bin/yellowsocks-cli
+ENTRYPOINT ["yellowsocks-cli"]

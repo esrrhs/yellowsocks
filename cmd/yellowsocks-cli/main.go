@@ -11,6 +11,7 @@ import (
 	"github.com/esrrhs/gohome/loggo"
 	"github.com/esrrhs/yellowsocks/core"
 	"github.com/esrrhs/yellowsocks/core/config"
+	"github.com/esrrhs/yellowsocks/core/launch"
 	"github.com/esrrhs/yellowsocks/core/version"
 )
 
@@ -28,7 +29,6 @@ func main() {
 	dotAddr := flag.String("dot", "", "Inbound DNS-over-TLS listen address (e.g. :853)")
 	tlsCert := flag.String("tls-cert", "", "TLS certificate PEM for DoT")
 	tlsKey := flag.String("tls-key", "", "TLS private key PEM for DoT")
-	disableTun := flag.Bool("disable-tun", false, "Disable TUN device (run proxies and DNS only)")
 	chinaDomains := flag.String("china-domains", "", "Path to china domain list file")
 	gfwDomains := flag.String("gfw-domains", "", "Path to gfw domain list file")
 	geoipFile := flag.String("geoip", "", "Path to GeoLite2-Country.mmdb")
@@ -60,24 +60,17 @@ func main() {
 		level = loggo.NameToLevel(*loglevel)
 	}
 	loggo.Ini(loggo.Config{
-		Level:  level,
-		Prefix: "yellowsocks-cli",
+		Level:     level,
+		Prefix:    "yellowsocks-cli",
+		NoLogFile: !launch.EnsureWritableWorkDir(),
 	})
 
-	// Default baseline engine configuration
 	cfg := core.EngineConfig{
-		TunName:          "tun0",
-		TunIP:            "10.255.0.2",
-		TunGateway:       "10.255.0.1",
-		TunMask:          "255.255.255.0",
-		MTU:              1500,
-		DisableTun:       *disableTun,
 		SPPServer:        *sppServer,
 		SPPProto:         *sppProto,
 		SPPKey:           *sppKey,
 		SPPEncrypt:       "default",
 		SPPCompress:      128,
-		EnableFakeIP:     true,
 		DNSListen:        *dnsAddr,
 		DoHListen:        *dohAddr,
 		DoTListen:        *dotAddr,
@@ -85,7 +78,6 @@ func main() {
 		TLSKeyFile:       *tlsKey,
 		DirectDNS:        "1.1.1.1:53",
 		RemoteDoH:        "https://1.1.1.1/dns-query",
-		SetAutoRoute:     true,
 		Socks5Listen:     *socks5Addr,
 		HTTPListen:       *httpAddr,
 		ChinaDomainsFile: *chinaDomains,
@@ -103,7 +95,7 @@ func main() {
 		return
 	}
 
-	loggo.Info("Starting YellowSocks CLI Engine (%s)...", version.String())
+	loggo.Info("Starting YellowSocks CLI (%s)...", version.String())
 
 	engine := core.NewEngine(cfg)
 	if err := engine.Start(); err != nil {

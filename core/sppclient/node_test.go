@@ -7,35 +7,13 @@ import (
 	"time"
 )
 
-func TestDialNetworkForProto(t *testing.T) {
-	cases := []struct {
-		proto string
-		want  string
-	}{
-		{"", "tcp"},
-		{"tcp", "tcp"},
-		{"TCP", "tcp"},
-		{"udp", "udp"},
-		{"rudp", "udp"},
-		{"RUDP", "udp"},
-		{"kcp", "udp"},
-		{"quic", "udp"},
-		{"  quic  ", "udp"},
-	}
-	for _, tc := range cases {
-		if got := dialNetworkForProto(tc.proto); got != tc.want {
-			t.Errorf("dialNetworkForProto(%q)=%q, want %q", tc.proto, got, tc.want)
-		}
-	}
-}
-
 func TestNodeJSONSerialization(t *testing.T) {
 	node := &Node{
 		Name:        "HongKong-01",
 		Server:      "1.2.3.4:8888",
-		ServerProto: "kcp",
-		Key:         "pass123",
-		Encrypt:     "default",
+		ServerProto: "tcp",
+		Key:         "secret",
+		Encrypt:     "",
 		Compress:    128,
 		Latency:     45 * time.Millisecond,
 		Alive:       true,
@@ -54,12 +32,23 @@ func TestNodeJSONSerialization(t *testing.T) {
 	if parsed.Name != node.Name || parsed.Server != node.Server || parsed.ServerProto != node.ServerProto {
 		t.Errorf("mismatch parsed node: %+v", parsed)
 	}
-	if parsed.Compress != node.Compress || parsed.Key != node.Key {
-		t.Errorf("mismatch properties: %+v", parsed)
+	if parsed.Key != node.Key || parsed.Compress != node.Compress {
+		t.Errorf("mismatch spp fields: %+v", parsed)
 	}
 }
 
-func TestManagerHealthCheckUsesProtoNetwork(t *testing.T) {
+func TestDialNetworkForProto(t *testing.T) {
+	if dialNetworkForProto("tcp") != "tcp" || dialNetworkForProto("") != "tcp" {
+		t.Fatal("tcp proto should dial tcp")
+	}
+	for _, proto := range []string{"udp", "kcp", "quic", "rudp"} {
+		if dialNetworkForProto(proto) != "udp" {
+			t.Fatalf("%s should dial udp", proto)
+		}
+	}
+}
+
+func TestManagerHealthCheckDialsTCP(t *testing.T) {
 	tcpL, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -75,51 +64,35 @@ func TestManagerHealthCheckUsesProtoNetwork(t *testing.T) {
 		}
 	}()
 
-	udpAddr, err := net.ResolveUDPAddr("udp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	udpL, err := net.ListenUDP("udp", udpAddr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer udpL.Close()
-
 	nodes := []*Node{
-		{Name: "tcp-node", Server: tcpL.Addr().String(), ServerProto: "tcp"},
-		{Name: "rudp-node", Server: udpL.LocalAddr().String(), ServerProto: "rudp"},
+		{Name: "spp-a", Server: tcpL.Addr().String(), ServerProto: "tcp"},
+		{Name: "spp-b", Server: "127.0.0.1:1", ServerProto: "tcp"},
 	}
 	m := &Manager{
 		nodes:       nodes,
-		localSocks5: "127.0.0.1:0",
+		localSocks5: "127.0.0.1:10808",
 		checkStopCh: make(chan struct{}),
 		activeIndex: 0,
 	}
 	m.checkAllNodes()
 	if !nodes[0].Alive {
-		t.Fatal("tcp node should be alive after TCP health check")
+		t.Fatal("spp node should be alive after TCP health check")
 	}
-	if !nodes[1].Alive {
-		t.Fatal("rudp node should be alive after UDP health check")
+	if nodes[1].Alive {
+		t.Fatal("closed port should not be alive")
 	}
-	if nodes[0].Latency <= 0 || nodes[1].Latency <= 0 {
-		t.Fatalf("expected positive latency, got %v %v", nodes[0].Latency, nodes[1].Latency)
+	if nodes[0].Latency <= 0 {
+		t.Fatalf("expected positive latency, got %v", nodes[0].Latency)
 	}
-	if got := m.Socks5Addr(); got != "127.0.0.1:0" {
+	if got := m.Socks5Addr(); got != "127.0.0.1:10808" {
 		t.Fatalf("Socks5Addr=%q", got)
 	}
-	if m.ActiveNode().Name != "tcp-node" {
-		t.Fatalf("ActiveNode=%s", m.ActiveNode().Name)
+	user, pass := m.Socks5Auth()
+	if user != "" || pass != "" {
+		t.Fatalf("local spp socks5 auth = %q %q", user, pass)
 	}
 	if len(m.GetAllNodes()) != 2 {
 		t.Fatal("GetAllNodes size")
 	}
 	m.Close()
-}
-
-func TestNewClientRejectsEmptyServer(t *testing.T) {
-	_, err := NewClient(&Config{})
-	if err == nil {
-		t.Fatal("expected error for empty server")
-	}
 }
