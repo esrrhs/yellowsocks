@@ -1,10 +1,10 @@
 module github.com/esrrhs/yellowsocks
 
-go 1.26.3
+go 1.27.1
 
 require (
-	github.com/esrrhs/gohome v0.0.0-20260924052417-f7be2b22a03d
-	github.com/esrrhs/spp v0.14.2-0.20260926080931-7a80acf947b4
+	github.com/esrrhs/gohome v0.0.0-20261002131301-05bef5471df9
+	github.com/esrrhs/spp v0.14.2-0.20261003095610-ad1e1fbf2224
 	github.com/miekg/dns v1.1.73
 	golang.org/x/net v0.59.0
 	gopkg.in/yaml.v3 v3.0.1
@@ -27,8 +27,8 @@ require (
 	github.com/tjfoc/gmsm v1.4.1 // indirect
 	github.com/xtaci/kcp-go v5.4.20+incompatible // indirect
 	golang.org/x/crypto v0.57.0 // indirect
-	golang.org/x/sync v0.23.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
+	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 )
