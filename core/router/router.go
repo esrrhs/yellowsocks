@@ -175,9 +175,11 @@ func (r *Router) getReservedIPNets() IPNetList {
 		"169.254.0.0/16",
 		"224.0.0.0/4",
 		"240.0.0.0/4",
+		"::/128",
 		"::1/128",
 		"fc00::/7",
 		"fe80::/10",
+		"ff00::/8",
 	}
 
 	var list IPNetList
@@ -397,8 +399,21 @@ func matchListed(hosts *sync.Map, domain string) bool {
 	return false
 }
 
+// canonicalIP turns IPv4 and IPv4-mapped IPv6 into a 4-byte address so the
+// same CIDR and GeoIP rules apply to both spellings.
+func canonicalIP(ip net.IP) net.IP {
+	if ip == nil {
+		return nil
+	}
+	if v4 := ip.To4(); v4 != nil {
+		return v4
+	}
+	return ip
+}
+
 // ShouldDirectIP checks if IP matches direct subnet rules
 func (r *Router) ShouldDirectIP(ip net.IP) bool {
+	ip = canonicalIP(ip)
 	if ip == nil {
 		return false
 	}
@@ -412,6 +427,12 @@ func (r *Router) ShouldDirectIP(ip net.IP) bool {
 
 // Decide determines route action based on host and destination IP
 func (r *Router) Decide(destHost string, destIP net.IP) RouteDecision {
+	destIP = canonicalIP(destIP)
+	if ip := net.ParseIP(destHost); ip != nil {
+		destIP = canonicalIP(ip)
+		destHost = ""
+	}
+
 	// If domain is specified, evaluate domain rules first
 	if destHost != "" {
 		if r.ShouldProxyDomain(destHost) {

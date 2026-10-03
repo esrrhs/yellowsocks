@@ -19,7 +19,8 @@ spp_key: "123456"
 #     server_proto: "quic"
 #     key: "123456"
 
-# 入站 SOCKS5（TCP CONNECT + UDP ASSOCIATE）
+# 入站 SOCKS5（TCP CONNECT + UDP ASSOCIATE）。
+# 用 ":1080" 同时接受 IPv4 和 IPv6，用 "[::1]:1080" 只听 IPv6。
 socks5_listen: "127.0.0.1:1080"
 
 # 入站 HTTP/HTTPS 代理（HTTP 方法 + CONNECT）

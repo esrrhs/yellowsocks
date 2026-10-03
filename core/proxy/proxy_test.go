@@ -402,3 +402,135 @@ func TestHTTPProxy_ConnectAndStandard(t *testing.T) {
 		t.Errorf("expected 200 Connection Established, got %s", connectRespLine)
 	}
 }
+
+func skipWithoutIPv6Loopback(t *testing.T) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "[::1]:0")
+	if err != nil {
+		t.Skipf("IPv6 loopback unavailable: %v", err)
+	}
+	_ = ln.Close()
+}
+
+func TestSocks5IPv6TCPAndUDP(t *testing.T) {
+	skipWithoutIPv6Loopback(t)
+
+	echoL, err := net.Listen("tcp", "[::1]:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer echoL.Close()
+	go func() {
+		for {
+			conn, err := echoL.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = io.Copy(c, c)
+			}(conn)
+		}
+	}()
+
+	udpEcho, err := net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6loopback, Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpEcho.Close()
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			n, rAddr, err := udpEcho.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			_, _ = udpEcho.WriteToUDP(buf[:n], rAddr)
+		}
+	}()
+
+	r := router.NewRouter()
+	defer r.Close()
+	s5 := NewSocks5Server(Socks5Config{ListenAddr: "[::1]:0", Router: r})
+	if err := s5.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s5.Stop()
+
+	tcpAddr, err := net.ResolveTCPAddr("tcp", s5.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := net.DialTCP("tcp", nil, tcpAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	if err := network.Sock5Handshake(client, 5000, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	echoHost, echoPortStr, _ := net.SplitHostPort(echoL.Addr().String())
+	echoPort, _ := strconv.Atoi(echoPortStr)
+	if err := network.Sock5SetRequest(client, echoHost, echoPort, 5000); err != nil {
+		t.Fatalf("ipv6 connect: %v", err)
+	}
+	msg := []byte("ipv6 hello")
+	if _, err := client.Write(msg); err != nil {
+		t.Fatal(err)
+	}
+	got := make([]byte, len(msg))
+	if _, err := io.ReadFull(client, got); err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(msg) {
+		t.Fatalf("tcp echo %q", got)
+	}
+
+	udpClient, err := net.DialTCP("tcp", nil, tcpAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpClient.Close()
+	if err := network.Sock5Handshake(udpClient, 5000, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	relayAddr, err := network.Sock5SetUDPRequest(udpClient, "::", 0, 5000)
+	if err != nil {
+		t.Fatalf("udp associate: %v", err)
+	}
+	relay, err := net.ResolveUDPAddr("udp", relayAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if relay.IP.To4() != nil {
+		t.Fatalf("UDP relay should be IPv6, got %s", relayAddr)
+	}
+	clientUDP, err := net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6loopback, Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clientUDP.Close()
+	udpHost, udpPortStr, _ := net.SplitHostPort(udpEcho.LocalAddr().String())
+	udpPort, _ := strconv.Atoi(udpPortStr)
+	payload := []byte("ipv6 udp")
+	pkt, err := network.Sock5PackUDP(udpHost, udpPort, payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := clientUDP.WriteToUDP(pkt, relay); err != nil {
+		t.Fatal(err)
+	}
+	buf := make([]byte, 2048)
+	_ = clientUDP.SetReadDeadline(time.Now().Add(3 * time.Second))
+	n, _, err := clientUDP.ReadFromUDP(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host, port, data, err := network.Sock5UnpackUDP(buf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(payload) || port != udpPort {
+		t.Fatalf("udp reply %s:%d %q", host, port, data)
+	}
+}

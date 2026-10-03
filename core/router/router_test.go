@@ -185,3 +185,33 @@ func TestDomainMatchIsSuffixNotSubstring(t *testing.T) {
 		t.Fatal("cnn.com must not match cn")
 	}
 }
+
+func TestRouterDecideIPv6(t *testing.T) {
+	r := NewRouter()
+	defer r.Close()
+
+	directIPs := []string{
+		"::1",
+		"fc00::1",
+		"fe80::1",
+		"ff02::1",
+		"::ffff:192.168.1.1",
+		"::ffff:10.1.2.3",
+	}
+	for _, ipStr := range directIPs {
+		if r.Decide(ipStr, nil) != Direct {
+			t.Errorf("expected Direct for %s", ipStr)
+		}
+	}
+
+	proxyIPs := []string{
+		"2001:4860:4860::8888",
+		"2606:4700:4700::1111",
+		"::ffff:8.8.8.8",
+	}
+	for _, ipStr := range proxyIPs {
+		if r.Decide(ipStr, net.ParseIP(ipStr)) != Proxy {
+			t.Errorf("expected Proxy for %s", ipStr)
+		}
+	}
+}

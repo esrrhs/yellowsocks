@@ -211,7 +211,7 @@ func readSocks5Addr(r io.Reader, atyp byte) (string, int, error) {
 	}
 	port := int(portBuf[0])<<8 | int(portBuf[1])
 
-	return host, port, nil
+	return canonicalHost(host), port, nil
 }
 
 func (s *Socks5Server) routeDecision(host string, port int) (router.RouteDecision, string) {
@@ -231,8 +231,9 @@ func (s *Socks5Server) routeDecision(host string, port int) (router.RouteDecisio
 }
 
 func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, targetPort int) {
+	targetHost = canonicalHost(targetHost)
 	decision, realHost := s.routeDecision(targetHost, targetPort)
-	targetAddr := net.JoinHostPort(targetHost, strconv.Itoa(targetPort))
+	targetAddr := joinDialAddr(targetHost, targetPort)
 	ruleStr := "Proxy (SPP)"
 	if decision == router.Direct {
 		ruleStr = "Direct"
@@ -291,7 +292,7 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 			return
 		}
 
-		if err := network.Sock5SetRequest(sppConn, targetHost, targetPort, 10000); err != nil {
+		if err := network.Sock5SetRequest(sppConn, canonicalHost(targetHost), targetPort, 10000); err != nil {
 			loggo.Error("[SOCKS5] SPP upstream connect to %s failed: %v", targetAddr, err)
 			_ = network.Sock5SendConnectReply(clientConn, 0x01, "0.0.0.0:0")
 			return
@@ -305,26 +306,14 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 }
 
 func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string, targetPort int) {
-	// 1. Create local UDP relay listener
-	relayConn, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4zero, Port: 0})
+	// Bind the relay on the client connection's address family. gohome's
+	// SOCKS reply encoder writes ATYP IPv6 when bnd is an IPv6 address.
+	relayConn, bndAddr, err := listenClientUDPRelay(clientConn)
 	if err != nil {
 		_ = network.Sock5SendConnectReply(clientConn, 0x01, "0.0.0.0:0")
 		return
 	}
 	defer relayConn.Close()
-
-	// Determine relay address to reply to client
-	relayPort := relayConn.LocalAddr().(*net.UDPAddr).Port
-	relayHost := "127.0.0.1"
-	if tcpLocal := clientConn.LocalAddr(); tcpLocal != nil {
-		if h, _, err := net.SplitHostPort(tcpLocal.String()); err == nil {
-			ip := net.ParseIP(h)
-			if ip != nil && !ip.IsUnspecified() {
-				relayHost = h
-			}
-		}
-	}
-	bndAddr := net.JoinHostPort(relayHost, strconv.Itoa(relayPort))
 
 	if err := network.Sock5SendConnectReply(clientConn, 0x00, bndAddr); err != nil {
 		return
@@ -461,7 +450,7 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 		if c, ok := directSessions[targetAddr]; ok {
 			return c, nil
 		}
-		dConn, err := net.ListenUDP("udp", nil)
+		dConn, err := listenUDPFor(hostFromAddr(targetAddr))
 		if err != nil {
 			return nil, err
 		}
@@ -508,9 +497,10 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 		if err != nil || len(payload) == 0 {
 			continue
 		}
+		dstHost = canonicalHost(dstHost)
 
 		decision, realHost := s.routeDecision(dstHost, dstPort)
-		targetAddr := net.JoinHostPort(dstHost, strconv.Itoa(dstPort))
+		targetAddr := joinDialAddr(dstHost, dstPort)
 
 		if decision == router.Direct {
 			dConn, err := getOrCreateDirectConn(targetAddr)
