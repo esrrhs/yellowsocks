@@ -248,7 +248,7 @@ func (s *HTTPServer) parseTarget(method, rawURI, hostHeader string) (string, int
 		port, _ = strconv.Atoi(p)
 		host = h
 	}
-	return host, port
+	return canonicalHost(host), port
 }
 
 func (s *HTTPServer) routeDecision(host string, port int) (router.RouteDecision, string) {
@@ -268,8 +268,9 @@ func (s *HTTPServer) routeDecision(host string, port int) (router.RouteDecision,
 }
 
 func (s *HTTPServer) handleConnect(clientConn net.Conn, targetHost string, targetPort int) {
+	targetHost = canonicalHost(targetHost)
 	decision, realHost := s.routeDecision(targetHost, targetPort)
-	targetAddr := net.JoinHostPort(targetHost, strconv.Itoa(targetPort))
+	targetAddr := joinDialAddr(targetHost, targetPort)
 	ruleStr := "Proxy (SPP)"
 	if decision == router.Direct {
 		ruleStr = "Direct"
@@ -348,8 +349,9 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, targetHost string, targe
 }
 
 func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, method, rawURI, protoVer string, rawHeaders []string, targetHost string, targetPort int) {
+	targetHost = canonicalHost(targetHost)
 	decision, realHost := s.routeDecision(targetHost, targetPort)
-	targetAddr := net.JoinHostPort(targetHost, strconv.Itoa(targetPort))
+	targetAddr := joinDialAddr(targetHost, targetPort)
 	ruleStr := "Proxy (SPP)"
 	if decision == router.Direct {
 		ruleStr = "Direct"

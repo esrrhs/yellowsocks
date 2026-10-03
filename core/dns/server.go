@@ -47,7 +47,7 @@ type Server struct {
 	fakeIPPool    *FakeIPPool
 	enableFakeIP  bool
 	whitelist     sync.Map // proxy server domain -> struct{}, never Fake-IP
-	realIP        sync.Map // proxy server domain -> real IPv4
+	realIP        sync.Map // proxy server domain -> pinnedAddr
 	httpClientDoH *http.Client
 	mu            sync.RWMutex
 }
@@ -337,12 +337,12 @@ func (s *Server) ResolveMsg(r *dns.Msg) (*dns.Msg, error) {
 
 	if s.whitelisted(qName) {
 		// Proxy endpoints stay on the real resolver. A Fake-IP here loops the tunnel into itself.
-		if q.Qtype != dns.TypeA {
-			return emptyReply(r), nil
-		}
-		if ip := s.pinnedA(qName); ip != nil {
+		if ip := s.pinned(qName, q.Qtype); ip != nil {
 			loggo.Info("[DNS] %s -> %s (whitelist)", qName, ip)
-			return aReply(r, ip), nil
+			return ipReply(r, q.Qtype, ip), nil
+		}
+		if q.Qtype != dns.TypeA && q.Qtype != dns.TypeAAAA {
+			return emptyReply(r), nil
 		}
 		resp, err = s.resolveDirect(r)
 		if err != nil || resp == nil {
@@ -371,8 +371,8 @@ func (s *Server) ResolveMsg(r *dns.Msg) (*dns.Msg, error) {
 		resp.Answer = append(resp.Answer, rr)
 		s.ipToDomain.Store(fakeIP.String(), qName)
 		loggo.Info("[DNS] %s -> %s", qName, fakeIP)
-	} else if s.enableFakeIP {
-		// AAAA / HTTPS / SVCB would block the client on an upstream lookup. Empty answer keeps the A record.
+	} else if s.enableFakeIP && q.Qtype != dns.TypeAAAA {
+		// HTTPS / SVCB would block the client on an upstream lookup. Empty answer keeps the A record.
 		resp = emptyReply(r)
 	} else {
 		resp, err = s.resolveDoH(r)
@@ -380,6 +380,12 @@ func (s *Server) ResolveMsg(r *dns.Msg) (*dns.Msg, error) {
 			loggo.Warn("[DNS] DoH failed for %s, falling back to direct DNS: %v", qName, err)
 			resp, err = s.resolveDirect(r)
 		}
+	}
+
+	// A missing AAAA must not fail the lookup. Clients fall back to the A answer.
+	if q.Qtype == dns.TypeAAAA && (err != nil || resp == nil) {
+		resp = emptyReply(r)
+		err = nil
 	}
 
 	if err != nil || resp == nil {
@@ -406,37 +412,67 @@ func (s *Server) whitelisted(domain string) bool {
 	return ok
 }
 
-// PinRealIP forces a whitelisted hostname to its real A record.
+// pinnedAddr holds the real addresses of a proxy endpoint, one per family.
+type pinnedAddr struct {
+	v4 net.IP
+	v6 net.IP
+}
+
+// PinRealIP forces a whitelisted hostname to a real A or AAAA record.
 func (s *Server) PinRealIP(domain string, ip net.IP) {
 	domain = strings.ToLower(strings.Trim(domain, "."))
-	v4 := ip.To4()
-	if domain == "" || v4 == nil || IsFakeIP(v4) {
+	if domain == "" || ip == nil || IsFakeIP(ip) {
+		return
+	}
+	var cur pinnedAddr
+	if v, ok := s.realIP.Load(domain); ok {
+		cur = v.(pinnedAddr)
+	}
+	if v4 := ip.To4(); v4 != nil {
+		cur.v4 = append(net.IP(nil), v4...)
+	} else if v6 := ip.To16(); v6 != nil {
+		cur.v6 = append(net.IP(nil), v6...)
+	} else {
 		return
 	}
 	s.WhitelistDomain(domain)
-	s.realIP.Store(domain, append(net.IP(nil), v4...))
+	s.realIP.Store(domain, cur)
 }
 
-func (s *Server) pinnedA(domain string) net.IP {
+func (s *Server) pinned(domain string, qtype uint16) net.IP {
 	v, ok := s.realIP.Load(domain)
 	if !ok {
 		return nil
 	}
-	return v.(net.IP)
+	cur := v.(pinnedAddr)
+	if qtype == dns.TypeAAAA {
+		return cur.v6
+	}
+	if qtype == dns.TypeA {
+		return cur.v4
+	}
+	return nil
 }
 
 func aReply(r *dns.Msg, ip net.IP) *dns.Msg {
+	return ipReply(r, dns.TypeA, ip)
+}
+
+func ipReply(r *dns.Msg, qtype uint16, ip net.IP) *dns.Msg {
 	resp := new(dns.Msg)
 	resp.SetReply(r)
-	resp.Answer = append(resp.Answer, &dns.A{
-		Hdr: dns.RR_Header{
-			Name:   r.Question[0].Name,
-			Rrtype: dns.TypeA,
-			Class:  dns.ClassINET,
-			Ttl:    60,
-		},
-		A: ip,
-	})
+	hdr := dns.RR_Header{
+		Name:   r.Question[0].Name,
+		Rrtype: qtype,
+		Class:  dns.ClassINET,
+		Ttl:    60,
+	}
+	switch qtype {
+	case dns.TypeAAAA:
+		resp.Answer = append(resp.Answer, &dns.AAAA{Hdr: hdr, AAAA: ip})
+	default:
+		resp.Answer = append(resp.Answer, &dns.A{Hdr: hdr, A: ip})
+	}
 	return resp
 }
 
@@ -558,6 +594,13 @@ func (s *Server) cacheAndRecordIP(domain, key string, msg *dns.Msg) {
 
 // LookupDomainByIP reverse lookup domain by IP
 func (s *Server) LookupDomainByIP(ip string) (string, bool) {
+	if parsed := net.ParseIP(ip); parsed != nil {
+		if v4 := parsed.To4(); v4 != nil {
+			ip = v4.String()
+		} else {
+			ip = parsed.String()
+		}
+	}
 	if s.fakeIPPool != nil {
 		if d, ok := s.fakeIPPool.LookupDomainByIP(ip); ok {
 			return d, true

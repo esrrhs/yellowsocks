@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/esrrhs/yellowsocks/core/router"
 	"github.com/miekg/dns"
 )
 
@@ -253,7 +254,12 @@ func TestNewServerDoTRequiresCert(t *testing.T) {
 }
 
 func TestFakeIPKeepsUpstreamRealAndSkipsOtherTypes(t *testing.T) {
-	s, err := NewServer(Config{EnableFakeIP: true, ListenAddr: "127.0.0.1:0", DirectDNS: "127.0.0.1:1"})
+	s, err := NewServer(Config{
+		EnableFakeIP: true,
+		ListenAddr:   "127.0.0.1:0",
+		DirectDNS:    "127.0.0.1:1",
+		DoHURL:       "http://127.0.0.1:1/dns-query",
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +291,7 @@ func TestFakeIPKeepsUpstreamRealAndSkipsOtherTypes(t *testing.T) {
 		t.Fatalf("google A = %v", web.Answer)
 	}
 	if len(ask("www.google.com", dns.TypeAAAA).Answer) != 0 {
-		t.Fatal("AAAA should be empty in fake-ip mode")
+		t.Fatal("AAAA should be empty when the upstream is unreachable")
 	}
 	if len(ask("www.google.com", dns.TypeHTTPS).Answer) != 0 {
 		t.Fatal("HTTPS should be empty in fake-ip mode")
@@ -318,5 +324,80 @@ func TestFakeIPMappingSurvivesNewServer(t *testing.T) {
 	host, ok := s2.LookupDomainByIP(ip)
 	if !ok || (host != "persist.example" && host != "persist.example.") {
 		t.Fatalf("lookup after new server: %q %v", host, ok)
+	}
+}
+
+func TestAAAAFromDirectDNSAndPinnedIPv6(t *testing.T) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer pc.Close()
+	go func() {
+		buf := make([]byte, 1500)
+		for {
+			n, addr, err := pc.ReadFrom(buf)
+			if err != nil {
+				return
+			}
+			req := new(dns.Msg)
+			if err := req.Unpack(buf[:n]); err != nil || len(req.Question) == 0 {
+				continue
+			}
+			resp := new(dns.Msg)
+			resp.SetReply(req)
+			q := req.Question[0]
+			if q.Qtype == dns.TypeAAAA {
+				resp.Answer = append(resp.Answer, &dns.AAAA{
+					Hdr:  dns.RR_Header{Name: q.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: 60},
+					AAAA: net.ParseIP("2001:db8::53"),
+				})
+			}
+			packed, err := resp.Pack()
+			if err != nil {
+				continue
+			}
+			_, _ = pc.WriteTo(packed, addr)
+		}
+	}()
+
+	rt := router.NewRouter()
+	defer rt.Close()
+	rt.AddDirectDomain("v6.example")
+	s, err := NewServer(Config{
+		EnableFakeIP: true,
+		ListenAddr:   "127.0.0.1:0",
+		DirectDNS:    pc.LocalAddr().String(),
+		DoHURL:       "http://127.0.0.1:1/dns-query",
+		Router:       rt,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	q := new(dns.Msg)
+	q.SetQuestion("v6.example.", dns.TypeAAAA)
+	resp, err := s.ResolveMsg(q)
+	if err != nil || len(resp.Answer) != 1 {
+		t.Fatalf("AAAA resolve: %v %v", err, resp)
+	}
+	aaaa, ok := resp.Answer[0].(*dns.AAAA)
+	if !ok || !aaaa.AAAA.Equal(net.ParseIP("2001:db8::53")) {
+		t.Fatalf("AAAA = %v", resp.Answer)
+	}
+	if host, ok := s.LookupDomainByIP("2001:db8:0:0:0:0:0:53"); !ok || host != "v6.example" {
+		t.Fatalf("reverse IPv6 lookup: %q %v", host, ok)
+	}
+
+	s.PinRealIP("edge.example", net.ParseIP("2001:db8::9"))
+	pinQ := new(dns.Msg)
+	pinQ.SetQuestion("edge.example.", dns.TypeAAAA)
+	pinResp, err := s.ResolveMsg(pinQ)
+	if err != nil || len(pinResp.Answer) != 1 {
+		t.Fatalf("pinned AAAA: %v %v", err, pinResp)
+	}
+	got, ok := pinResp.Answer[0].(*dns.AAAA)
+	if !ok || !got.AAAA.Equal(net.ParseIP("2001:db8::9")) {
+		t.Fatalf("pinned AAAA = %v", pinResp.Answer)
 	}
 }
