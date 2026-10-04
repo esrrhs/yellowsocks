@@ -46,6 +46,7 @@ type Server struct {
 	ipToDomain    sync.Map // ip.String() -> domain
 	fakeIPPool    *FakeIPPool
 	enableFakeIP  bool
+	enableIPv6    bool
 	whitelist     sync.Map // proxy server domain -> struct{}, never Fake-IP
 	realIP        sync.Map // proxy server domain -> pinnedAddr
 	httpClientDoH *http.Client
@@ -66,6 +67,7 @@ type Config struct {
 	Socks5Pass    string
 	Router        *router.Router
 	EnableFakeIP  bool // enable Fake-IP mode
+	EnableIPv6    bool // answer AAAA for proxied domains; off returns empty AAAA
 	FakeIPPool    *FakeIPPool
 }
 
@@ -99,6 +101,7 @@ func NewServer(cfg Config) (*Server, error) {
 		socks5User:    cfg.Socks5User,
 		socks5Pass:    cfg.Socks5Pass,
 		enableFakeIP:  cfg.EnableFakeIP,
+		enableIPv6:    cfg.EnableIPv6,
 		fakeIPPool:    cfg.FakeIPPool,
 	}
 	if s.fakeIPPool == nil {
@@ -355,6 +358,9 @@ func (s *Server) ResolveMsg(r *dns.Msg) (*dns.Msg, error) {
 	isDirect := s.router != nil && s.router.ShouldDirectDomain(qName)
 	if isDirect {
 		resp, err = s.resolveDirect(r)
+	} else if !s.enableIPv6 && q.Qtype == dns.TypeAAAA {
+		// Upstream has no IPv6 route. An empty AAAA makes clients use the A record.
+		resp = emptyReply(r)
 	} else if s.enableFakeIP && q.Qtype == dns.TypeA {
 		fakeIP := s.fakeIPPool.Allocate(qName)
 		resp = new(dns.Msg)

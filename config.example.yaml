@@ -26,6 +26,12 @@ socks5_listen: "127.0.0.1:1080"
 # 入站 HTTP/HTTPS 代理（HTTP 方法 + CONNECT）
 http_listen: "127.0.0.1:8080"
 
+# 是否允许 IPv6 目标经 SPP 转发，默认 false。
+# 关闭时：代理域名的 AAAA 查询返回空，IPv6 字面量目标直接拒绝
+# （SOCKS5 回 0x03，HTTP 回 502），客户端会改用 IPv4。
+# 仅当 SPP 服务端有 IPv6 出口时才打开。
+# ipv6: false
+
 # 可选入站认证，SOCKS5 与 HTTP 共用
 # proxy_username: "user"
 # proxy_password: "password"

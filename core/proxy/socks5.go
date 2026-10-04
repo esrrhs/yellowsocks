@@ -32,6 +32,8 @@ type Socks5Config struct {
 	Router     *router.Router
 	DNS        *dns.Server
 	Upstream   UpstreamProvider
+	// EnableIPv6 allows IPv6 destinations via SPP. When false they are rejected.
+	EnableIPv6 bool
 }
 
 // Socks5Server provides inbound SOCKS5 proxy supporting TCP and UDP with smart routing
@@ -263,8 +265,8 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 		// Upstream SPP server cannot route IPv6 (no IPv6 connectivity).
 		// When clients send IPv6 literals, reject with Network Unreachable (0x03)
 		// so clients/Happy Eyeballs immediately failover to IPv4.
-		if isIPv6Literal(targetHost) {
-			loggo.Warn("[SOCKS5] Target is IPv6 literal %s, but SPP upstream cannot route IPv6; replying Network Unreachable (0x03)", targetAddr)
+		if !s.cfg.EnableIPv6 && isIPv6Literal(targetHost) {
+			loggo.Warn("[SOCKS5] Target is IPv6 literal %s, but IPv6 disabled (ipv6: false); replying Network Unreachable (0x03)", targetAddr)
 			_ = network.Sock5SendConnectReply(clientConn, 0x03, "0.0.0.0:0")
 			return
 		}
@@ -523,7 +525,7 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 			_, _ = dConn.WriteToUDP(payload, udpDst)
 		} else {
 			// Upstream SPP cannot route IPv6
-			if isIPv6Literal(dstHost) {
+			if !s.cfg.EnableIPv6 && isIPv6Literal(dstHost) {
 				continue
 			}
 
