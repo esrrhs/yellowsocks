@@ -37,6 +37,10 @@ type EngineConfig struct {
 	ProxyUsername string
 	ProxyPassword string
 
+	// EnableIPv6 lets IPv6 destinations go through SPP. Off by default because
+	// the upstream usually has no IPv6 route.
+	EnableIPv6 bool
+
 	DirectDomains    []string
 	DirectCIDRs      []string
 	GeoIPFile        string
@@ -137,6 +141,7 @@ func (e *Engine) Start() error {
 		DirectDNS:     e.cfg.DirectDNS,
 		Socks5Addr:    e.sppManager.Socks5Addr(),
 		Router:        e.router,
+		EnableIPv6:    e.cfg.EnableIPv6,
 	})
 	if err != nil {
 		e.sppManager.Close()
@@ -167,6 +172,7 @@ func (e *Engine) Start() error {
 			Router:     e.router,
 			DNS:        e.dnsServer,
 			Upstream:   e.sppManager,
+			EnableIPv6: e.cfg.EnableIPv6,
 		})
 		if err := s5.Start(); err != nil {
 			e.cleanupServices()
@@ -184,6 +190,7 @@ func (e *Engine) Start() error {
 			Router:     e.router,
 			DNS:        e.dnsServer,
 			Upstream:   e.sppManager,
+			EnableIPv6: e.cfg.EnableIPv6,
 		})
 		if err := hSrv.Start(); err != nil {
 			e.cleanupServices()

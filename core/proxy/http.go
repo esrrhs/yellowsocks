@@ -26,6 +26,8 @@ type HTTPConfig struct {
 	Router     *router.Router
 	DNS        *dns.Server
 	Upstream   UpstreamProvider
+	// EnableIPv6 allows IPv6 destinations via SPP. When false they are rejected.
+	EnableIPv6 bool
 }
 
 // HTTPServer provides inbound HTTP and HTTPS (CONNECT) proxy with smart routing
@@ -300,8 +302,8 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, targetHost string, targe
 		relayStreams(clientConn, targetConn)
 	} else {
 		// Upstream SPP server cannot route IPv6
-		if isIPv6Literal(targetHost) {
-			loggo.Warn("[HTTP Proxy] Target is IPv6 literal %s, but SPP upstream cannot route IPv6; returning 502 Bad Gateway", targetAddr)
+		if !s.cfg.EnableIPv6 && isIPv6Literal(targetHost) {
+			loggo.Warn("[HTTP Proxy] Target is IPv6 literal %s, but IPv6 disabled (ipv6: false); returning 502 Bad Gateway", targetAddr)
 			const http502 = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
 			_, _ = clientConn.Write([]byte(http502))
 			return
@@ -394,8 +396,8 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 		targetConn, err = net.DialTimeout("tcp", targetAddr, 10*time.Second)
 	} else {
 		// Upstream SPP server cannot route IPv6
-		if isIPv6Literal(targetHost) {
-			loggo.Warn("[HTTP Proxy] Target is IPv6 literal %s, but SPP upstream cannot route IPv6; returning 502 Bad Gateway", targetAddr)
+		if !s.cfg.EnableIPv6 && isIPv6Literal(targetHost) {
+			loggo.Warn("[HTTP Proxy] Target is IPv6 literal %s, but IPv6 disabled (ipv6: false); returning 502 Bad Gateway", targetAddr)
 			const http502 = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
 			_, _ = clientConn.Write([]byte(http502))
 			return

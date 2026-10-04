@@ -32,6 +32,9 @@ type FileConfig struct {
 	ProxyUsername string `json:"proxy_username" yaml:"proxy_username"`
 	ProxyPassword string `json:"proxy_password" yaml:"proxy_password"`
 
+	// IPv6 enables IPv6 destinations through SPP (default false).
+	IPv6 *bool `json:"ipv6" yaml:"ipv6"`
+
 	DirectDomains    []string `json:"direct_domains" yaml:"direct_domains"`
 	DirectCIDRs      []string `json:"direct_cidrs" yaml:"direct_cidrs"`
 	GeoIPFile        string   `json:"geoip_file" yaml:"geoip_file"`
@@ -118,6 +121,10 @@ func (f *FileConfig) MergeWithEngineConfig(base core.EngineConfig) core.EngineCo
 	}
 	if f.ProxyPassword != "" {
 		res.ProxyPassword = f.ProxyPassword
+	}
+
+	if f.IPv6 != nil {
+		res.EnableIPv6 = *f.IPv6
 	}
 
 	if len(f.DirectDomains) > 0 {
