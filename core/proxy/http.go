@@ -299,6 +299,14 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, targetHost string, targe
 		}
 		relayStreams(clientConn, targetConn)
 	} else {
+		// Upstream SPP server cannot route IPv6
+		if isIPv6Literal(targetHost) {
+			loggo.Warn("[HTTP Proxy] Target is IPv6 literal %s, but SPP upstream cannot route IPv6; returning 502 Bad Gateway", targetAddr)
+			const http502 = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
+			_, _ = clientConn.Write([]byte(http502))
+			return
+		}
+
 		// Forward via SPP
 		if s.cfg.Upstream == nil || s.cfg.Upstream.Socks5Addr() == "" {
 			loggo.Error("[HTTP Proxy] No upstream SPP proxy available for proxy route to %s", targetAddr)
@@ -385,6 +393,14 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 	if decision == router.Direct {
 		targetConn, err = net.DialTimeout("tcp", targetAddr, 10*time.Second)
 	} else {
+		// Upstream SPP server cannot route IPv6
+		if isIPv6Literal(targetHost) {
+			loggo.Warn("[HTTP Proxy] Target is IPv6 literal %s, but SPP upstream cannot route IPv6; returning 502 Bad Gateway", targetAddr)
+			const http502 = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
+			_, _ = clientConn.Write([]byte(http502))
+			return
+		}
+
 		if s.cfg.Upstream == nil || s.cfg.Upstream.Socks5Addr() == "" {
 			const http502 = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
 			_, _ = clientConn.Write([]byte(http502))

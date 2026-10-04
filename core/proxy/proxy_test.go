@@ -534,3 +534,82 @@ func TestSocks5IPv6TCPAndUDP(t *testing.T) {
 		t.Fatalf("udp reply %s:%d %q", host, port, data)
 	}
 }
+
+func TestSocks5IPv6RejectionOnProxy(t *testing.T) {
+	mockUpstreamAddr, stopMock := startMockUpstreamSocks5(t)
+	defer stopMock()
+
+	// Default router: all unknown non-China destinations route to Proxy (SPP)
+	r := router.NewRouter()
+	defer r.Close()
+
+	s5 := NewSocks5Server(Socks5Config{
+		ListenAddr: "127.0.0.1:0",
+		Router:     r,
+		Upstream:   &mockUpstream{addr: mockUpstreamAddr},
+	})
+	if err := s5.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s5.Stop()
+
+	tcpAddr, err := net.ResolveTCPAddr("tcp", s5.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := net.DialTCP("tcp", nil, tcpAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	if err := network.Sock5Handshake(client, 5000, "", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	// Try connecting to an IPv6 literal (Google IPv6) which routes to Proxy
+	err = network.Sock5SetRequest(client, "2607:f8b0:400a:801::200e", 443, 5000)
+	if err == nil {
+		t.Fatalf("expected error when connecting to IPv6 literal via SPP proxy, got success")
+	}
+}
+
+func TestHTTPProxyIPv6Rejection(t *testing.T) {
+	mockUpstreamAddr, stopMock := startMockUpstreamSocks5(t)
+	defer stopMock()
+
+	r := router.NewRouter()
+	defer r.Close()
+
+	httpSrv := NewHTTPServer(HTTPConfig{
+		ListenAddr: "127.0.0.1:0",
+		Router:     r,
+		Upstream:   &mockUpstream{addr: mockUpstreamAddr},
+	})
+	if err := httpSrv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer httpSrv.Stop()
+
+	client, err := net.Dial("tcp", httpSrv.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+
+	// CONNECT to IPv6 literal
+	req := "CONNECT [2607:f8b0:400a:801::200e]:443 HTTP/1.1\r\nHost: [2607:f8b0:400a:801::200e]:443\r\n\r\n"
+	if _, err := client.Write([]byte(req)); err != nil {
+		t.Fatal(err)
+	}
+
+	respBuf := make([]byte, 1024)
+	n, err := client.Read(respBuf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp := string(respBuf[:n])
+	if !bytes.Contains([]byte(resp), []byte("502 Bad Gateway")) {
+		t.Fatalf("expected 502 Bad Gateway, got %q", resp)
+	}
+}
