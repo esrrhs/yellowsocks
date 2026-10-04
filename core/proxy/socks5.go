@@ -260,6 +260,15 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 		}
 		relayStreams(clientConn, outConn)
 	} else {
+		// Upstream SPP server cannot route IPv6 (no IPv6 connectivity).
+		// When clients send IPv6 literals, reject with Network Unreachable (0x03)
+		// so clients/Happy Eyeballs immediately failover to IPv4.
+		if isIPv6Literal(targetHost) {
+			loggo.Warn("[SOCKS5] Target is IPv6 literal %s, but SPP upstream cannot route IPv6; replying Network Unreachable (0x03)", targetAddr)
+			_ = network.Sock5SendConnectReply(clientConn, 0x03, "0.0.0.0:0")
+			return
+		}
+
 		// Forward via SPP
 		if s.cfg.Upstream == nil || s.cfg.Upstream.Socks5Addr() == "" {
 			loggo.Error("[SOCKS5] No upstream SPP proxy available for proxy route to %s", targetAddr)
@@ -513,6 +522,11 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 			}
 			_, _ = dConn.WriteToUDP(payload, udpDst)
 		} else {
+			// Upstream SPP cannot route IPv6
+			if isIPv6Literal(dstHost) {
+				continue
+			}
+
 			// Proxy via SPP
 			sppUConn, sppRelayTarget, err := getOrCreateSPPUDPSession()
 			if err != nil {

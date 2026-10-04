@@ -22,6 +22,16 @@ func canonicalHost(host string) string {
 	return host
 }
 
+// isIPv6Literal returns true if host is an IPv6 address (excluding IPv4-mapped IPv6).
+func isIPv6Literal(host string) bool {
+	host = strings.TrimSpace(host)
+	if len(host) >= 2 && host[0] == '[' && host[len(host)-1] == ']' {
+		host = host[1 : len(host)-1]
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.To4() == nil
+}
+
 func joinDialAddr(host string, port int) string {
 	return net.JoinHostPort(canonicalHost(host), strconv.Itoa(port))
 }
