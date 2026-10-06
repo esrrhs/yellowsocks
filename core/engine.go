@@ -147,11 +147,11 @@ func (e *Engine) Start() error {
 		e.sppManager.Close()
 		return fmt.Errorf("failed to init DNS server: %w", err)
 	}
+	// SPP node hostnames must resolve and connect directly, never via SPP.
 	for _, n := range nodes {
 		host := sppHost(n.Server)
 		if host != "" && net.ParseIP(host) == nil {
 			e.router.AddDirectDomain(host)
-			dnsSrv.WhitelistDomain(host)
 		}
 	}
 	if err := dnsSrv.Start(); err != nil {
@@ -249,29 +249,4 @@ func (e *Engine) Stop() error {
 	}
 	loggo.Info("[Engine] Stopped")
 	return nil
-}
-
-// SPPManager returns the upstream SPP manager.
-func (e *Engine) SPPManager() *sppclient.Manager {
-	return e.sppManager
-}
-
-// Socks5Server returns the inbound SOCKS5 server.
-func (e *Engine) Socks5Server() *proxy.Socks5Server {
-	return e.socks5Server
-}
-
-// HTTPServer returns the inbound HTTP proxy.
-func (e *Engine) HTTPServer() *proxy.HTTPServer {
-	return e.httpServer
-}
-
-// DNSServer returns the DNS/DoH/DoT server.
-func (e *Engine) DNSServer() *appdns.Server {
-	return e.dnsServer
-}
-
-// Router returns the domain and IP router.
-func (e *Engine) Router() *router.Router {
-	return e.router
 }

@@ -2,16 +2,11 @@ package router
 
 import (
 	"bufio"
-	"bytes"
-	"fmt"
-	"io"
 	"net"
-	"net/http"
 	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
-	"time"
 
 	"github.com/esrrhs/gohome/dns/matcher"
 	"github.com/esrrhs/gohome/loggo"
@@ -25,7 +20,7 @@ var defaultCNSuffixes = []string{
 }
 
 // builtinDirectDomains are common Chinese sites and domestic IP lookups.
-// They stay off Fake-IP so their latency is the direct path.
+// They resolve and dial over the direct path instead of going through SPP.
 var builtinDirectDomains = []string{
 	"baidu.com",
 	"qq.com",
@@ -74,28 +69,21 @@ type Router struct {
 	proxyHosts  sync.Map     // proxy host list
 	geoDB       *matcher.GeoDB
 	skipCountry string
-
-	cacheFile string // local persistent cache path
-	updateURL string // remote routes update URL
-	stopCh    chan struct{}
 }
 
 // Options router configuration options
 type Options struct {
-	DirectRoutesFile string        // custom direct routes file (e.g. routes.txt)
-	UpdateURL        string        // custom routes update URL
-	UpdateInterval   time.Duration // auto-update interval (<=0 disables auto update)
-	DirectDomains    []string      // custom direct domain suffixes
-	ProxyDomains     []string      // custom proxy domain suffixes
-	DirectCIDRs      []string      // custom direct CIDR subnets
-	DisableBuiltin   bool          // skip built-in direct domains; caller supplies Rules
-	GeoIPFile        string        // GeoLite2 mmdb file path
-	ChinaDomainFiles []string      // custom direct domain files (e.g. accelerated-domains.china.conf)
-	GFWDomainFiles   []string      // custom proxy domain files
-	SkipCountry      string        // skip country ISO code (default "CN")
+	DirectDomains    []string // custom direct domain suffixes
+	ProxyDomains     []string // custom proxy domain suffixes
+	DirectCIDRs      []string // custom direct CIDR subnets
+	DisableBuiltin   bool     // skip built-in direct domains; caller supplies Rules
+	GeoIPFile        string   // GeoLite2 mmdb file path
+	ChinaDomainFiles []string // custom direct domain files (e.g. accelerated-domains.china.conf)
+	GFWDomainFiles   []string // custom proxy domain files
+	SkipCountry      string   // skip country ISO code (default "CN")
 }
 
-// NewRouterWithOptions creates a router supporting custom routes, caching, and auto-update
+// NewRouterWithOptions creates a router with custom domains, CIDRs and GeoIP.
 func NewRouterWithOptions(opt Options) *Router {
 	skipCountry := opt.SkipCountry
 	if skipCountry == "" {
@@ -103,9 +91,6 @@ func NewRouterWithOptions(opt Options) *Router {
 	}
 
 	r := &Router{
-		cacheFile:   opt.DirectRoutesFile,
-		updateURL:   opt.UpdateURL,
-		stopCh:      make(chan struct{}),
 		skipCountry: skipCountry,
 		geoDB:       matcher.NewGeoDB(),
 	}
@@ -146,23 +131,15 @@ func NewRouterWithOptions(opt Options) *Router {
 		_ = r.LoadDomainFile(f, false)
 	}
 
-	// 2. Load custom direct routes
-	r.loadRoutes(opt.DirectCIDRs)
-
-	// 3. Start periodic auto-updater if URL and interval are provided
-	if opt.UpdateURL != "" && opt.UpdateInterval > 0 {
-		r.startAutoUpdate(opt.UpdateInterval)
-	}
+	// Load custom direct CIDRs on top of the reserved ranges.
+	r.loadDirectCIDRs(opt.DirectCIDRs)
 
 	return r
 }
 
 // NewRouter creates a default router
 func NewRouter() *Router {
-	return NewRouterWithOptions(Options{
-		DirectRoutesFile: "direct_routes.txt",
-		UpdateInterval:   0,
-	})
+	return NewRouterWithOptions(Options{})
 }
 
 func (r *Router) getReservedIPNets() IPNetList {
@@ -192,114 +169,19 @@ func (r *Router) getReservedIPNets() IPNetList {
 	return list
 }
 
-func (r *Router) parseCIDRReader(reader io.Reader) IPNetList {
+// loadDirectCIDRs installs reserved subnets plus the configured custom CIDRs.
+func (r *Router) loadDirectCIDRs(customCIDRs []string) {
 	list := r.getReservedIPNets()
-	scanner := bufio.NewScanner(reader)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if !strings.Contains(line, "/") {
-			line = line + "/32"
-		}
-		_, ipnet, err := net.ParseCIDR(line)
-		if err == nil {
+	for _, cidr := range customCIDRs {
+		if _, ipnet, err := net.ParseCIDR(cidr); err == nil {
 			list = append(list, ipnet)
 		}
 	}
-	return list
+	r.directIPs.Store(list)
 }
 
-func (r *Router) loadRoutes(customCIDRs []string) {
-	var loaded IPNetList
-
-	// Load from local cache file if available
-	if r.cacheFile != "" {
-		if f, err := os.Open(r.cacheFile); err == nil {
-			defer f.Close()
-			loaded = r.parseCIDRReader(f)
-			loggo.Info("[Router] Loaded %d direct IP subnets from cache %s", len(loaded), r.cacheFile)
-		}
-	}
-
-	if len(loaded) == 0 {
-		loaded = r.getReservedIPNets()
-	}
-
-	for _, cidr := range customCIDRs {
-		if _, ipnet, err := net.ParseCIDR(cidr); err == nil {
-			loaded = append(loaded, ipnet)
-		}
-	}
-
-	r.directIPs.Store(loaded)
-}
-
-// UpdateRoutesNow downloads routes from remote URL and hot-replaces the routing table
-func (r *Router) UpdateRoutesNow() error {
-	if r.updateURL == "" {
-		return fmt.Errorf("no update URL configured")
-	}
-
-	loggo.Info("[Router] Fetching latest direct routes from %s ...", r.updateURL)
-
-	client := &http.Client{Timeout: 15 * time.Second}
-	resp, err := client.Get(r.updateURL)
-	if err != nil {
-		return fmt.Errorf("failed to download routes: %w", err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("bad HTTP status: %d", resp.StatusCode)
-	}
-
-	data, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed to read response: %w", err)
-	}
-
-	newList := r.parseCIDRReader(bytes.NewReader(data))
-	if len(newList) < 10 {
-		return fmt.Errorf("downloaded routes too small (%d items), aborted", len(newList))
-	}
-
-	r.directIPs.Store(newList)
-	loggo.Info("[Router] Successfully updated direct routes! Total direct subnets: %d", len(newList))
-
-	if r.cacheFile != "" {
-		_ = os.WriteFile(r.cacheFile, data, 0644)
-	}
-
-	return nil
-}
-
-func (r *Router) startAutoUpdate(interval time.Duration) {
-	go func() {
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-
-		for {
-			select {
-			case <-r.stopCh:
-				return
-			case <-ticker.C:
-				if err := r.UpdateRoutesNow(); err != nil {
-					loggo.Warn("[Router] Auto update routes failed: %v", err)
-				}
-			}
-		}
-	}()
-}
-
-// Close stops background routines
+// Close releases the GeoIP database.
 func (r *Router) Close() {
-	select {
-	case <-r.stopCh:
-	default:
-		close(r.stopCh)
-	}
 	if r.geoDB != nil {
 		_ = r.geoDB.Close()
 	}

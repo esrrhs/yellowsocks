@@ -15,7 +15,6 @@ import (
 	"github.com/esrrhs/gohome/network"
 	"github.com/esrrhs/yellowsocks/core/dns"
 	"github.com/esrrhs/yellowsocks/core/router"
-	"github.com/esrrhs/yellowsocks/core/stats"
 )
 
 // UpstreamProvider provides upstream proxy address (e.g. from SPP Manager)
@@ -240,10 +239,6 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 	if decision == router.Direct {
 		ruleStr = "Direct"
 	}
-
-	connID := clientConn.RemoteAddr().String() + "->" + targetAddr
-	stats.Default.TrackConnection(connID, "socks5", clientConn.RemoteAddr().String(), targetAddr, realHost, ruleStr, "")
-	defer stats.Default.RemoveConnection(connID)
 
 	loggo.Info("[SOCKS5] TCP CONNECT %s -> %s (%s, Decision: %s)",
 		clientConn.RemoteAddr(), targetAddr, realHost, ruleStr)

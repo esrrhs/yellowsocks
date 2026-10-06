@@ -15,7 +15,6 @@ import (
 	"github.com/esrrhs/gohome/network"
 	"github.com/esrrhs/yellowsocks/core/dns"
 	"github.com/esrrhs/yellowsocks/core/router"
-	"github.com/esrrhs/yellowsocks/core/stats"
 )
 
 // HTTPConfig configures the HTTP proxy server
@@ -277,10 +276,6 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, targetHost string, targe
 	if decision == router.Direct {
 		ruleStr = "Direct"
 	}
-
-	connID := clientConn.RemoteAddr().String() + "->" + targetAddr
-	stats.Default.TrackConnection(connID, "http_connect", clientConn.RemoteAddr().String(), targetAddr, realHost, ruleStr, "")
-	defer stats.Default.RemoveConnection(connID)
 
 	loggo.Info("[HTTP Proxy] CONNECT %s -> %s (%s, Decision: %s)",
 		clientConn.RemoteAddr(), targetAddr, realHost, ruleStr)
