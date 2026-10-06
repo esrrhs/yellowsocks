@@ -73,7 +73,7 @@ func startMockUpstreamSocks5(t *testing.T) (string, func()) {
 					}
 					defer dstConn.Close()
 					_ = network.Sock5SendConnectReply(c, 0x00, "0.0.0.0:0")
-					relayStreams(c, dstConn)
+					relayStreams(c, dstConn, defaultIdleTimeout)
 				} else if cmd == network.Socks5CmdUDPAssociate {
 					uRelay, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 					if err != nil {
@@ -611,5 +611,300 @@ func TestHTTPProxyIPv6Rejection(t *testing.T) {
 	resp := string(respBuf[:n])
 	if !bytes.Contains([]byte(resp), []byte("502 Bad Gateway")) {
 		t.Fatalf("expected 502 Bad Gateway, got %q", resp)
+	}
+}
+
+// mustTCPAddr resolves an address or fails the test.
+func mustTCPAddr(t *testing.T, addr string) *net.TCPAddr {
+	t.Helper()
+	a, err := net.ResolveTCPAddr("tcp", addr)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", addr, err)
+	}
+	return a
+}
+
+// startEchoTCP starts a loopback TCP server that echoes every byte back.
+func startEchoTCP(t *testing.T) (string, func()) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("echo listen: %v", err)
+	}
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				_, _ = io.Copy(c, c)
+			}(c)
+		}
+	}()
+	return ln.Addr().String(), func() { _ = ln.Close() }
+}
+
+// A fully idle proxied connection must be reclaimed by the idle timeout
+// instead of leaking its goroutines and sockets forever.
+func TestSocks5IdleTimeoutReclaimsConnection(t *testing.T) {
+	echoAddr, stopEcho := startEchoTCP(t)
+	defer stopEcho()
+
+	r := router.NewRouter()
+	defer r.Close()
+	s5 := NewSocks5Server(Socks5Config{ListenAddr: "127.0.0.1:0", Router: r, IdleTimeout: 200 * time.Millisecond})
+	if err := s5.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s5.Stop()
+
+	cc, err := net.DialTCP("tcp", nil, mustTCPAddr(t, s5.Addr().String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	if err := network.Sock5Handshake(cc, 5000, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	host, portStr, _ := net.SplitHostPort(echoAddr)
+	port, _ := strconv.Atoi(portStr)
+	if err := network.Sock5SetRequest(cc, host, port, 5000); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	// Send nothing after the tunnel opens; the idle deadline must close it.
+	_ = cc.SetReadDeadline(time.Now().Add(3 * time.Second))
+	if _, err := cc.Read(make([]byte, 4)); err == nil {
+		t.Fatal("expected the idle connection to be closed, but read succeeded")
+	}
+}
+
+// Active traffic must keep refreshing the idle deadline (long-lived transfer).
+func TestSocks5ActiveTrafficSurvivesIdleTimeout(t *testing.T) {
+	echoAddr, stopEcho := startEchoTCP(t)
+	defer stopEcho()
+
+	r := router.NewRouter()
+	defer r.Close()
+	s5 := NewSocks5Server(Socks5Config{ListenAddr: "127.0.0.1:0", Router: r, IdleTimeout: 200 * time.Millisecond})
+	if err := s5.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s5.Stop()
+
+	cc, err := net.DialTCP("tcp", nil, mustTCPAddr(t, s5.Addr().String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	if err := network.Sock5Handshake(cc, 5000, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	host, portStr, _ := net.SplitHostPort(echoAddr)
+	port, _ := strconv.Atoi(portStr)
+	if err := network.Sock5SetRequest(cc, host, port, 5000); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	msg := []byte("ping")
+	reply := make([]byte, len(msg))
+	for i := 0; i < 4; i++ {
+		if _, err := cc.Write(msg); err != nil {
+			t.Fatalf("write %d: %v", i, err)
+		}
+		if _, err := io.ReadFull(cc, reply); err != nil {
+			t.Fatalf("echo %d failed while traffic was flowing: %v", i, err)
+		}
+		time.Sleep(120 * time.Millisecond) // cross the idle threshold several times
+	}
+}
+
+// A one-way transfer (server streaming data, client sending nothing) must not
+// be killed by the idle timeout: activity in either direction keeps it alive.
+func TestSocks5OneWayStreamSurvivesIdleTimeout(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		go func(c net.Conn) {
+			defer c.Close()
+			ticker := time.NewTicker(30 * time.Millisecond)
+			defer ticker.Stop()
+			for i := 0; i < 10; i++ {
+				if _, err := c.Write([]byte("DATA\n")); err != nil {
+					return
+				}
+				<-ticker.C
+			}
+		}(c)
+	}()
+
+	r := router.NewRouter()
+	defer r.Close()
+	s5 := NewSocks5Server(Socks5Config{ListenAddr: "127.0.0.1:0", Router: r, IdleTimeout: 150 * time.Millisecond})
+	if err := s5.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s5.Stop()
+
+	cc, err := net.DialTCP("tcp", nil, mustTCPAddr(t, s5.Addr().String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	if err := network.Sock5Handshake(cc, 5000, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	host, portStr, _ := net.SplitHostPort(ln.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+	if err := network.Sock5SetRequest(cc, host, port, 5000); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	// Client only reads; it never sends anything over the tunnel. The 300ms of
+	// continuous downstream data spans multiple 150ms idle windows.
+	_ = cc.SetReadDeadline(time.Now().Add(3 * time.Second))
+	br := bufio.NewReader(cc)
+	for i := 0; i < 10; i++ {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatalf("one-way stream cut off at chunk %d: %v", i, err)
+		}
+		if line != "DATA\n" {
+			t.Fatalf("unexpected chunk %q", line)
+		}
+	}
+}
+
+// Bytes a client sends coalesced with the CONNECT request (already sitting in
+// the proxy's bufio.Reader) must still reach the target instead of being lost.
+func TestHTTPConnectPreservesCoalescedTunnelBytes(t *testing.T) {
+	echoAddr, stopEcho := startEchoTCP(t)
+	defer stopEcho()
+
+	r := router.NewRouter()
+	defer r.Close()
+	hp := NewHTTPServer(HTTPConfig{ListenAddr: "127.0.0.1:0", Router: r})
+	if err := hp.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer hp.Stop()
+
+	cc, err := net.Dial("tcp", hp.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+
+	payload := []byte("EARLY-TUNNEL-BYTES")
+	req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", echoAddr, echoAddr)
+	// One write coalesces the request line/headers and the first tunnel frame.
+	if _, err := cc.Write(append([]byte(req), payload...)); err != nil {
+		t.Fatal(err)
+	}
+
+	br := bufio.NewReader(cc)
+	resp, err := http.ReadResponse(br, nil)
+	if err != nil {
+		t.Fatalf("read connect reply: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	_ = cc.SetReadDeadline(time.Now().Add(3 * time.Second))
+	got := make([]byte, len(payload))
+	if _, err := io.ReadFull(cc, got); err != nil {
+		t.Fatalf("coalesced tunnel bytes were not forwarded: %v", err)
+	}
+	if string(got) != string(payload) {
+		t.Fatalf("expected %q, got %q", payload, got)
+	}
+}
+
+// After a UDP association is pinned to the first client, datagrams from any
+// other source must be dropped (RFC 1928).
+func TestSocks5UDPRejectsSpoofedSource(t *testing.T) {
+	udpEcho, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpEcho.Close()
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			n, rAddr, err := udpEcho.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			_, _ = udpEcho.WriteToUDP(buf[:n], rAddr)
+		}
+	}()
+
+	r := router.NewRouter()
+	defer r.Close()
+	s5 := NewSocks5Server(Socks5Config{ListenAddr: "127.0.0.1:0", Router: r})
+	if err := s5.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s5.Stop()
+
+	cc, err := net.DialTCP("tcp", nil, mustTCPAddr(t, s5.Addr().String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	if err := network.Sock5Handshake(cc, 5000, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	relayAddrStr, err := network.Sock5SetUDPRequest(cc, "0.0.0.0", 0, 5000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayUDP, _ := net.ResolveUDPAddr("udp", relayAddrStr)
+
+	echoHost, echoPortStr, _ := net.SplitHostPort(udpEcho.LocalAddr().String())
+	echoPort, _ := strconv.Atoi(echoPortStr)
+
+	// Legitimate client pins its endpoint and gets an echo.
+	legit, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer legit.Close()
+	good, _ := network.Sock5PackUDP(echoHost, echoPort, []byte("legit"))
+	if _, err := legit.WriteToUDP(good, relayUDP); err != nil {
+		t.Fatal(err)
+	}
+	_ = legit.SetReadDeadline(time.Now().Add(3 * time.Second))
+	rbuf := make([]byte, 65535)
+	if _, _, err := legit.ReadFromUDP(rbuf); err != nil {
+		t.Fatalf("legit echo: %v", err)
+	}
+
+	// Attacker on a different socket tries to inject; the relay must drop it.
+	attacker, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer attacker.Close()
+	evil, _ := network.Sock5PackUDP(echoHost, echoPort, []byte("spoofed"))
+	if _, err := attacker.WriteToUDP(evil, relayUDP); err != nil {
+		t.Fatal(err)
+	}
+
+	// The legit client must not receive the attacker's echoed payload; after
+	// the single legit echo above the relay should stay silent.
+	_ = legit.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
+	if n, _, err := legit.ReadFromUDP(rbuf); err == nil {
+		t.Fatalf("relay accepted a spoofed datagram and echoed %d bytes", n)
 	}
 }

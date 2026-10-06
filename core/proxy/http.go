@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bufio"
+	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"net"
@@ -27,6 +28,9 @@ type HTTPConfig struct {
 	Upstream   UpstreamProvider
 	// EnableIPv6 allows IPv6 destinations via SPP. When false they are rejected.
 	EnableIPv6 bool
+	// IdleTimeout closes a proxied connection that transfers no data for this
+	// long. Zero defaults to defaultIdleTimeout.
+	IdleTimeout time.Duration
 }
 
 // HTTPServer provides inbound HTTP and HTTPS (CONNECT) proxy with smart routing
@@ -42,6 +46,9 @@ type HTTPServer struct {
 func NewHTTPServer(cfg HTTPConfig) *HTTPServer {
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = "127.0.0.1:8080"
+	}
+	if cfg.IdleTimeout <= 0 {
+		cfg.IdleTimeout = defaultIdleTimeout
 	}
 	return &HTTPServer{
 		cfg:    cfg,
@@ -112,9 +119,6 @@ func (s *HTTPServer) acceptLoop(l net.Listener) {
 			case <-s.stopCh:
 				return
 			default:
-				if s.closed {
-					return
-				}
 				time.Sleep(10 * time.Millisecond)
 				continue
 			}
@@ -198,7 +202,7 @@ func (s *HTTPServer) handleClient(clientConn net.Conn) {
 	_ = clientConn.SetDeadline(time.Time{})
 
 	if method == "CONNECT" {
-		s.handleConnect(clientConn, targetHost, targetPort)
+		s.handleConnect(clientConn, br, targetHost, targetPort)
 	} else {
 		s.handleStandardHTTP(clientConn, br, method, rawURI, protoVer, rawHeaders, targetHost, targetPort)
 	}
@@ -219,7 +223,9 @@ func (s *HTTPServer) checkAuth(authHeader string) bool {
 	if err != nil {
 		return false
 	}
-	return string(decoded) == s.cfg.Username+":"+s.cfg.Password
+	// Constant-time comparison avoids leaking the credentials through timing.
+	expected := []byte(s.cfg.Username + ":" + s.cfg.Password)
+	return subtle.ConstantTimeCompare(decoded, expected) == 1
 }
 
 func (s *HTTPServer) parseTarget(method, rawURI, hostHeader string) (string, int) {
@@ -268,7 +274,7 @@ func (s *HTTPServer) routeDecision(host string, port int) (router.RouteDecision,
 	return decision, realHost
 }
 
-func (s *HTTPServer) handleConnect(clientConn net.Conn, targetHost string, targetPort int) {
+func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, targetHost string, targetPort int) {
 	targetHost = canonicalHost(targetHost)
 	decision, realHost := s.routeDecision(targetHost, targetPort)
 	targetAddr := joinDialAddr(targetHost, targetPort)
@@ -276,6 +282,10 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, targetHost string, targe
 	if decision == router.Direct {
 		ruleStr = "Direct"
 	}
+
+	// Bytes the client pushed before reading our 200 reply may already be
+	// buffered in br; the tunnel must drain them first or they are lost.
+	tunnelConn := &prefixedReaderConn{Conn: clientConn, br: br}
 
 	loggo.Info("[HTTP Proxy] CONNECT %s -> %s (%s, Decision: %s)",
 		clientConn.RemoteAddr(), targetAddr, realHost, ruleStr)
@@ -294,7 +304,7 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, targetHost string, targe
 		if _, err := clientConn.Write([]byte(http200)); err != nil {
 			return
 		}
-		relayStreams(clientConn, targetConn)
+		relayStreams(tunnelConn, targetConn, s.cfg.IdleTimeout)
 	} else {
 		// Upstream SPP server cannot route IPv6
 		if !s.cfg.EnableIPv6 && isIPv6Literal(targetHost) {
@@ -349,7 +359,7 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, targetHost string, targe
 		if _, err := clientConn.Write([]byte(http200)); err != nil {
 			return
 		}
-		relayStreams(clientConn, sppConn)
+		relayStreams(tunnelConn, sppConn, s.cfg.IdleTimeout)
 	}
 }
 
@@ -443,7 +453,7 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 		br:   br,
 	}
 
-	relayStreams(clientPrefixed, targetConn)
+	relayStreams(clientPrefixed, targetConn, s.cfg.IdleTimeout)
 }
 
 type prefixedReaderConn struct {

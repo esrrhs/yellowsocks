@@ -33,6 +33,9 @@ type Socks5Config struct {
 	Upstream   UpstreamProvider
 	// EnableIPv6 allows IPv6 destinations via SPP. When false they are rejected.
 	EnableIPv6 bool
+	// IdleTimeout closes a proxied connection that transfers no data for this
+	// long. Zero defaults to defaultIdleTimeout.
+	IdleTimeout time.Duration
 }
 
 // Socks5Server provides inbound SOCKS5 proxy supporting TCP and UDP with smart routing
@@ -48,6 +51,9 @@ type Socks5Server struct {
 func NewSocks5Server(cfg Socks5Config) *Socks5Server {
 	if cfg.ListenAddr == "" {
 		cfg.ListenAddr = "127.0.0.1:1080"
+	}
+	if cfg.IdleTimeout <= 0 {
+		cfg.IdleTimeout = defaultIdleTimeout
 	}
 	return &Socks5Server{
 		cfg:    cfg,
@@ -114,13 +120,13 @@ func (s *Socks5Server) acceptLoop(l net.Listener) {
 	for {
 		conn, err := l.Accept()
 		if err != nil {
+			// Stop closes both stopCh and the listener; stopCh is closed first,
+			// so a shutdown always lands in the returning branch without racing
+			// on the s.closed flag.
 			select {
 			case <-s.stopCh:
 				return
 			default:
-				if s.closed {
-					return
-				}
 				time.Sleep(10 * time.Millisecond)
 				continue
 			}
@@ -255,7 +261,7 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 		if err := network.Sock5SendConnectReply(clientConn, 0x00, "0.0.0.0:0"); err != nil {
 			return
 		}
-		relayStreams(clientConn, outConn)
+		relayStreams(clientConn, outConn, s.cfg.IdleTimeout)
 	} else {
 		// Upstream SPP server cannot route IPv6 (no IPv6 connectivity).
 		// When clients send IPv6 literals, reject with Network Unreachable (0x03)
@@ -307,7 +313,7 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 		if err := network.Sock5SendConnectReply(clientConn, 0x00, "0.0.0.0:0"); err != nil {
 			return
 		}
-		relayStreams(clientConn, sppConn)
+		relayStreams(clientConn, sppConn, s.cfg.IdleTimeout)
 	}
 }
 
@@ -497,7 +503,16 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 			continue
 		}
 
-		activeClientUDP.Store(clientSrcUDP)
+		// RFC 1928: a UDP relay must only accept datagrams from the host/port
+		// that registered the association. The first datagram pins the client
+		// endpoint; packets from any other source are dropped. This matters
+		// when the SOCKS5 listener is bound to a non-loopback address.
+		known := activeClientUDP.Load()
+		if known == nil {
+			activeClientUDP.Store(clientSrcUDP)
+		} else if !sameUDPAddr(known, clientSrcUDP) {
+			continue
+		}
 
 		dstHost, dstPort, payload, err := network.Sock5UnpackUDP(pktBuf[:n])
 		if err != nil || len(payload) == 0 {
@@ -535,19 +550,71 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 	}
 }
 
-func relayStreams(a, b net.Conn) {
+// defaultIdleTimeout closes proxied connections whose peer vanished without a
+// FIN/RST and that transfer no data for this long.
+const defaultIdleTimeout = 5 * time.Minute
+
+// relayCopyBufferSize matches io.Copy's default transfer buffer.
+const relayCopyBufferSize = 32 * 1024
+
+func relayStreams(a, b net.Conn, idle time.Duration) {
+	// lastActivity is shared by both directions, so a one-way transfer (e.g. a
+	// long download with no upstream data) keeps the connection alive.
+	lastActivity := time.Now().UnixNano()
+	touch := func() { atomic.StoreInt64(&lastActivity, time.Now().UnixNano()) }
+
+	done := make(chan struct{})
+	watchdog := func() {
+		interval := idle / 4
+		if interval < time.Second {
+			interval = idle // tiny test timeouts: check once per idle period
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				if d := time.Since(time.Unix(0, atomic.LoadInt64(&lastActivity))); d > idle {
+					// Closing the sockets unblocks the blocked Read calls.
+					_ = a.Close()
+					_ = b.Close()
+					return
+				}
+			}
+		}
+	}
+	go watchdog()
+
 	var wg sync.WaitGroup
 	wg.Add(2)
-
 	pipe := func(dst, src net.Conn) {
 		defer wg.Done()
-		_, _ = io.Copy(dst, src)
+		buf := make([]byte, relayCopyBufferSize)
+		for {
+			n, rerr := src.Read(buf)
+			if n > 0 {
+				touch()
+				if _, werr := dst.Write(buf[:n]); werr != nil {
+					break
+				}
+			}
+			if rerr != nil {
+				break
+			}
+		}
+		// Half-close the write side if the peer supports it, then drop both
+		// sockets so the opposite pipe unblocks instead of leaking.
 		if tcp, ok := dst.(*net.TCPConn); ok {
 			_ = tcp.CloseWrite()
 		}
+		_ = a.Close()
+		_ = b.Close()
 	}
 
 	go pipe(a, b)
 	go pipe(b, a)
 	wg.Wait()
+	close(done)
 }

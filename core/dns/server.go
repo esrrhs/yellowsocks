@@ -26,6 +26,13 @@ type DNSCacheEntry struct {
 	ExpiresAt time.Time
 }
 
+// ipMapping is a domain learned for an IP, with an expiry so the reverse map
+// stays bounded on long-running processes.
+type ipMapping struct {
+	domain  string
+	expires time.Time
+}
+
 // Server serves DNS, DoH and DoT with rule-based upstream selection.
 type Server struct {
 	listenAddr    string
@@ -38,13 +45,23 @@ type Server struct {
 	router        *router.Router
 	socks5Addr    string
 	udpServer     *dns.Server
+	tcpServer     *dns.Server
 	dotServer     *dns.Server
 	httpServerDoH *http.Server
 	cache         sync.Map // domain+type -> DNSCacheEntry
-	ipToDomain    sync.Map // ip.String() -> domain, learned from answered queries
+	ipToDomain    sync.Map // ip.String() -> ipMapping, learned from answered queries
 	enableIPv6    bool
 	httpClientDoH *http.Client
+	stopCh        chan struct{}
+	stopOnce      sync.Once
+	janitorOnce   sync.Once
 }
+
+// cacheSweepInterval is how often expired cache and IP mappings are reclaimed.
+var cacheSweepInterval = 2 * time.Minute
+
+// ipMappingTTL bounds how long an IP keeps reverse-resolving to a domain.
+var ipMappingTTL = 30 * time.Minute
 
 // Config DNS server configuration
 type Config struct {
@@ -86,6 +103,7 @@ func NewServer(cfg Config) (*Server, error) {
 		router:        cfg.Router,
 		socks5Addr:    cfg.Socks5Addr,
 		enableIPv6:    cfg.EnableIPv6,
+		stopCh:        make(chan struct{}),
 	}
 
 	s.setupDoHClient()
@@ -137,6 +155,21 @@ func (s *Server) Start() error {
 		}
 	}()
 
+	// RFC 5966: also answer over TCP so clients that get a truncated (TC=1)
+	// UDP response can retry instead of failing the lookup.
+	s.tcpServer = &dns.Server{
+		Addr:    s.listenAddr,
+		Net:     "tcp",
+		Handler: mux,
+	}
+	go func() {
+		if err := s.tcpServer.ListenAndServe(); err != nil {
+			loggo.Info("[DNS] TCP server stopped: %v", err)
+		}
+	}()
+
+	s.startJanitor()
+
 	if s.dohListenAddr != "" {
 		muxDoH := http.NewServeMux()
 		muxDoH.HandleFunc("/dns-query", s.handleDoHHTTP)
@@ -186,6 +219,7 @@ func (s *Server) Start() error {
 // Stop stops DNS, DoH and DoT servers
 func (s *Server) Stop() error {
 	var firstErr error
+	s.stopOnce.Do(func() { close(s.stopCh) })
 	if s.udpServer != nil && s.udpServer.PacketConn != nil {
 		// Shutdown() ignores a PacketConn when ActivateAndServe has not marked
 		// the server started yet, which would leak the UDP listen port.
@@ -195,6 +229,11 @@ func (s *Server) Stop() error {
 	}
 	if s.udpServer != nil {
 		if err := s.udpServer.Shutdown(); err != nil && firstErr == nil && !strings.Contains(err.Error(), "not started") {
+			firstErr = err
+		}
+	}
+	if s.tcpServer != nil {
+		if err := s.tcpServer.Shutdown(); err != nil && firstErr == nil && !strings.Contains(err.Error(), "not started") {
 			firstErr = err
 		}
 	}
@@ -209,6 +248,42 @@ func (s *Server) Stop() error {
 		}
 	}
 	return firstErr
+}
+
+// startJanitor launches the background reaper for expired DNS state.
+func (s *Server) startJanitor() {
+	s.janitorOnce.Do(func() {
+		go func() {
+			ticker := time.NewTicker(cacheSweepInterval)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-s.stopCh:
+					return
+				case <-ticker.C:
+					s.sweepExpired()
+				}
+			}
+		}()
+	})
+}
+
+// sweepExpired removes stale cache entries and IP mappings. It is also called
+// directly by tests instead of waiting for the ticker.
+func (s *Server) sweepExpired() {
+	now := time.Now()
+	s.cache.Range(func(k, v any) bool {
+		if now.After(v.(DNSCacheEntry).ExpiresAt) {
+			s.cache.Delete(k)
+		}
+		return true
+	})
+	s.ipToDomain.Range(func(k, v any) bool {
+		if now.After(v.(ipMapping).expires) {
+			s.ipToDomain.Delete(k)
+		}
+		return true
+	})
 }
 
 func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
@@ -388,11 +463,14 @@ func (s *Server) cacheAndRecordIP(domain, key string, msg *dns.Msg) {
 		if ans.Header().Ttl < minTTL && ans.Header().Ttl > 0 {
 			minTTL = ans.Header().Ttl
 		}
+	}
+	mappingExpiry := time.Now().Add(ipMappingTTL)
+	for _, ans := range msg.Answer {
 		if a, ok := ans.(*dns.A); ok {
-			s.ipToDomain.Store(a.A.String(), domain)
+			s.ipToDomain.Store(a.A.String(), ipMapping{domain: domain, expires: mappingExpiry})
 		}
 		if aaaa, ok := ans.(*dns.AAAA); ok {
-			s.ipToDomain.Store(aaaa.AAAA.String(), domain)
+			s.ipToDomain.Store(aaaa.AAAA.String(), ipMapping{domain: domain, expires: mappingExpiry})
 		}
 	}
 
@@ -416,5 +494,10 @@ func (s *Server) LookupDomainByIP(ip string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	return val.(string), true
+	m := val.(ipMapping)
+	if time.Now().After(m.expires) {
+		s.ipToDomain.Delete(ip)
+		return "", false
+	}
+	return m.domain, true
 }

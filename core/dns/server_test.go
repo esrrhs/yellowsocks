@@ -398,3 +398,77 @@ func TestAAAAFromDirectDNS(t *testing.T) {
 		t.Fatalf("reverse IPv6 lookup: %q %v", host, ok)
 	}
 }
+
+// freeUDPPort grabs and releases an ephemeral UDP port to reuse as an address.
+func freeUDPPort(t *testing.T) string {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := pc.LocalAddr().String()
+	_ = pc.Close()
+	return addr
+}
+
+// RFC 5966: the server must answer plain TCP DNS queries on the same port so
+// clients retrying after a truncated (TC=1) UDP answer still resolve.
+func TestDNSServerTCP(t *testing.T) {
+	addr := freeUDPPort(t)
+	dohStub := localDoHTTPServer(t, map[string]string{"tcp.example": "203.0.113.7"})
+
+	srv, err := NewServer(Config{
+		ListenAddr: addr,
+		DoHURL:     dohStub.URL + "/dns-query",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Stop()
+	time.Sleep(100 * time.Millisecond)
+
+	c := &dns.Client{Net: "tcp", Timeout: 2 * time.Second}
+	m := new(dns.Msg)
+	m.SetQuestion("tcp.example.", dns.TypeA)
+	resp, _, err := c.Exchange(m, addr)
+	if err != nil {
+		t.Fatalf("TCP DNS exchange failed: %v", err)
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("expected 1 A record over TCP, got %d", len(resp.Answer))
+	}
+	a, ok := resp.Answer[0].(*dns.A)
+	if !ok || !a.A.Equal(net.ParseIP("203.0.113.7")) {
+		t.Fatalf("unexpected TCP answer: %v", resp.Answer)
+	}
+}
+
+func TestDNSServerSweepExpired(t *testing.T) {
+	srv, err := NewServer(Config{ListenAddr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv.cache.Store("fresh_cache", DNSCacheEntry{Msg: new(dns.Msg), ExpiresAt: time.Now().Add(time.Minute)})
+	srv.cache.Store("stale_cache", DNSCacheEntry{Msg: new(dns.Msg), ExpiresAt: time.Now().Add(-time.Minute)})
+	srv.ipToDomain.Store("1.1.1.1", ipMapping{domain: "fresh.example", expires: time.Now().Add(time.Minute)})
+	srv.ipToDomain.Store("2.2.2.2", ipMapping{domain: "stale.example", expires: time.Now().Add(-time.Minute)})
+
+	srv.sweepExpired()
+
+	if _, ok := srv.cache.Load("stale_cache"); ok {
+		t.Fatal("stale cache entry should have been reaped")
+	}
+	if _, ok := srv.cache.Load("fresh_cache"); !ok {
+		t.Fatal("fresh cache entry should be retained")
+	}
+	if d, ok := srv.LookupDomainByIP("1.1.1.1"); !ok || d != "fresh.example" {
+		t.Fatalf("fresh mapping lost: %q %v", d, ok)
+	}
+	if _, ok := srv.LookupDomainByIP("2.2.2.2"); ok {
+		t.Fatal("stale IP mapping should have been reaped")
+	}
+}
