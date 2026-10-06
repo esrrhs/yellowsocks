@@ -97,3 +97,11 @@ func addrIP(addr net.Addr) net.IP {
 	}
 	return net.ParseIP(host)
 }
+
+// sameUDPAddr reports whether two UDP endpoints share IP and port.
+func sameUDPAddr(a, b *net.UDPAddr) bool {
+	if a == nil || b == nil {
+		return a == nil && b == nil
+	}
+	return a.Port == b.Port && a.IP.Equal(b.IP)
+}
