@@ -4,6 +4,10 @@
 *.dll
 *.so
 *.dylib
+/yellowsocks-cli
+
+# macOS
+.DS_Store
 
 # Packaging
 pack/

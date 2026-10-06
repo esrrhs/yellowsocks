@@ -2,10 +2,8 @@ package sppclient
 
 import (
 	"fmt"
-	"net"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/esrrhs/gohome/loggo"
 	"github.com/esrrhs/spp/proxy"
@@ -22,13 +20,11 @@ type Config struct {
 	Name        string
 }
 
-// Client 封装 spp proxy.Client 并提供与内核对接的拨号能力
+// Client wraps the spp proxy.Client.
 type Client struct {
-	cfg         *Config
-	sppProxy    *proxy.Client
-	localSocks5 string
-	mu          sync.Mutex
-	closed      bool
+	sppProxy *proxy.Client
+	mu       sync.Mutex
+	closed   bool
 }
 
 // NewClient 启动 SPP socks5_client 模式
@@ -84,32 +80,7 @@ func NewClient(cfg *Config) (*Client, error) {
 		return nil, fmt.Errorf("failed to init SPP client: %w", err)
 	}
 
-	// 等待 socks5 端口监听就绪
-	client := &Client{
-		cfg:         cfg,
-		sppProxy:    c,
-		localSocks5: cfg.LocalSocks5,
-	}
-
-	// 快速探测 localSocks5 是否在监听
-	go func() {
-		for i := 0; i < 20; i++ {
-			conn, err := net.DialTimeout("tcp", cfg.LocalSocks5, 200*time.Millisecond)
-			if err == nil {
-				conn.Close()
-				loggo.Info("[SPP] Local socks5 listener ready on %s", cfg.LocalSocks5)
-				return
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
-	}()
-
-	return client, nil
-}
-
-// Socks5Addr 获取本地 socks5 地址
-func (c *Client) Socks5Addr() string {
-	return c.localSocks5
+	return &Client{sppProxy: c}, nil
 }
 
 // Close 关闭客户端

@@ -13,14 +13,13 @@ import (
 
 // Node is one upstream SPP server.
 type Node struct {
-	Name        string        `json:"name"`
-	Server      string        `json:"server"`
-	ServerProto string        `json:"server_proto"` // tcp, udp, rudp, kcp, quic
-	Key         string        `json:"key"`
-	Encrypt     string        `json:"encrypt"`
-	Compress    int           `json:"compress"`
-	Latency     time.Duration `json:"latency"`
-	Alive       bool          `json:"alive"`
+	Name        string `json:"name"`
+	Server      string `json:"server"`
+	ServerProto string `json:"server_proto"` // tcp, udp, rudp, kcp, quic
+	Key         string `json:"key"`
+	Encrypt     string `json:"encrypt"`
+	Compress    int    `json:"compress"`
+	Alive       bool   `json:"alive"`
 }
 
 // dialNetworkForProto returns the IP protocol used to reach an SPP server.
@@ -140,15 +139,12 @@ func (m *Manager) checkAllNodes() {
 			defer wg.Done()
 			node := m.nodes[idx]
 			network := dialNetworkForProto(node.ServerProto)
-			start := time.Now()
 			conn, err := net.DialTimeout(network, node.Server, 3*time.Second)
 			if err != nil {
 				node.Alive = false
-				node.Latency = 0
 				return
 			}
 			node.Alive = true
-			node.Latency = time.Since(start)
 			conn.Close()
 		}(i)
 	}
@@ -172,27 +168,6 @@ func (m *Manager) Socks5Addr() string {
 // Socks5Auth is empty. The local SPP SOCKS5 does not require a username.
 func (m *Manager) Socks5Auth() (string, string) {
 	return "", ""
-}
-
-// ActiveNode returns the node currently used for proxied traffic.
-func (m *Manager) ActiveNode() *Node {
-	idx := atomic.LoadInt32(&m.activeIndex)
-	if idx < 0 || int(idx) >= len(m.nodes) {
-		return nil
-	}
-	return m.nodes[idx]
-}
-
-// GetAllNodes returns every configured node.
-func (m *Manager) GetAllNodes() []*Node {
-	return m.nodes
-}
-
-// SwitchToNode selects a node.
-func (m *Manager) SwitchToNode(index int) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.switchNode(index)
 }
 
 // Close stops health checks and the active SPP client.

@@ -14,8 +14,10 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,6 +71,60 @@ func writeTestTLSCert(t *testing.T, dir string) (certFile, keyFile string) {
 	return certFile, keyFile
 }
 
+// localDoHTTPServer stands up a deterministic RFC 8484 DoH endpoint so DNS
+// tests stay fully offline: A queries return the mapped IP, other types empty.
+func localDoHTTPServer(t *testing.T, aRecords map[string]string) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var raw []byte
+		switch r.Method {
+		case http.MethodGet:
+			b, err := base64.RawURLEncoding.DecodeString(r.URL.Query().Get("dns"))
+			if err != nil {
+				http.Error(w, "bad dns parameter", http.StatusBadRequest)
+				return
+			}
+			raw = b
+		case http.MethodPost:
+			b, err := io.ReadAll(r.Body)
+			if err != nil {
+				http.Error(w, "bad body", http.StatusBadRequest)
+				return
+			}
+			raw = b
+		default:
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		req := new(dns.Msg)
+		if err := req.Unpack(raw); err != nil || len(req.Question) == 0 {
+			http.Error(w, "bad dns message", http.StatusBadRequest)
+			return
+		}
+		resp := new(dns.Msg)
+		resp.SetReply(req)
+		q := req.Question[0]
+		if q.Qtype == dns.TypeA {
+			name := strings.ToLower(strings.TrimSuffix(q.Name, "."))
+			if ipStr, ok := aRecords[name]; ok {
+				resp.Answer = append(resp.Answer, &dns.A{
+					Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+					A:   net.ParseIP(ipStr),
+				})
+			}
+		}
+		packed, err := resp.Pack()
+		if err != nil {
+			http.Error(w, "pack failed", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/dns-message")
+		_, _ = w.Write(packed)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
 func TestDNSServerUDPAndDoH(t *testing.T) {
 	// Pick free ports for UDP DNS and TCP DoH
 	udpL, err := net.ListenPacket("udp", "127.0.0.1:0")
@@ -85,10 +141,15 @@ func TestDNSServerUDPAndDoH(t *testing.T) {
 	dohAddr := tcpL.Addr().String()
 	_ = tcpL.Close()
 
+	dohStub := localDoHTTPServer(t, map[string]string{
+		"google.com": "93.184.216.34",
+		"github.com": "140.82.121.4",
+	})
+
 	srv, err := NewServer(Config{
 		ListenAddr:    udpAddr,
 		DoHListenAddr: dohAddr,
-		EnableFakeIP:  true, // use fake ip for fast deterministic unit test
+		DoHURL:        dohStub.URL + "/dns-query",
 	})
 	if err != nil {
 		t.Fatalf("failed to create server: %v", err)
@@ -119,8 +180,8 @@ func TestDNSServerUDPAndDoH(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected A record, got %T", resp.Answer[0])
 	}
-	if aRecord.A == nil {
-		t.Fatalf("expected non-nil IP in A record")
+	if !aRecord.A.Equal(net.ParseIP("93.184.216.34")) {
+		t.Fatalf("expected stub A record 93.184.216.34, got %s", aRecord.A)
 	}
 
 	// Verify reverse lookup
@@ -210,12 +271,13 @@ func TestDNSServerDoT(t *testing.T) {
 	_ = tcpL.Close()
 
 	certFile, keyFile := writeTestTLSCert(t, t.TempDir())
+	dohStub := localDoHTTPServer(t, map[string]string{"example.com": "23.215.0.138"})
 	srv, err := NewServer(Config{
 		ListenAddr:    udpAddr,
 		DoTListenAddr: dotAddr,
 		TLSCertFile:   certFile,
 		TLSKeyFile:    keyFile,
-		EnableFakeIP:  true,
+		DoHURL:        dohStub.URL + "/dns-query",
 	})
 	if err != nil {
 		t.Fatalf("create server: %v", err)
@@ -253,81 +315,29 @@ func TestNewServerDoTRequiresCert(t *testing.T) {
 	}
 }
 
-func TestFakeIPKeepsUpstreamRealAndSkipsOtherTypes(t *testing.T) {
+func TestAAAAEmptyWhenIPv6Disabled(t *testing.T) {
+	// With EnableIPv6 off (the default) a proxied AAAA query is answered empty
+	// so clients fall back to the A record.
+	dohStub := localDoHTTPServer(t, nil)
 	s, err := NewServer(Config{
-		EnableFakeIP: true,
-		ListenAddr:   "127.0.0.1:0",
-		DirectDNS:    "127.0.0.1:1",
-		DoHURL:       "http://127.0.0.1:1/dns-query",
+		ListenAddr: "127.0.0.1:0",
+		DoHURL:     dohStub.URL + "/dns-query",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.WhitelistDomain("node.example")
-	s.PinRealIP("bwh.example", net.ParseIP("67.216.197.46"))
-
-	ask := func(name string, qtype uint16) *dns.Msg {
-		m := new(dns.Msg)
-		m.SetQuestion(dns.Fqdn(name), qtype)
-		resp, err := s.ResolveMsg(m)
-		if err != nil {
-			t.Fatalf("%s type %d: %v", name, qtype, err)
-		}
-		return resp
-	}
-
-	up := ask("bwh.example", dns.TypeA)
-	a, ok := up.Answer[0].(*dns.A)
-	if !ok || !a.A.Equal(net.ParseIP("67.216.197.46")) {
-		t.Fatalf("upstream A = %v", up.Answer)
-	}
-	if IsFakeIP(a.A) {
-		t.Fatal("upstream was fake-ip")
-	}
-
-	web := ask("www.google.com", dns.TypeA)
-	fa, ok := web.Answer[0].(*dns.A)
-	if !ok || !IsFakeIP(fa.A) {
-		t.Fatalf("google A = %v", web.Answer)
-	}
-	if len(ask("www.google.com", dns.TypeAAAA).Answer) != 0 {
-		t.Fatal("AAAA should be empty when the upstream is unreachable")
-	}
-	if len(ask("www.google.com", dns.TypeHTTPS).Answer) != 0 {
-		t.Fatal("HTTPS should be empty in fake-ip mode")
-	}
-
-	miss := new(dns.Msg)
-	miss.SetQuestion("node.example.", dns.TypeA)
-	if _, err := s.ResolveMsg(miss); err == nil {
-		t.Fatal("unresolved whitelist domain must not be answered with a fake-ip")
-	}
-}
-
-func TestFakeIPMappingSurvivesNewServer(t *testing.T) {
-	pool := NewFakeIPPool()
-	s1, err := NewServer(Config{EnableFakeIP: true, ListenAddr: "127.0.0.1:0", DirectDNS: "127.0.0.1:1", FakeIPPool: pool})
-	if err != nil {
-		t.Fatal(err)
-	}
 	m := new(dns.Msg)
-	m.SetQuestion("persist.example.", dns.TypeA)
-	resp, err := s1.ResolveMsg(m)
-	if err != nil || len(resp.Answer) == 0 {
-		t.Fatalf("alloc: %v %v", err, resp)
-	}
-	ip := resp.Answer[0].(*dns.A).A.String()
-	s2, err := NewServer(Config{EnableFakeIP: true, ListenAddr: "127.0.0.1:0", DirectDNS: "127.0.0.1:1", FakeIPPool: pool})
+	m.SetQuestion("www.example.", dns.TypeAAAA)
+	resp, err := s.ResolveMsg(m)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("AAAA resolve: %v", err)
 	}
-	host, ok := s2.LookupDomainByIP(ip)
-	if !ok || (host != "persist.example" && host != "persist.example.") {
-		t.Fatalf("lookup after new server: %q %v", host, ok)
+	if len(resp.Answer) != 0 {
+		t.Fatalf("expected empty AAAA with IPv6 disabled, got %v", resp.Answer)
 	}
 }
 
-func TestAAAAFromDirectDNSAndPinnedIPv6(t *testing.T) {
+func TestAAAAFromDirectDNS(t *testing.T) {
 	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
@@ -365,11 +375,10 @@ func TestAAAAFromDirectDNSAndPinnedIPv6(t *testing.T) {
 	defer rt.Close()
 	rt.AddDirectDomain("v6.example")
 	s, err := NewServer(Config{
-		EnableFakeIP: true,
-		ListenAddr:   "127.0.0.1:0",
-		DirectDNS:    pc.LocalAddr().String(),
-		DoHURL:       "http://127.0.0.1:1/dns-query",
-		Router:       rt,
+		ListenAddr: "127.0.0.1:0",
+		DirectDNS:  pc.LocalAddr().String(),
+		DoHURL:     "http://127.0.0.1:1/dns-query",
+		Router:     rt,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -387,17 +396,5 @@ func TestAAAAFromDirectDNSAndPinnedIPv6(t *testing.T) {
 	}
 	if host, ok := s.LookupDomainByIP("2001:db8:0:0:0:0:0:53"); !ok || host != "v6.example" {
 		t.Fatalf("reverse IPv6 lookup: %q %v", host, ok)
-	}
-
-	s.PinRealIP("edge.example", net.ParseIP("2001:db8::9"))
-	pinQ := new(dns.Msg)
-	pinQ.SetQuestion("edge.example.", dns.TypeAAAA)
-	pinResp, err := s.ResolveMsg(pinQ)
-	if err != nil || len(pinResp.Answer) != 1 {
-		t.Fatalf("pinned AAAA: %v %v", err, pinResp)
-	}
-	got, ok := pinResp.Answer[0].(*dns.AAAA)
-	if !ok || !got.AAAA.Equal(net.ParseIP("2001:db8::9")) {
-		t.Fatalf("pinned AAAA = %v", pinResp.Answer)
 	}
 }
