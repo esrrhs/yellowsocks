@@ -8,39 +8,14 @@ import (
 	"sync"
 	"sync/atomic"
 
+	gohomedns "github.com/esrrhs/gohome/dns"
 	"github.com/esrrhs/gohome/dns/matcher"
 	"github.com/esrrhs/gohome/loggo"
 )
 
-var defaultCNSuffixes = []string{
-	".cn",
-	".xn--fiqs8s", // 中国
-	".xn--55qx5d", // 公司
-	".xn--io0a7i", // 网络
-}
-
-// builtinDirectDomains are common Chinese sites and domestic IP lookups.
-// They resolve and dial over the direct path instead of going through SPP.
-var builtinDirectDomains = []string{
-	"baidu.com",
-	"qq.com",
-	"taobao.com",
-	"bilibili.com",
-	"jd.com",
-	"163.com",
-	"alipay.com",
-	"aliyun.com",
-	"weibo.com",
-	"iqiyi.com",
-	"youku.com",
-	"zhihu.com",
-	"ipip.net",
-	"3322.net",
-	"alicdn.com",
-	"gtimg.com",
-	"bdstatic.com",
-	"hdslb.com",
-}
+// Built-in direct domains, TLD suffixes and reserved CIDRs are maintained in
+// one place: github.com/esrrhs/gohome/dns defaults. Update them there, bump the
+// dependency, and every consumer (including yellowsocks) picks up the change.
 
 // IPNetList represents a list of CIDR network subnets
 type IPNetList []*net.IPNet
@@ -109,10 +84,10 @@ func NewRouterWithOptions(opt Options) *Router {
 
 	// Initialize reserved subnets and configured domains.
 	if !opt.DisableBuiltin {
-		for _, d := range builtinDirectDomains {
+		for _, d := range gohomedns.DefaultChinaMainDomains {
 			r.AddDirectDomain(d)
 		}
-		for _, d := range defaultCNSuffixes {
+		for _, d := range gohomedns.DefaultDirectTLDs {
 			r.AddDirectDomain(d)
 		}
 	}
@@ -143,26 +118,11 @@ func NewRouter() *Router {
 }
 
 func (r *Router) getReservedIPNets() IPNetList {
-	// Standard RFC private, loopback and link-local ranges
-	reserved := []string{
-		"10.0.0.0/8",
-		"172.16.0.0/12",
-		"192.168.0.0/16",
-		"127.0.0.0/8",
-		"169.254.0.0/16",
-		"224.0.0.0/4",
-		"240.0.0.0/4",
-		"::/128",
-		"::1/128",
-		"fc00::/7",
-		"fe80::/10",
-		"ff00::/8",
-	}
-
+	// Canonical list is maintained in gohome/dns: private, loopback,
+	// link-local, CGNAT, multicast and reserved ranges for IPv4/IPv6.
 	var list IPNetList
-	for _, cidr := range reserved {
-		_, ipnet, err := net.ParseCIDR(cidr)
-		if err == nil {
+	for _, cidr := range gohomedns.DefaultReservedCIDRs {
+		if _, ipnet, err := net.ParseCIDR(cidr); err == nil {
 			list = append(list, ipnet)
 		}
 	}

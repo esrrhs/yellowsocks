@@ -49,6 +49,32 @@ func TestRouterDecidePublicIPs(t *testing.T) {
 	}
 }
 
+// The built-in lists are imported from gohome/dns defaults; entries that only
+// exist there must take effect without any local re-declaration.
+func TestRouterBuiltinListsComeFromGohome(t *testing.T) {
+	r := NewRouter()
+	defer r.Close()
+
+	// Domain added only in the gohome canonical list (and a deep subdomain).
+	for _, host := range []string{"douyin.com", "www.douyin.com", "iqiyi.com"} {
+		if d := r.Decide(host, nil); d != Direct {
+			t.Errorf("expected Direct for built-in %s, got %v", host, d)
+		}
+	}
+	// .cn TLD suffix.
+	if d := r.Decide("example.cn", nil); d != Direct {
+		t.Errorf("expected Direct for .cn domain, got %v", d)
+	}
+	// CGNAT range from gohome DefaultReservedCIDRs.
+	if d := r.Decide("", net.ParseIP("100.64.0.1")); d != Direct {
+		t.Errorf("expected Direct for CGNAT 100.64.0.1, got %v", d)
+	}
+	// Unknown domains still default to Proxy.
+	if d := r.Decide("unknown.example.org", nil); d != Proxy {
+		t.Errorf("expected Proxy for unknown domain, got %v", d)
+	}
+}
+
 func TestRouterCustomDirectDomains(t *testing.T) {
 	opt := Options{
 		DirectDomains: []string{
