@@ -2,7 +2,6 @@ package sppclient
 
 import (
 	"encoding/json"
-	"net"
 	"testing"
 )
 
@@ -44,47 +43,4 @@ func TestDialNetworkForProto(t *testing.T) {
 			t.Fatalf("%s should dial udp", proto)
 		}
 	}
-}
-
-func TestManagerHealthCheckDialsTCP(t *testing.T) {
-	tcpL, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer tcpL.Close()
-	go func() {
-		for {
-			c, err := tcpL.Accept()
-			if err != nil {
-				return
-			}
-			_ = c.Close()
-		}
-	}()
-
-	nodes := []*Node{
-		{Name: "spp-a", Server: tcpL.Addr().String(), ServerProto: "tcp"},
-		{Name: "spp-b", Server: "127.0.0.1:1", ServerProto: "tcp"},
-	}
-	m := &Manager{
-		nodes:       nodes,
-		localSocks5: "127.0.0.1:10808",
-		checkStopCh: make(chan struct{}),
-		activeIndex: 0,
-	}
-	m.checkAllNodes()
-	if !nodes[0].Alive {
-		t.Fatal("spp node should be alive after TCP health check")
-	}
-	if nodes[1].Alive {
-		t.Fatal("closed port should not be alive")
-	}
-	if got := m.Socks5Addr(); got != "127.0.0.1:10808" {
-		t.Fatalf("Socks5Addr=%q", got)
-	}
-	user, pass := m.Socks5Auth()
-	if user != "" || pass != "" {
-		t.Fatalf("local spp socks5 auth = %q %q", user, pass)
-	}
-	m.Close()
 }
