@@ -472,3 +472,106 @@ func TestDNSServerSweepExpired(t *testing.T) {
 		t.Fatal("stale IP mapping should have been reaped")
 	}
 }
+
+// Reserve a free loopback TCP port without keeping it, so a subsequent
+// listener can bind it.
+func reserveFreeTCPPort(t *testing.T) string {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve port: %v", err)
+	}
+	addr := l.Addr().String()
+	_ = l.Close()
+	return addr
+}
+
+func TestDoHHTTPRejectsMalformedRequests(t *testing.T) {
+	srv, err := NewServer(Config{
+		ListenAddr:    "127.0.0.1:0",
+		DoHListenAddr: reserveFreeTCPPort(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Stop()
+
+	base := "http://" + srv.httpServerDoH.Addr + "/dns-query"
+
+	// Unsupported method -> 405.
+	putReq, _ := http.NewRequest(http.MethodPut, base, strings.NewReader("x"))
+	putResp, err := http.DefaultClient.Do(putReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = putResp.Body.Close()
+	if putResp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("PUT status=%d, want 405", putResp.StatusCode)
+	}
+
+	// GET without dns parameter -> 400.
+	respNoParam, err := http.Get(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = respNoParam.Body.Close()
+	if respNoParam.StatusCode != http.StatusBadRequest {
+		t.Fatalf("GET no-param status=%d, want 400", respNoParam.StatusCode)
+	}
+
+	// GET with undecodable base64 -> 400.
+	respBadB64, err := http.Get(base + "?dns=%21%21%21")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = respBadB64.Body.Close()
+	if respBadB64.StatusCode != http.StatusBadRequest {
+		t.Fatalf("GET bad-base64 status=%d, want 400", respBadB64.StatusCode)
+	}
+
+	// Empty POST body -> 400.
+	respEmpty, err := http.Post(base, "application/dns-message", strings.NewReader(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = respEmpty.Body.Close()
+	if respEmpty.StatusCode != http.StatusBadRequest {
+		t.Fatalf("POST empty status=%d, want 400", respEmpty.StatusCode)
+	}
+}
+
+// RFC 8484 carries a single DNS message (<= 65535 octets). An oversized POST
+// must be rejected instead of being fully buffered into memory.
+func TestDoHHTTPRejectsOversizedPost(t *testing.T) {
+	srv, err := NewServer(Config{
+		ListenAddr:    "127.0.0.1:0",
+		DoHListenAddr: reserveFreeTCPPort(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Stop()
+
+	resp, err := http.Post(
+		"http://"+srv.httpServerDoH.Addr+"/dns-query",
+		"application/dns-message",
+		strings.NewReader(strings.Repeat("x", 70000)),
+	)
+	if err != nil {
+		t.Fatalf("oversized post: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	// MaxBytesReader surfaces as 413 (or our explicit 400); either is a
+	// rejection, and the body must never reach DNS unpacking.
+	if resp.StatusCode != http.StatusRequestEntityTooLarge &&
+		resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("oversized POST status=%d, want 400 or 413", resp.StatusCode)
+	}
+}
