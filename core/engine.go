@@ -119,12 +119,14 @@ func (e *Engine) Start() error {
 		}
 	}
 	if len(nodes) == 0 {
+		e.cleanupServices()
 		return fmt.Errorf("no SPP servers or nodes specified")
 	}
 
 	loggo.Info("[Engine] Initializing SPP manager with %d nodes...", len(nodes))
 	mgr, err := sppclient.NewManager(nodes, e.cfg.LocalSocks5)
 	if err != nil {
+		e.cleanupServices()
 		return fmt.Errorf("failed to init SPP manager: %w", err)
 	}
 	e.sppManager = mgr
@@ -144,7 +146,7 @@ func (e *Engine) Start() error {
 		EnableIPv6:    e.cfg.EnableIPv6,
 	})
 	if err != nil {
-		e.sppManager.Close()
+		e.cleanupServices()
 		return fmt.Errorf("failed to init DNS server: %w", err)
 	}
 	// SPP node hostnames must resolve and connect directly, never via SPP.
@@ -155,7 +157,11 @@ func (e *Engine) Start() error {
 		}
 	}
 	if err := dnsSrv.Start(); err != nil {
-		e.sppManager.Close()
+		// Start may have bound some listeners (UDP/TCP/DoH) before failing;
+		// release them along with the SPP manager and router instead of
+		// leaking sockets and the GeoIP mapping.
+		_ = dnsSrv.Stop()
+		e.cleanupServices()
 		if strings.Contains(err.Error(), "address already in use") {
 			return fmt.Errorf("DNS 端口已被占用: %w", err)
 		}
@@ -212,6 +218,9 @@ func sppHost(server string) string {
 	return strings.ToLower(strings.Trim(host, "."))
 }
 
+// cleanupServices releases every resource Start acquired, including the
+// router's GeoIP mapping. It is used both on normal shutdown and on failed
+// startup, so any partially built engine leaves nothing behind.
 func (e *Engine) cleanupServices() {
 	if e.socks5Server != nil {
 		_ = e.socks5Server.Stop()
@@ -229,24 +238,27 @@ func (e *Engine) cleanupServices() {
 		e.sppManager.Close()
 		e.sppManager = nil
 	}
+	if e.router != nil {
+		e.router.Close()
+		e.router = nil
+	}
 }
 
-// Stop shuts the engine down.
+// Stop shuts the engine down. It is safe to call after a failed Start: all
+// resources acquired up to the failure have already been released, and the
+// call is a no-op.
 func (e *Engine) Stop() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
 	if !e.running {
+		// A failed Start cleans up after itself; nothing remains to stop.
 		return nil
 	}
 	e.running = false
 
 	loggo.Info("[Engine] Shutting down...")
 	e.cleanupServices()
-	if e.router != nil {
-		e.router.Close()
-		e.router = nil
-	}
 	loggo.Info("[Engine] Stopped")
 	return nil
 }
