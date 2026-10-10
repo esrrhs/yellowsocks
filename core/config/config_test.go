@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/esrrhs/yellowsocks/core"
@@ -132,5 +133,70 @@ dns_listen: ":53"
 	}
 	if cfg.DNSListen != ":53" {
 		t.Fatalf("dns_listen=%q", cfg.DNSListen)
+	}
+}
+
+// Content that is neither valid JSON nor valid YAML for a struct must error
+// rather than silently yielding an empty config.
+func TestParseConfigContentInvalid(t *testing.T) {
+	if _, err := ParseConfigContent([]byte("garbage-not-config")); err == nil {
+		t.Fatal("expected error for content that is a scalar in both formats")
+	}
+	if _, err := ParseConfigContent([]byte("[")); err == nil {
+		t.Fatal("expected error for truncated flow sequence")
+	}
+}
+
+func TestLoadConfigFileMissing(t *testing.T) {
+	if _, err := LoadConfigFile(filepath.Join(t.TempDir(), "does-not-exist.yaml")); err == nil {
+		t.Fatal("expected error for missing config file")
+	}
+}
+
+// spp_compress and ipv6 are pointers precisely so that explicit zero values
+// in the file override nonzero CLI defaults, while an omitted field keeps the
+// baseline.
+func TestParseConfigPointerZeroValues(t *testing.T) {
+	content := `{
+		"spp_compress": 0,
+		"ipv6": false
+	}`
+	cfg, err := ParseConfigContent([]byte(content))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if cfg.SPPCompress == nil || *cfg.SPPCompress != 0 {
+		t.Fatalf("spp_compress should be a non-nil pointer to 0, got %v", cfg.SPPCompress)
+	}
+	if cfg.IPv6 == nil || *cfg.IPv6 {
+		t.Fatalf("ipv6 should be a non-nil pointer to false, got %v", cfg.IPv6)
+	}
+
+	base := core.EngineConfig{SPPCompress: 128, EnableIPv6: true}
+	merged := cfg.MergeWithEngineConfig(base)
+	if merged.SPPCompress != 0 {
+		t.Fatalf("explicit compress=0 must override baseline, got %d", merged.SPPCompress)
+	}
+	if merged.EnableIPv6 {
+		t.Fatal("explicit ipv6=false must override baseline true")
+	}
+}
+
+// An empty file config leaves every CLI baseline value untouched.
+func TestMergeEmptyConfigKeepsBaseline(t *testing.T) {
+	base := core.EngineConfig{
+		SPPServer:    "base:8888",
+		SPPProto:     "tcp",
+		SPPKey:       "basekey",
+		SPPCompress:  128,
+		EnableIPv6:   true,
+		DNSListen:    "127.0.0.1:53",
+		DirectDNS:    "1.1.1.1:53",
+		RemoteDoH:    "https://1.1.1.1/dns-query",
+		Socks5Listen: "127.0.0.1:1080",
+	}
+	merged := (&FileConfig{}).MergeWithEngineConfig(base)
+	if !reflect.DeepEqual(merged, base) {
+		t.Fatalf("empty file config changed baseline:\nbase=%+v\ngot =%+v", base, merged)
 	}
 }
