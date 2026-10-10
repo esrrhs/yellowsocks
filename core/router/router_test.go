@@ -2,6 +2,8 @@ package router
 
 import (
 	"net"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -209,6 +211,67 @@ func TestDomainMatchIsSuffixNotSubstring(t *testing.T) {
 	}
 	if r.ShouldDirectDomain("cnn.com") {
 		t.Fatal("cnn.com must not match cn")
+	}
+}
+
+func TestRouterLoadDomainFile(t *testing.T) {
+	dir := t.TempDir()
+	path := dir + "/domains.conf"
+	content := strings.Join([]string{
+		"# comment line",
+		"",
+		"  ",
+		"server=/example.cn/114.114.114.114", // dnsmasq format
+		"plain.example.org",                  // bare domain
+		"  UPPER.Example.com  ",              // surrounding whitespace and case
+		".trailing.dot.",                     // leading/trailing dots stripped
+	}, "\n")
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write domain file: %v", err)
+	}
+
+	r := NewRouterWithOptions(Options{DisableBuiltin: true})
+	defer r.Close()
+	if err := r.LoadDomainFile(path, true); err != nil {
+		t.Fatalf("LoadDomainFile: %v", err)
+	}
+	for _, host := range []string{"example.cn", "www.example.cn", "plain.example.org", "x.upper.example.com", "trailing.dot"} {
+		if !r.ShouldDirectDomain(host) {
+			t.Errorf("expected %s to be loaded as a direct domain", host)
+		}
+	}
+
+	// The same loader installs proxy domains when isDirect is false.
+	proxyPath := dir + "/gfw.conf"
+	if err := os.WriteFile(proxyPath, []byte("server=/blocked.io/\n"), 0o644); err != nil {
+		t.Fatalf("write proxy domain file: %v", err)
+	}
+	if err := r.LoadDomainFile(proxyPath, false); err != nil {
+		t.Fatalf("LoadDomainFile proxy: %v", err)
+	}
+	if !r.ShouldProxyDomain("cdn.blocked.io") {
+		t.Fatal("expected proxy list entry from dnsmasq-format file")
+	}
+	if r.ShouldDirectDomain("cdn.blocked.io") {
+		t.Fatal("proxy entry must not land on the direct list")
+	}
+
+	if err := r.LoadDomainFile(dir+"/missing.conf", true); err == nil {
+		t.Fatal("loading a missing file must return an error")
+	}
+}
+
+func TestRouterLoadInvalidCIDRIgnored(t *testing.T) {
+	r := NewRouterWithOptions(Options{
+		DisableBuiltin: true,
+		DirectCIDRs:    []string{"not-a-cidr", "203.0.113.0/24"},
+	})
+	defer r.Close()
+	if r.Decide("", net.ParseIP("203.0.113.7")) != Direct {
+		t.Fatal("valid custom CIDR should still be installed when an invalid entry is present")
+	}
+	if err := r.AddDirectCIDR("bad"); err == nil {
+		t.Fatal("AddDirectCIDR should reject invalid CIDR")
 	}
 }
 

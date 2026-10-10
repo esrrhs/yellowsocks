@@ -242,6 +242,10 @@ func (s *Server) Stop() error {
 			firstErr = err
 		}
 	}
+	// Release keep-alive connections the upstream DoH client pooled.
+	if t, ok := s.httpClientDoH.Transport.(*http.Transport); ok {
+		t.CloseIdleConnections()
+	}
 	if s.dotServer != nil {
 		if err := s.dotServer.Shutdown(); err != nil && firstErr == nil {
 			firstErr = err
