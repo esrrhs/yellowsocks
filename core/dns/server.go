@@ -320,9 +320,13 @@ func (s *Server) handleDoHHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	case http.MethodPost:
+		// RFC 8484 transports a single DNS message: at most 65535 bytes plus
+		// the TCP length prefix. Cap the body so a client cannot exhaust
+		// memory by streaming an unbounded POST.
+		r.Body = http.MaxBytesReader(w, r.Body, 65535+2)
 		rawMsg, err = io.ReadAll(r.Body)
 		if err != nil || len(rawMsg) == 0 {
-			http.Error(w, "empty or invalid request body", http.StatusBadRequest)
+			http.Error(w, "empty, oversized or invalid request body", http.StatusBadRequest)
 			return
 		}
 	default:
