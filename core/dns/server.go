@@ -354,7 +354,15 @@ func (s *Server) sweepExpired() {
 }
 
 func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
-	resp, err := s.ResolveMsg(r)
+	// RFC 7766: a truncated (TC=1) reply is only meaningful over UDP, where
+	// it prompts the client to retry over TCP. Over an inbound TCP session TC
+	// is never valid, so upstream truncation must surface as SERVFAIL rather
+	// than being forwarded verbatim.
+	viaTCP := false
+	if ra := w.RemoteAddr(); ra != nil && strings.HasPrefix(ra.Network(), "tcp") {
+		viaTCP = true
+	}
+	resp, err := s.resolve(r, viaTCP)
 	if err != nil || resp == nil {
 		dns.HandleFailed(w, r)
 		return
@@ -411,7 +419,7 @@ func (s *Server) handleDoHHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	respMsg, err := s.ResolveMsg(reqMsg)
+	respMsg, err := s.resolve(reqMsg, true)
 	if err != nil || respMsg == nil {
 		http.Error(w, "dns resolution failed", http.StatusBadGateway)
 		return
@@ -484,6 +492,12 @@ func ageRRsTTL(m *dns.Msg, elapsedSecs uint32) {
 
 // ResolveMsg resolves a DNS query message using caching, smart routing, and upstream DoH/Direct
 func (s *Server) ResolveMsg(r *dns.Msg) (*dns.Msg, error) {
+	// Public entry point has no transport context; use UDP semantics, where a
+	// TC=1 answer from a failing upstream is a valid hint to retry over TCP.
+	return s.resolve(r, false)
+}
+
+func (s *Server) resolve(r *dns.Msg, viaTCP bool) (*dns.Msg, error) {
 	if len(r.Question) == 0 {
 		return nil, errors.New("empty question")
 	}
@@ -517,7 +531,7 @@ func (s *Server) ResolveMsg(r *dns.Msg) (*dns.Msg, error) {
 	isDirect := s.router != nil && s.router.ShouldDirectDomain(qName)
 	switch {
 	case isDirect:
-		resp, err = s.resolveDirect(r)
+		resp, err = s.resolveDirect(r, viaTCP)
 	case !s.enableIPv6 && q.Qtype == dns.TypeAAAA:
 		// Upstream has no IPv6 route. An empty AAAA makes clients use the A record.
 		resp = emptyReply(r)
@@ -525,7 +539,7 @@ func (s *Server) ResolveMsg(r *dns.Msg) (*dns.Msg, error) {
 		resp, err = s.resolveDoH(r)
 		if err != nil {
 			loggo.Warn("[DNS] DoH failed for %s, falling back to direct DNS: %v", qName, err)
-			resp, err = s.resolveDirect(r)
+			resp, err = s.resolveDirect(r, viaTCP)
 		}
 	}
 
@@ -540,8 +554,12 @@ func (s *Server) ResolveMsg(r *dns.Msg) (*dns.Msg, error) {
 	}
 
 	resp.Id = r.Id
-	// 3. Cache response and mapping
-	s.cacheAndRecordIP(qName, cacheKey, resp)
+	// 3. Cache response and mapping. TC is a hop-by-hop transport signal
+	// (RFC 7766 4.1), not part of the answer: a truncated message cached here
+	// could later be served to a TCP/DoH client, on which TC is invalid.
+	if !resp.Truncated {
+		s.cacheAndRecordIP(qName, cacheKey, resp)
+	}
 	return resp, nil
 }
 
@@ -551,7 +569,7 @@ func emptyReply(r *dns.Msg) *dns.Msg {
 	return resp
 }
 
-func (s *Server) resolveDirect(r *dns.Msg) (*dns.Msg, error) {
+func (s *Server) resolveDirect(r *dns.Msg, viaTCP bool) (*dns.Msg, error) {
 	c := &dns.Client{Net: "udp", Timeout: 2 * time.Second}
 	in, _, err := c.Exchange(r, s.directDNS)
 	if err != nil {
@@ -559,9 +577,7 @@ func (s *Server) resolveDirect(r *dns.Msg) (*dns.Msg, error) {
 	}
 	// The upstream set TC: the answer did not fit in a UDP datagram. A
 	// caching resolver must retry the same question over TCP (RFC 2181 9,
-	// RFC 7766) instead of returning a truncated, unusable answer — this is
-	// also required when the original client spoke TCP to us, since a
-	// truncated reply over TCP is never valid.
+	// RFC 7766) instead of returning a truncated, unusable answer.
 	if in.Truncated {
 		tcpClient := &dns.Client{Net: "tcp", Timeout: 2 * time.Second}
 		inTCP, _, tcpErr := tcpClient.Exchange(r, s.directDNS)
@@ -570,6 +586,15 @@ func (s *Server) resolveDirect(r *dns.Msg) (*dns.Msg, error) {
 		}
 		loggo.Warn("[DNS] direct upstream %s answered truncated over UDP and TCP retry failed: %v",
 			s.directDNS, tcpErr)
+		if viaTCP {
+			// A truncated reply over an inbound TCP/DoH session is never
+			// valid (RFC 7766); fail the lookup so the caller answers
+			// SERVFAIL/502 instead of forwarding the TC bit.
+			if tcpErr == nil {
+				tcpErr = errors.New("upstream returned no TCP response")
+			}
+			return in, fmt.Errorf("direct upstream truncated and TCP retry failed: %w", tcpErr)
+		}
 	}
 	return in, nil
 }
