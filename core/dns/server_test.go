@@ -986,3 +986,109 @@ func TestDoHHTTPRejectsOversizedGET(t *testing.T) {
 		t.Fatalf("oversized GET status=%d, want 400", resp.StatusCode)
 	}
 }
+
+// startTruncatingUDPDNS serves the same address over UDP and TCP: UDP always
+// returns a truncated (TC) empty answer, TCP returns the full answer.
+func startTruncatingUDPDNS(t *testing.T, fullAnswer *dns.Msg) string {
+	t.Helper()
+	addr := reserveFreeTCPPort(t)
+
+	h := dns.HandlerFunc(func(w dns.ResponseWriter, m *dns.Msg) {
+		resp := new(dns.Msg)
+		resp.SetReply(m)
+		if w.RemoteAddr().Network() == "udp" {
+			resp.Truncated = true
+		} else {
+			resp.Answer = append(resp.Answer, fullAnswer.Answer...)
+		}
+		_ = w.WriteMsg(resp)
+	})
+
+	udpConn, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		t.Fatalf("udp listen: %v", err)
+	}
+	tcpLn, err := net.Listen("tcp", addr)
+	if err != nil {
+		t.Fatalf("tcp listen: %v", err)
+	}
+
+	udpSrv := &dns.Server{PacketConn: udpConn.(*net.UDPConn), Net: "udp", Handler: h}
+	tcpSrv := &dns.Server{Listener: tcpLn, Net: "tcp", Handler: h}
+	go func() { _ = udpSrv.ActivateAndServe() }()
+	go func() { _ = tcpSrv.ActivateAndServe() }()
+	t.Cleanup(func() {
+		_ = udpSrv.Shutdown()
+		_ = tcpSrv.Shutdown()
+	})
+	return addr
+}
+
+// RFC 2181 9 / RFC 7766: when the direct upstream sets TC over UDP the
+// resolver must retry the question over TCP instead of handing out the
+// truncated answer (which is outright invalid over an inbound TCP session).
+func TestResolveDirectRetriesTCPOnTruncation(t *testing.T) {
+	full := new(dns.Msg)
+	full.Answer = append(full.Answer, &dns.A{
+		Hdr: dns.RR_Header{Name: "big.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+		A:   net.ParseIP("198.51.100.20"),
+	})
+	upstream := startTruncatingUDPDNS(t, full)
+
+	srv, err := NewServer(Config{ListenAddr: "127.0.0.1:0", DirectDNS: upstream})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := new(dns.Msg)
+	req.SetQuestion("big.example.", dns.TypeA)
+
+	resp, err := srv.resolveDirect(req)
+	if err != nil {
+		t.Fatalf("resolveDirect: %v", err)
+	}
+	if resp.Truncated {
+		t.Fatal("truncated UDP answer returned without TCP retry")
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("answers=%d, want the full TCP answer", len(resp.Answer))
+	}
+	if a, ok := resp.Answer[0].(*dns.A); !ok || !a.A.Equal(net.ParseIP("198.51.100.20")) {
+		t.Fatalf("unexpected answer: %v", resp.Answer)
+	}
+}
+
+// If the upstream truncates over UDP and its TCP listener is unavailable, the
+// truncated response is still returned (with an error logged) rather than
+// failing the lookup outright.
+func TestResolveDirectTruncatedTCPFallbackFailure(t *testing.T) {
+	addr := reserveFreeTCPPort(t)
+	udpConn, err := net.ListenPacket("udp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := dns.HandlerFunc(func(w dns.ResponseWriter, m *dns.Msg) {
+		resp := new(dns.Msg)
+		resp.SetReply(m)
+		resp.Truncated = true
+		_ = w.WriteMsg(resp)
+	})
+	udpSrv := &dns.Server{PacketConn: udpConn.(*net.UDPConn), Net: "udp", Handler: h}
+	go func() { _ = udpSrv.ActivateAndServe() }()
+	t.Cleanup(func() { _ = udpSrv.Shutdown() })
+	// No TCP listener on addr: the fallback dial is refused immediately.
+
+	srv, err := NewServer(Config{ListenAddr: "127.0.0.1:0", DirectDNS: addr})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := new(dns.Msg)
+	req.SetQuestion("big.example.", dns.TypeA)
+
+	resp, err := srv.resolveDirect(req)
+	if err != nil {
+		t.Fatalf("truncated answer must be returned, got err=%v", err)
+	}
+	if resp == nil || !resp.Truncated {
+		t.Fatalf("expected truncated fallback response, got %v", resp)
+	}
+}
