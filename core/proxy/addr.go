@@ -1,9 +1,11 @@
 package proxy
 
 import (
+	"fmt"
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 // canonicalHost rewrites an address the way gohome's SOCKS encoder expects it.
@@ -108,4 +110,48 @@ func sameUDPAddr(a, b *net.UDPAddr) bool {
 		return a == nil && b == nil
 	}
 	return a.Port == b.Port && a.IP.Equal(b.IP)
+}
+
+// maxDirectUDPSessions bounds how many distinct direct targets a single UDP
+// association may open sockets to. Each entry owns a socket and a read goroutine;
+// without the limit one client could exhaust the process's file descriptors.
+const maxDirectUDPSessions = 256
+
+// directUDPRegistry tracks one outbound UDP socket per direct target.
+type directUDPRegistry struct {
+	mu    sync.Mutex
+	conns map[string]*net.UDPConn
+}
+
+func newDirectUDPRegistry() *directUDPRegistry {
+	return &directUDPRegistry{conns: make(map[string]*net.UDPConn)}
+}
+
+// get returns the cached socket for targetAddr, creating one on first use. fresh is
+// true when a new socket was made so the caller can start its read loop.
+func (r *directUDPRegistry) get(targetAddr string) (conn *net.UDPConn, fresh bool, err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if c, ok := r.conns[targetAddr]; ok {
+		return c, false, nil
+	}
+	if len(r.conns) >= maxDirectUDPSessions {
+		return nil, false, fmt.Errorf("too many direct UDP sessions (%d cap)", maxDirectUDPSessions)
+	}
+	c, err := listenUDPFor(hostFromAddr(targetAddr))
+	if err != nil {
+		return nil, false, err
+	}
+	r.conns[targetAddr] = c
+	return c, true, nil
+}
+
+// closeAll releases every tracked socket; afterward the registry must not be used.
+func (r *directUDPRegistry) closeAll() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, c := range r.conns {
+		_ = c.Close()
+	}
+	r.conns = map[string]*net.UDPConn{}
 }
