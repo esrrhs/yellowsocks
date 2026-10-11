@@ -76,6 +76,13 @@ func writeTestTLSCert(t *testing.T, dir string) (certFile, keyFile string) {
 // tests stay fully offline: A queries return the mapped IP, other types empty.
 func localDoHTTPServer(t *testing.T, aRecords map[string]string) *httptest.Server {
 	t.Helper()
+	return localDoHTTPServerWithTTL(t, aRecords, 60)
+}
+
+// localDoHTTPServerWithTTL is localDoHTTPServer with an explicit answer TTL,
+// used to verify TTL-derived caching behavior.
+func localDoHTTPServerWithTTL(t *testing.T, aRecords map[string]string, ttl uint32) *httptest.Server {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var raw []byte
 		switch r.Method {
@@ -109,7 +116,7 @@ func localDoHTTPServer(t *testing.T, aRecords map[string]string) *httptest.Serve
 			name := strings.ToLower(strings.TrimSuffix(q.Name, "."))
 			if ipStr, ok := aRecords[name]; ok {
 				resp.Answer = append(resp.Answer, &dns.A{
-					Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+					Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl},
 					A:   net.ParseIP(ipStr),
 				})
 			}
@@ -729,5 +736,158 @@ func TestDoHUpstreamDialerHonorsContext(t *testing.T) {
 	}
 	if d := time.Since(start); d > 2*time.Second {
 		t.Fatalf("dial did not honor context deadline, took %v", d)
+	}
+}
+
+// RFC 8484 section 5.1: the HTTP Cache-Control max-age must reflect the
+// smallest RR TTL in the answer. In particular a TTL=0 answer must not be
+// advertised as cacheable (the old code always sent max-age=60).
+func TestDoHCacheControlFollowsAnswerTTL(t *testing.T) {
+	cases := []struct {
+		name string
+		ttl  uint32
+		want string
+	}{
+		{"zero ttl is uncacheable", 0, "max-age=0"},
+		{"positive ttl passes through", 120, "max-age=120"},
+		{"huge ttl is capped", uint32((48 * time.Hour) / time.Second), "max-age=86400"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			stub := localDoHTTPServerWithTTL(t, map[string]string{"ttl.example": "198.51.100.9"}, tc.ttl)
+			srv, err := NewServer(Config{
+				ListenAddr:    "127.0.0.1:0",
+				DoHListenAddr: reserveFreeTCPPort(t),
+				DoHURL:        stub.URL,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := srv.Start(); err != nil {
+				t.Fatalf("start: %v", err)
+			}
+			defer srv.Stop()
+
+			q := new(dns.Msg)
+			q.SetQuestion("ttl.example.", dns.TypeA)
+			packed, err := q.Pack()
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, err := http.Post(
+				"http://"+srv.httpServerDoH.Addr+"/dns-query",
+				"application/dns-message",
+				bytes.NewReader(packed),
+			)
+			if err != nil {
+				t.Fatalf("doh post: %v", err)
+			}
+			body, _ := io.ReadAll(resp.Body)
+			_ = resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("status=%d", resp.StatusCode)
+			}
+			if got := resp.Header.Get("Cache-Control"); got != tc.want {
+				t.Fatalf("Cache-Control=%q, want %q (body: %x)", got, tc.want, body)
+			}
+		})
+	}
+}
+
+// A synthetic empty answer (IPv6 disabled -> empty AAAA) carries no RRs and
+// must tell HTTP caches not to store it.
+func TestDoHCacheControlNoStoreForEmptyAnswer(t *testing.T) {
+	stub := localDoHTTPServer(t, nil)
+	srv, err := NewServer(Config{
+		ListenAddr:    "127.0.0.1:0",
+		DoHListenAddr: reserveFreeTCPPort(t),
+		DoHURL:        stub.URL,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Stop()
+
+	q := new(dns.Msg)
+	q.SetQuestion("empty.example.", dns.TypeAAAA)
+	packed, _ := q.Pack()
+	resp, err := http.Post(
+		"http://"+srv.httpServerDoH.Addr+"/dns-query",
+		"application/dns-message",
+		bytes.NewReader(packed),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if got := resp.Header.Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("Cache-Control=%q, want no-store", got)
+	}
+}
+
+// doHCacheControl must take the minimum over every section and ignore the
+// TTL-less OPT (EDNS0) pseudo-record.
+func TestDoHCacheControlDirective(t *testing.T) {
+	base := func() *dns.Msg {
+		m := new(dns.Msg)
+		m.SetReply(&dns.Msg{})
+		return m
+	}
+
+	m := base()
+	if got := doHCacheControl(m); got != "no-store" {
+		t.Fatalf("empty msg: %q, want no-store", got)
+	}
+
+	m = base()
+	m.Answer = []dns.RR{&dns.A{
+		Hdr: dns.RR_Header{Name: "a.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 300},
+		A:   net.ParseIP("1.2.3.4"),
+	}}
+	m.Extra = append(m.Extra, &dns.OPT{Hdr: dns.RR_Header{Name: ".", Rrtype: dns.TypeOPT}})
+	if got := doHCacheControl(m); got != "max-age=300" {
+		t.Fatalf("OPT must not influence TTL: %q", got)
+	}
+
+	m.Ns = []dns.RR{&dns.SOA{
+		Hdr:     dns.RR_Header{Name: "example.", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 5},
+		Ns:      "ns.example.",
+		Mbox:    "hostmaster.example.",
+		Serial:  1,
+		Refresh: 3600,
+		Retry:   900,
+		Expire:  86400,
+		Minttl:  60,
+	}}
+	if got := doHCacheControl(m); got != "max-age=5" {
+		t.Fatalf("min over sections: %q, want max-age=5", got)
+	}
+}
+
+// The DoH HTTP server must bound header reading and idle keep-alive time so a
+// network-facing listener cannot be pinned by Slowloris-style connections.
+func TestDoHServerHasReadDeadlines(t *testing.T) {
+	srv, err := NewServer(Config{
+		ListenAddr:    "127.0.0.1:0",
+		DoHListenAddr: reserveFreeTCPPort(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Stop()
+
+	if srv.httpServerDoH.ReadHeaderTimeout <= 0 {
+		t.Fatal("ReadHeaderTimeout not set: slow request headers hold connections forever")
+	}
+	if srv.httpServerDoH.IdleTimeout <= 0 {
+		t.Fatal("IdleTimeout not set: idle keep-alive connections are never reclaimed")
 	}
 }
