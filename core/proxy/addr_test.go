@@ -101,20 +101,35 @@ func TestDirectUDPRegistryReuseCapAndClose(t *testing.T) {
 	if err != nil || !fresh {
 		t.Fatalf("first get: fresh=%v err=%v", fresh, err)
 	}
+	if !sameUDPAddr(first.addr, &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9000}) {
+		t.Fatalf("resolved endpoint mismatch: %v", first.addr)
+	}
 	again, fresh, err := r.get("127.0.0.1:9000")
 	if err != nil || fresh || again != first {
 		t.Fatalf("second get must reuse: fresh=%v same=%v err=%v", fresh, again == first, err)
 	}
 	r.mu.Lock()
-	if len(r.conns) != 1 {
+	if len(r.sessions) != 1 {
 		r.mu.Unlock()
-		t.Fatalf("map len=%d, want 1", len(r.conns))
+		t.Fatalf("map len=%d, want 1", len(r.sessions))
 	}
 	r.mu.Unlock()
 
+	// A domain target is resolved exactly once: every later lookup returns the
+	// same cached session and endpoint, so sends and the reply filter can never
+	// disagree on which peer owns the association.
+	domA, domFresh, err := r.get("localhost:9000")
+	if err != nil || !domFresh {
+		t.Fatalf("domain first get: fresh=%v err=%v", domFresh, err)
+	}
+	domB, domFresh, err := r.get("localhost:9000")
+	if err != nil || domFresh || domB != domA || !sameUDPAddr(domA.addr, domB.addr) {
+		t.Fatalf("domain endpoint must be resolved once and reused: same=%v err=%v", domB == domA, err)
+	}
+
 	// Fill up to the cap with distinct ephemeral targets; none of these sockets
 	// ever send a packet, they only consume a wildcard local port.
-	for i := 1; i < maxDirectUDPSessions; i++ {
+	for i := 2; i < maxDirectUDPSessions; i++ {
 		if _, _, err := r.get(fmt.Sprintf("127.0.0.1:%d", 20000+i)); err != nil {
 			t.Fatalf("session %d: %v", i, err)
 		}
@@ -123,15 +138,15 @@ func TestDirectUDPRegistryReuseCapAndClose(t *testing.T) {
 		t.Fatal("session beyond the cap must be rejected")
 	}
 
-	r.closeAll()
+r.closeAll()
 	r.mu.Lock()
-	got := len(r.conns)
+	got := len(r.sessions)
 	r.mu.Unlock()
 	if got != 0 {
-		t.Fatalf("closeAll left %d tracked conns", got)
+		t.Fatalf("closeAll left %d tracked sessions", got)
 	}
 	// A closed socket fails immediately; no deadline needed, the close unblocks reads.
-	if _, _, err := first.ReadFromUDP(make([]byte, 1)); err == nil {
+	if _, _, err := first.conn.ReadFromUDP(make([]byte, 1)); err == nil {
 		t.Fatal("read from closed socket unexpectedly succeeded")
 	}
 }

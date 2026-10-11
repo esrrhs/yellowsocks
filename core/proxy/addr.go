@@ -38,14 +38,6 @@ func joinDialAddr(host string, port int) string {
 	return net.JoinHostPort(canonicalHost(host), strconv.Itoa(port))
 }
 
-func hostFromAddr(addr string) string {
-	host, _, err := net.SplitHostPort(addr)
-	if err != nil {
-		return addr
-	}
-	return host
-}
-
 // listenUDPFor opens a socket that can send to host. IPv6 literals use udp6
 // so the write is not stuck on an IPv4-only wildcard socket.
 func listenUDPFor(host string) (*net.UDPConn, error) {
@@ -117,41 +109,57 @@ func sameUDPAddr(a, b *net.UDPAddr) bool {
 // without the limit one client could exhaust the process's file descriptors.
 const maxDirectUDPSessions = 256
 
-// directUDPRegistry tracks one outbound UDP socket per direct target.
+// directUDPSession is one outbound socket plus the single endpoint its
+// target resolved to. The endpoint is resolved once on creation and shared by
+// every send and the reply filter for the whole association, so a round-robin
+// domain (RFC 1794) cannot make later datagrams hit a peer whose replies the
+// read loop drops.
+type directUDPSession struct {
+	conn *net.UDPConn
+	addr *net.UDPAddr
+}
+
+// directUDPRegistry tracks one outbound UDP session per direct target.
 type directUDPRegistry struct {
-	mu    sync.Mutex
-	conns map[string]*net.UDPConn
+	mu       sync.Mutex
+	sessions map[string]*directUDPSession
 }
 
 func newDirectUDPRegistry() *directUDPRegistry {
-	return &directUDPRegistry{conns: make(map[string]*net.UDPConn)}
+	return &directUDPRegistry{sessions: make(map[string]*directUDPSession)}
 }
 
-// get returns the cached socket for targetAddr, creating one on first use. fresh is
-// true when a new socket was made so the caller can start its read loop.
-func (r *directUDPRegistry) get(targetAddr string) (conn *net.UDPConn, fresh bool, err error) {
+// get returns the cached session for targetAddr, resolving the name and
+// creating a socket only on first use. fresh is true when a new session was
+// made so the caller can start its read loop.
+func (r *directUDPRegistry) get(targetAddr string) (sess *directUDPSession, fresh bool, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if c, ok := r.conns[targetAddr]; ok {
-		return c, false, nil
+	if s, ok := r.sessions[targetAddr]; ok {
+		return s, false, nil
 	}
-	if len(r.conns) >= maxDirectUDPSessions {
+	if len(r.sessions) >= maxDirectUDPSessions {
 		return nil, false, fmt.Errorf("too many direct UDP sessions (%d cap)", maxDirectUDPSessions)
 	}
-	c, err := listenUDPFor(hostFromAddr(targetAddr))
+	addr, err := net.ResolveUDPAddr("udp", targetAddr)
 	if err != nil {
 		return nil, false, err
 	}
-	r.conns[targetAddr] = c
-	return c, true, nil
+	c, err := listenUDPFor(addr.IP.String())
+	if err != nil {
+		return nil, false, err
+	}
+	sess = &directUDPSession{conn: c, addr: addr}
+	r.sessions[targetAddr] = sess
+	return sess, true, nil
 }
 
 // closeAll releases every tracked socket; afterward the registry must not be used.
 func (r *directUDPRegistry) closeAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for _, c := range r.conns {
-		_ = c.Close()
+	for _, s := range r.sessions {
+		_ = s.conn.Close()
 	}
-	r.conns = map[string]*net.UDPConn{}
+	r.sessions = map[string]*directUDPSession{}
 }
