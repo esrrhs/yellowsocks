@@ -569,11 +569,41 @@ func emptyReply(r *dns.Msg) *dns.Msg {
 	return resp
 }
 
+// responseMatchesQuery verifies that an upstream message actually answers the
+// question we sent (RFC 5452 section 5): it must carry QR, the same opcode and
+// an identical question tuple (name, type, class). Without this check a
+// compromised or buggy resolver could answer a different question, and that
+// answer would be cached under the key of the question we sent, poisoning
+// later lookups. The DNS library only matches the message Id.
+func responseMatchesQuery(req, resp *dns.Msg) bool {
+	if resp == nil || !resp.Response || resp.Opcode != req.Opcode {
+		return false
+	}
+	if len(resp.Question) != len(req.Question) {
+		return false
+	}
+	for i := range req.Question {
+		want, got := req.Question[i], resp.Question[i]
+		if want.Qtype != got.Qtype || want.Qclass != got.Qclass {
+			return false
+		}
+		if !strings.EqualFold(strings.TrimSuffix(want.Name, "."), strings.TrimSuffix(got.Name, ".")) {
+			return false
+		}
+	}
+	return true
+}
+
 func (s *Server) resolveDirect(r *dns.Msg, viaTCP bool) (*dns.Msg, error) {
 	c := &dns.Client{Net: "udp", Timeout: 2 * time.Second}
 	in, _, err := c.Exchange(r, s.directDNS)
 	if err != nil {
 		return in, err
+	}
+	if !responseMatchesQuery(r, in) {
+		loggo.Warn("[DNS] direct upstream %s answered a different question than %d/%s; rejecting",
+			s.directDNS, r.Question[0].Qtype, r.Question[0].Name)
+		return nil, errors.New("direct upstream answered a different question")
 	}
 	// The upstream set TC: the answer did not fit in a UDP datagram. A
 	// caching resolver must retry the same question over TCP (RFC 2181 9,
@@ -581,8 +611,11 @@ func (s *Server) resolveDirect(r *dns.Msg, viaTCP bool) (*dns.Msg, error) {
 	if in.Truncated {
 		tcpClient := &dns.Client{Net: "tcp", Timeout: 2 * time.Second}
 		inTCP, _, tcpErr := tcpClient.Exchange(r, s.directDNS)
-		if tcpErr == nil && inTCP != nil {
+		if tcpErr == nil && inTCP != nil && responseMatchesQuery(r, inTCP) {
 			return inTCP, nil
+		}
+		if tcpErr == nil && inTCP != nil {
+			tcpErr = errors.New("tcp retry answered a different question")
 		}
 		loggo.Warn("[DNS] direct upstream %s answered truncated over UDP and TCP retry failed: %v",
 			s.directDNS, tcpErr)
@@ -638,6 +671,9 @@ func (s *Server) resolveDoH(r *dns.Msg) (*dns.Msg, error) {
 	in := new(dns.Msg)
 	if err := in.Unpack(respData); err != nil {
 		return nil, err
+	}
+	if !responseMatchesQuery(r, in) {
+		return nil, errors.New("doh upstream answered a different question")
 	}
 	return in, nil
 }
