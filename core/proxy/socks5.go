@@ -436,9 +436,15 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 			defer common.CrashLog()
 			buf := make([]byte, 65535)
 			for {
-				n, _, err := uConn.ReadFromUDP(buf)
+				n, rAddr, err := uConn.ReadFromUDP(buf)
 				if err != nil || assocClosed.Load() {
 					return
+				}
+				// Only the advertised relay endpoint may speak for the upstream;
+				// uConn is an unconnected socket, so any host reaching the ephemeral
+				// port could otherwise inject datagrams into the client's association.
+				if !sameUDPAddr(rAddr, relayTarget) {
+					continue
 				}
 				cAddr := activeClientUDP.Load()
 				if cAddr != nil && n > 0 {
@@ -499,11 +505,19 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 			if fresh {
 				go func(target string, conn *net.UDPConn) {
 					defer common.CrashLog()
+					// Only datagrams from the target we sent to may be relayed; the
+					// outbound socket is unconnected, so anything else reaching its
+					// ephemeral port (a local process or off-path sender) would be
+					// forwarded with a spoofed source address.
+					wantAddr, _ := net.ResolveUDPAddr("udp", target)
 					buf := make([]byte, 65535)
 					for {
 						n, rAddr, err := conn.ReadFromUDP(buf)
 						if err != nil || assocClosed.Load() {
 							return
+						}
+						if wantAddr != nil && !sameUDPAddr(rAddr, wantAddr) {
+							continue
 						}
 						cAddr := activeClientUDP.Load()
 						if cAddr != nil && n > 0 {
