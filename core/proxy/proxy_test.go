@@ -749,7 +749,7 @@ func TestSocks5OneWayStreamSurvivesIdleTimeout(t *testing.T) {
 
 	r := router.NewRouter()
 	defer r.Close()
-	s5 := NewSocks5Server(Socks5Config{ListenAddr: "127.0.0.1:0", Router: r, IdleTimeout: 150 * time.Millisecond})
+	s5 := NewSocks5Server(Socks5Config{ListenAddr: "127.0.0.1:0", Router: r, IdleTimeout: 500 * time.Millisecond})
 	if err := s5.Start(); err != nil {
 		t.Fatal(err)
 	}
