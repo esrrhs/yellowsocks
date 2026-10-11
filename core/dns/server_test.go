@@ -1210,3 +1210,134 @@ func TestResolveDoHRejectsOversizedUpstreamBody(t *testing.T) {
 		t.Fatal("resolveDoH must reject an upstream body larger than 65535 octets")
 	}
 }
+
+// dohAnswering builds an RFC 8484 stub that replies to every query using the
+// supplied mutator. The mutator receives a copy of a normal reply for the
+// request question and may corrupt it (wrong question, QR cleared, ...).
+func dohAnswering(t *testing.T, mutate func(req, resp *dns.Msg)) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		req := new(dns.Msg)
+		if err := req.Unpack(raw); err != nil || len(req.Question) == 0 {
+			http.Error(w, "bad dns message", http.StatusBadRequest)
+			return
+		}
+		resp := new(dns.Msg)
+		resp.SetReply(req)
+		q := req.Question[0]
+		resp.Answer = append(resp.Answer, &dns.A{
+			Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+			A:   net.ParseIP("6.6.6.6"),
+		})
+		mutate(req, resp)
+		packed, err := resp.Pack()
+		if err != nil {
+			http.Error(w, "pack failed", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "application/dns-message")
+		_, _ = w.Write(packed)
+	}))
+	t.Cleanup(srv.Close)
+	return srv
+}
+
+// RFC 5452 section 5: a resolver must only accept an upstream answer that
+// answers its own question. A compromised or buggy resolver replying with a
+// different question (or with QR cleared) must not be served to clients and
+// must never populate the cache entry keyed by the question we sent.
+func TestRejectUpstreamAnswerForAnotherQuestion(t *testing.T) {
+	t.Run("doh mismatched question", func(t *testing.T) {
+		stub := dohAnswering(t, func(req, resp *dns.Msg) {
+			resp.Question = []dns.Question{{Name: "evil.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}}
+			if a, ok := resp.Answer[0].(*dns.A); ok {
+				a.Hdr.Name = "evil.example."
+			}
+		})
+		srv, err := NewServer(Config{ListenAddr: "127.0.0.1:0", DoHURL: stub.URL, DirectDNS: "127.0.0.1:1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		q := new(dns.Msg)
+		q.SetQuestion("good.example.", dns.TypeA)
+		if resp, err := srv.ResolveMsg(q); err == nil {
+			t.Fatalf("mismatched DoH answer was accepted: %v", resp)
+		}
+		if _, ok := srv.cache.Load("good.example_1_1"); ok {
+			t.Fatal("mismatched DoH answer was cached under the sent question")
+		}
+	})
+
+	t.Run("doh query flag set instead of response", func(t *testing.T) {
+		stub := dohAnswering(t, func(req, resp *dns.Msg) {
+			resp.Response = false
+		})
+		srv, err := NewServer(Config{ListenAddr: "127.0.0.1:0", DoHURL: stub.URL, DirectDNS: "127.0.0.1:1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		q := new(dns.Msg)
+		q.SetQuestion("qr.example.", dns.TypeA)
+		if resp, err := srv.ResolveMsg(q); err == nil {
+			t.Fatalf("non-response DoH message was accepted: %v", resp)
+		}
+	})
+
+	t.Run("direct udp mismatched question", func(t *testing.T) {
+		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pc.Close()
+		go func() {
+			buf := make([]byte, 1500)
+			for {
+				n, addr, err := pc.ReadFrom(buf)
+				if err != nil {
+					return
+				}
+				req := new(dns.Msg)
+				if req.Unpack(buf[:n]) != nil || len(req.Question) == 0 {
+					continue
+				}
+				resp := new(dns.Msg)
+				resp.SetReply(req)
+				// Answer a different question than the one asked.
+				resp.Question = []dns.Question{{Name: "evil.example.", Qtype: dns.TypeA, Qclass: dns.ClassINET}}
+				resp.Answer = append(resp.Answer, &dns.A{
+					Hdr: dns.RR_Header{Name: "evil.example.", Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+					A:   net.ParseIP("9.9.9.9"),
+				})
+				if packed, perr := resp.Pack(); perr == nil {
+					_, _ = pc.WriteTo(packed, addr)
+				}
+			}
+		}()
+
+		rt := router.NewRouter()
+		defer rt.Close()
+		rt.AddDirectDomain("mismatch.example")
+		srv, err := NewServer(Config{
+			ListenAddr: "127.0.0.1:0",
+			DirectDNS:  pc.LocalAddr().String(),
+			DoHURL:     "http://127.0.0.1:1/dns-query",
+			Router:     rt,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		q := new(dns.Msg)
+		q.SetQuestion("mismatch.example.", dns.TypeA)
+		if resp, err := srv.ResolveMsg(q); err == nil {
+			t.Fatalf("mismatched direct answer was accepted: %v", resp)
+		}
+		if _, ok := srv.cache.Load("mismatch.example_1_1"); ok {
+			t.Fatal("mismatched direct answer was cached under the sent question")
+		}
+	})
+}
