@@ -132,18 +132,24 @@ func TestHTTPConnectProxiedThroughUpstream(t *testing.T) {
 // A plain (non-CONNECT) HTTP request to a proxy-route target must be forwarded
 // through the upstream with an origin-form request line.
 func TestHTTPGetProxiedThroughUpstream(t *testing.T) {
-	backend := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.RequestURI == "" || r.RequestURI[0] != '/' {
-			http.Error(w, "expected origin-form URI", http.StatusBadRequest)
-			return
-		}
-		_, _ = w.Write([]byte("upstream-body"))
-	})}
 	bl, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer bl.Close()
+	target := net.JoinHostPort("localhost", portOf(t, bl.Addr().String()))
+
+	backend := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.RequestURI == "" || r.RequestURI[0] != '/' {
+			http.Error(w, "expected origin-form URI", http.StatusBadRequest)
+			return
+		}
+		if r.Host != target {
+			http.Error(w, "Host header not forwarded: "+r.Host, http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte("upstream-body"))
+	})}
 	go func() { _ = backend.Serve(bl) }()
 
 	upstreamAddr, stopUpstream := startMockUpstreamSocks5(t)
@@ -164,7 +170,6 @@ func TestHTTPGetProxiedThroughUpstream(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cc.Close()
-	target := net.JoinHostPort("localhost", portOf(t, bl.Addr().String()))
 	req := fmt.Sprintf("GET http://%s/path HTTP/1.1\r\nHost: %s\r\nProxy-Connection: keep-alive\r\n\r\n",
 		target, target)
 	if _, err := cc.Write([]byte(req)); err != nil {

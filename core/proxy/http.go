@@ -153,6 +153,7 @@ func (s *HTTPServer) handleClient(clientConn net.Conn) {
 
 	var rawHeaders []string
 	var hostHeader string
+	hostSeen := false
 	var proxyAuthHeader string
 
 	for {
@@ -169,14 +170,22 @@ func (s *HTTPServer) handleClient(clientConn net.Conn) {
 		if colonIdx > 0 {
 			k := strings.TrimSpace(trimmed[:colonIdx])
 			v := strings.TrimSpace(trimmed[colonIdx+1:])
-			if strings.EqualFold(k, "Host") {
-				hostHeader = v
-			} else if strings.EqualFold(k, "Proxy-Authorization") {
+			if strings.EqualFold(k, "Proxy-Authorization") {
+				// Consumed locally for auth and never forwarded upstream.
 				proxyAuthHeader = v
 				continue
-			} else if strings.EqualFold(k, "Proxy-Connection") {
+			}
+			if strings.EqualFold(k, "Proxy-Connection") {
 				rawHeaders = append(rawHeaders, "Connection: "+v+"\r\n")
 				continue
+			}
+			if strings.EqualFold(k, "Host") {
+				// Keep the value for target parsing but fall through to
+				// append the original line: a proxy MUST forward Host
+				// (RFC 7230 5.4); HTTP/1.1 vhost backends (nginx, ...)
+				// reject the request with 400 when it is missing.
+				hostHeader = v
+				hostSeen = true
 			}
 		}
 		rawHeaders = append(rawHeaders, trimmed+"\r\n")
@@ -204,7 +213,7 @@ func (s *HTTPServer) handleClient(clientConn net.Conn) {
 	if method == "CONNECT" {
 		s.handleConnect(clientConn, br, targetHost, targetPort)
 	} else {
-		s.handleStandardHTTP(clientConn, br, method, rawURI, protoVer, rawHeaders, targetHost, targetPort)
+		s.handleStandardHTTP(clientConn, br, method, rawURI, protoVer, hostSeen, rawHeaders, targetHost, targetPort)
 	}
 }
 
@@ -363,7 +372,7 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 	}
 }
 
-func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, method, rawURI, protoVer string, rawHeaders []string, targetHost string, targetPort int) {
+func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, method, rawURI, protoVer string, hostSeen bool, rawHeaders []string, targetHost string, targetPort int) {
 	targetHost = canonicalHost(targetHost)
 	decision, realHost := s.routeDecision(targetHost, targetPort)
 	targetAddr := joinDialAddr(targetHost, targetPort)
@@ -389,6 +398,15 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 
 	var reqBuf strings.Builder
 	reqBuf.WriteString(fmt.Sprintf("%s %s %s\r\n", method, relPath, protoVer))
+	if !hostSeen {
+		// HTTP/1.0 clients may omit Host; synthesize one from the request
+		// target so name-based backends still receive a valid request.
+		syntheticHost := targetHost
+		if targetPort != 80 {
+			syntheticHost = net.JoinHostPort(targetHost, strconv.Itoa(targetPort))
+		}
+		reqBuf.WriteString("Host: " + syntheticHost + "\r\n")
+	}
 	for _, h := range rawHeaders {
 		reqBuf.WriteString(h)
 	}
