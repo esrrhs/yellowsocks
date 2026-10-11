@@ -24,6 +24,9 @@ import (
 type DNSCacheEntry struct {
 	Msg       *dns.Msg
 	ExpiresAt time.Time
+	// StoredAt is when the answer entered the cache. It lets cache hits age
+	// every RR TTL by the elapsed time instead of guessing from ExpiresAt.
+	StoredAt time.Time
 }
 
 // ipMapping is a domain learned for an IP, with an expiry so the reverse map
@@ -64,6 +67,10 @@ type Server struct {
 	stopOnce       sync.Once
 	janitorOnce    sync.Once
 }
+
+// maxDNSMessageSize is the largest DNS wire message (RFC 1035: a 2-octet
+// length field over TCP), used to bound DoH requests and upstream responses.
+const maxDNSMessageSize = 65535
 
 // cacheSweepInterval is how often expired cache and IP mappings are reclaimed.
 var cacheSweepInterval = 2 * time.Minute
@@ -376,10 +383,10 @@ func (s *Server) handleDoHHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	case http.MethodPost:
-		// RFC 8484 transports a single DNS message: at most 65535 bytes plus
-		// the TCP length prefix. Cap the body so a client cannot exhaust
+		// RFC 8484 POST carries one bare DNS message (<= 65535 octets, no
+		// TCP length prefix). Cap the body so a client cannot exhaust
 		// memory by streaming an unbounded POST.
-		r.Body = http.MaxBytesReader(w, r.Body, 65535+2)
+		r.Body = http.MaxBytesReader(w, r.Body, maxDNSMessageSize)
 		rawMsg, err = io.ReadAll(r.Body)
 		if err != nil || len(rawMsg) == 0 {
 			http.Error(w, "empty, oversized or invalid request body", http.StatusBadRequest)
@@ -387,6 +394,14 @@ func (s *Server) handleDoHHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// The GET path is bounded only by the HTTP header limit, so enforce the
+	// RFC 8484 wire-message ceiling here for both methods. A larger blob is
+	// never a valid DNS message.
+	if len(rawMsg) == 0 || len(rawMsg) > maxDNSMessageSize {
+		http.Error(w, "dns message size out of range", http.StatusBadRequest)
 		return
 	}
 
@@ -425,21 +440,12 @@ const doHMaxAgeCap = 24 * time.Hour
 func doHCacheControl(m *dns.Msg) string {
 	var minTTL uint32
 	found := false
-	consider := func(rrs []dns.RR) {
-		for _, rr := range rrs {
-			// OPT/EDNS(0) is hop metadata and carries no cacheable TTL.
-			if rr.Header().Rrtype == dns.TypeOPT {
-				continue
-			}
-			if ttl := rr.Header().Ttl; !found || ttl < minTTL {
-				minTTL = ttl
-				found = true
-			}
+	forEachRR(m, func(rr dns.RR) {
+		if ttl := rr.Header().Ttl; !found || ttl < minTTL {
+			minTTL = ttl
+			found = true
 		}
-	}
-	consider(m.Answer)
-	consider(m.Ns)
-	consider(m.Extra)
+	})
 	if !found {
 		return "no-store"
 	}
@@ -448,6 +454,32 @@ func doHCacheControl(m *dns.Msg) string {
 		capped = maxSec
 	}
 	return fmt.Sprintf("max-age=%d", capped)
+}
+
+// forEachRR visits every real RR in all message sections. OPT/EDNS(0) is a
+// hop-by-hop pseudo-record without a cacheable TTL and is skipped.
+func forEachRR(m *dns.Msg, fn func(dns.RR)) {
+	for _, rrs := range [][]dns.RR{m.Answer, m.Ns, m.Extra} {
+		for _, rr := range rrs {
+			if rr.Header().Rrtype == dns.TypeOPT {
+				continue
+			}
+			fn(rr)
+		}
+	}
+}
+
+// ageRRsTTL subtracts elapsed seconds from every RR TTL, floored at zero.
+// Used on cache hits so records leave the resolver aged by the time they
+// spent here (RFC 1034 section 3.6 / RFC 2181 section 8).
+func ageRRsTTL(m *dns.Msg, elapsedSecs uint32) {
+	forEachRR(m, func(rr dns.RR) {
+		if h := rr.Header(); h.Ttl > elapsedSecs {
+			h.Ttl -= elapsedSecs
+		} else {
+			h.Ttl = 0
+		}
+	})
 }
 
 // ResolveMsg resolves a DNS query message using caching, smart routing, and upstream DoH/Direct
@@ -463,8 +495,15 @@ func (s *Server) ResolveMsg(r *dns.Msg) (*dns.Msg, error) {
 	// 1. Check cache
 	if val, ok := s.cache.Load(cacheKey); ok {
 		entry := val.(DNSCacheEntry)
-		if time.Now().Before(entry.ExpiresAt) {
+		remaining := time.Until(entry.ExpiresAt)
+		if remaining > 0 {
 			resp := entry.Msg.Copy()
+			// A caching resolver must age RR TTLs by the time the record
+			// spent in cache (RFC 1034 3.6, RFC 2181 8). Returning the
+			// original upstream TTL on every hit makes a record expiring
+			// here look fresh to the client, and inflates the DoH
+			// Cache-Control max-age derived from these TTLs.
+			ageRRsTTL(resp, uint32(time.Since(entry.StoredAt)/time.Second))
 			resp.Id = r.Id
 			return resp, nil
 		}
@@ -543,7 +582,7 @@ func (s *Server) resolveDoH(r *dns.Msg) (*dns.Msg, error) {
 
 	// A DoH answer is one DNS message (<= 65535 octets); reject anything
 	// larger instead of buffering an unbounded response body.
-	respData, err := io.ReadAll(io.LimitReader(resp.Body, 65535))
+	respData, err := io.ReadAll(io.LimitReader(resp.Body, maxDNSMessageSize))
 	if err != nil {
 		return nil, err
 	}
@@ -574,13 +613,13 @@ func (s *Server) cacheAndRecordIP(domain, key string, msg *dns.Msg) {
 			minTTL = ttl
 		}
 	}
-	mappingExpiry := time.Now().Add(ipMappingTTL)
+	now := time.Now()
 	for _, ans := range msg.Answer {
 		if a, ok := ans.(*dns.A); ok {
-			s.ipToDomain.Store(a.A.String(), ipMapping{domain: domain, expires: mappingExpiry})
+			s.ipToDomain.Store(a.A.String(), ipMapping{domain: domain, expires: now.Add(ipMappingTTL)})
 		}
 		if aaaa, ok := ans.(*dns.AAAA); ok {
-			s.ipToDomain.Store(aaaa.AAAA.String(), ipMapping{domain: domain, expires: mappingExpiry})
+			s.ipToDomain.Store(aaaa.AAAA.String(), ipMapping{domain: domain, expires: now.Add(ipMappingTTL)})
 		}
 	}
 
@@ -592,7 +631,8 @@ func (s *Server) cacheAndRecordIP(domain, key string, msg *dns.Msg) {
 	}
 	s.cache.Store(key, DNSCacheEntry{
 		Msg:       msg.Copy(),
-		ExpiresAt: time.Now().Add(time.Duration(minTTL) * time.Second),
+		StoredAt:  now,
+		ExpiresAt: now.Add(time.Duration(minTTL) * time.Second),
 	})
 }
 
