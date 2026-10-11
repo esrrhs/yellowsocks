@@ -1042,7 +1042,7 @@ func TestResolveDirectRetriesTCPOnTruncation(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("big.example.", dns.TypeA)
 
-	resp, err := srv.resolveDirect(req)
+	resp, err := srv.resolveDirect(req, true)
 	if err != nil {
 		t.Fatalf("resolveDirect: %v", err)
 	}
@@ -1057,9 +1057,11 @@ func TestResolveDirectRetriesTCPOnTruncation(t *testing.T) {
 	}
 }
 
-// If the upstream truncates over UDP and its TCP listener is unavailable, the
-// truncated response is still returned (with an error logged) rather than
-// failing the lookup outright.
+// If the upstream truncates over UDP and its TCP listener is unavailable:
+//   - over an inbound UDP session the truncated response is still returned
+//     (with an error logged) so the client may retry over TCP itself;
+//   - over an inbound TCP/DoH session a truncated reply is invalid
+//     (RFC 7766), so the lookup must fail instead of carrying the TC bit.
 func TestResolveDirectTruncatedTCPFallbackFailure(t *testing.T) {
 	addr := reserveFreeTCPPort(t)
 	udpConn, err := net.ListenPacket("udp", addr)
@@ -1084,11 +1086,81 @@ func TestResolveDirectTruncatedTCPFallbackFailure(t *testing.T) {
 	req := new(dns.Msg)
 	req.SetQuestion("big.example.", dns.TypeA)
 
-	resp, err := srv.resolveDirect(req)
+	resp, err := srv.resolveDirect(req, false)
 	if err != nil {
-		t.Fatalf("truncated answer must be returned, got err=%v", err)
+		t.Fatalf("UDP inbound: truncated answer must be returned, got err=%v", err)
 	}
 	if resp == nil || !resp.Truncated {
-		t.Fatalf("expected truncated fallback response, got %v", resp)
+		t.Fatalf("UDP inbound: expected truncated fallback response, got %v", resp)
+	}
+
+	if resp, err := srv.resolveDirect(req, true); err == nil {
+		t.Fatalf("TCP inbound: expected error, got truncated=%v", resp != nil && resp.Truncated)
+	}
+}
+
+// End-to-end: with an upstream that only serves TC over UDP and has no TCP
+// listener, an inbound UDP client still gets TC (a valid retry hint), while an
+// inbound TCP client gets SERVFAIL instead of an invalid TC reply. The
+// truncated answer must never enter the cache.
+func TestDNSInboundTransportAwareTruncation(t *testing.T) {
+	upstream := reserveFreeTCPPort(t)
+	udpConn, err := net.ListenPacket("udp", upstream)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := dns.HandlerFunc(func(w dns.ResponseWriter, m *dns.Msg) {
+		resp := new(dns.Msg)
+		resp.SetReply(m)
+		resp.Truncated = true
+		_ = w.WriteMsg(resp)
+	})
+	udpSrv := &dns.Server{PacketConn: udpConn.(*net.UDPConn), Net: "udp", Handler: h}
+	go func() { _ = udpSrv.ActivateAndServe() }()
+	t.Cleanup(func() { _ = udpSrv.Shutdown() })
+
+	r := router.NewRouterWithOptions(router.Options{
+		DisableBuiltin: true,
+		DirectDomains:  []string{"big.example"},
+	})
+	defer r.Close()
+
+	addr := freeUDPPort(t)
+	srv, err := NewServer(Config{ListenAddr: addr, DirectDNS: upstream, Router: r})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Stop()
+	time.Sleep(100 * time.Millisecond)
+
+	q := new(dns.Msg)
+	q.SetQuestion("big.example.", dns.TypeA)
+
+	udpClient := &dns.Client{Net: "udp", Timeout: 2 * time.Second}
+	udpResp, _, err := udpClient.Exchange(q, addr)
+	if err != nil {
+		t.Fatalf("udp exchange: %v", err)
+	}
+	if !udpResp.Truncated {
+		t.Fatal("UDP client must receive the TC=1 retry hint")
+	}
+
+	tcpClient := &dns.Client{Net: "tcp", Timeout: 2 * time.Second}
+	tcpResp, _, err := tcpClient.Exchange(q, addr)
+	if err != nil {
+		t.Fatalf("tcp exchange: %v", err)
+	}
+	if tcpResp.Truncated {
+		t.Fatal("TC bit must never be set on a reply delivered over TCP")
+	}
+	if tcpResp.Rcode != dns.RcodeServerFailure {
+		t.Fatalf("TCP client rcode=%s, want SERVFAIL", dns.RcodeToString[tcpResp.Rcode])
+	}
+
+	if _, cached := srv.cache.Load("big.example_1_1"); cached {
+		t.Fatal("truncated answer must not be cached")
 	}
 }
