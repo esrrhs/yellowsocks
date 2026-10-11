@@ -891,3 +891,98 @@ func TestDoHServerHasReadDeadlines(t *testing.T) {
 		t.Fatal("IdleTimeout not set: idle keep-alive connections are never reclaimed")
 	}
 }
+
+// RFC 1034 3.6 / RFC 2181 8: a caching resolver must age RR TTLs before
+// serving a cached answer. The old code returned the original upstream TTL
+// on every cache hit, so a record seconds from expiry here was handed out as
+// freshly valid, and the DoH Cache-Control header was inflated too.
+func TestCacheHitAgesRRsTTLs(t *testing.T) {
+	srv, err := NewServer(Config{ListenAddr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const name = "aged.example."
+	question := dns.Question{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET}
+
+	cached := new(dns.Msg)
+	cached.SetReply(&dns.Msg{Question: []dns.Question{question}})
+	cached.Answer = append(cached.Answer,
+		&dns.A{
+			Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 100},
+			A:   net.ParseIP("203.0.113.5"),
+		},
+		&dns.A{
+			Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 130},
+			A:   net.ParseIP("203.0.113.6"),
+		},
+	)
+	cached.Ns = append(cached.Ns, &dns.SOA{
+		Hdr:     dns.RR_Header{Name: "example.", Rrtype: dns.TypeSOA, Class: dns.ClassINET, Ttl: 200},
+		Ns:      "ns.example.",
+		Mbox:    "hostmaster.example.",
+		Serial:  1,
+		Refresh: 3600,
+		Retry:   900,
+		Expire:  86400,
+		Minttl:  60,
+	})
+
+	// The entry has lived in cache for 90s and has 10s left until expiry.
+	now := time.Now()
+	srv.cache.Store("aged.example_1_1", DNSCacheEntry{
+		Msg:       cached,
+		StoredAt:  now.Add(-90 * time.Second),
+		ExpiresAt: now.Add(10 * time.Second),
+	})
+
+	req := &dns.Msg{Question: []dns.Question{question}}
+	resp, err := srv.ResolveMsg(req)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if len(resp.Answer) != 2 {
+		t.Fatalf("answers=%d", len(resp.Answer))
+	}
+	want := []uint32{10, 40}
+	for i, rr := range resp.Answer {
+		if got := rr.Header().Ttl; got != want[i] {
+			t.Fatalf("answer %d TTL=%d, want %d (100/130 minus 90s)", i, got, want[i])
+		}
+	}
+	if got := resp.Ns[0].Header().Ttl; got != 110 {
+		t.Fatalf("authority TTL=%d, want 110 (200 minus 90s)", got)
+	}
+	// The Cache-Control directive is derived from the aged TTLs.
+	if got := doHCacheControl(resp); got != "max-age=10" {
+		t.Fatalf("Cache-Control=%q, want max-age=10", got)
+	}
+}
+
+// A GET dns= parameter decoding to more than one DNS message must be rejected
+// just like an oversized POST; the GET path is only bounded by header size.
+func TestDoHHTTPRejectsOversizedGET(t *testing.T) {
+	srv, err := NewServer(Config{
+		ListenAddr:    "127.0.0.1:0",
+		DoHListenAddr: reserveFreeTCPPort(t),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	defer srv.Stop()
+
+	blob := bytes.Repeat([]byte{0x41}, maxDNSMessageSize+1)
+	u := "http://" + srv.httpServerDoH.Addr + "/dns-query?dns=" +
+		base64.RawURLEncoding.EncodeToString(blob)
+	resp, err := http.Get(u)
+	if err != nil {
+		t.Fatalf("oversized get: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("oversized GET status=%d, want 400", resp.StatusCode)
+	}
+}
