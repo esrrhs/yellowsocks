@@ -202,8 +202,13 @@ func (s *Server) Start() error {
 		}
 		s.dohListener = dohListener
 		s.httpServerDoH = &http.Server{
-			Addr:    dohListener.Addr().String(),
-			Handler: muxDoH,
+			Addr: dohListener.Addr().String(),
+			// A network-facing DoH listener must not let clients hold
+			// connections open forever: without a header deadline a slow
+			// sender (classic Slowloris) pins one goroutine per connection.
+			ReadHeaderTimeout: 10 * time.Second,
+			IdleTimeout:       120 * time.Second,
+			Handler:           muxDoH,
 		}
 
 		loggo.Info("[DNS] DoH server starting on TCP %s (/dns-query)", s.dohListenAddr)
@@ -404,9 +409,45 @@ func (s *Server) handleDoHHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/dns-message")
-	w.Header().Set("Cache-Control", "max-age=60")
+	w.Header().Set("Cache-Control", doHCacheControl(respMsg))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(packed)
+}
+
+// doHMaxAgeCap bounds how long an HTTP cache may keep a DoH answer even if
+// the upstream advertises a multi-year TTL.
+const doHMaxAgeCap = 24 * time.Hour
+
+// doHCacheControl builds the RFC 8484 (section 5.1) Cache-Control directive:
+// max-age is the minimum TTL across every RR in the message. A TTL of 0 must
+// produce max-age=0 so resolvers do not cache a deliberately non-cacheable
+// answer; a message without RRs (e.g. a synthetic empty AAAA) is no-store.
+func doHCacheControl(m *dns.Msg) string {
+	var minTTL uint32
+	found := false
+	consider := func(rrs []dns.RR) {
+		for _, rr := range rrs {
+			// OPT/EDNS(0) is hop metadata and carries no cacheable TTL.
+			if rr.Header().Rrtype == dns.TypeOPT {
+				continue
+			}
+			if ttl := rr.Header().Ttl; !found || ttl < minTTL {
+				minTTL = ttl
+				found = true
+			}
+		}
+	}
+	consider(m.Answer)
+	consider(m.Ns)
+	consider(m.Extra)
+	if !found {
+		return "no-store"
+	}
+	capped := uint64(minTTL)
+	if maxSec := uint64(doHMaxAgeCap / time.Second); capped > maxSec {
+		capped = maxSec
+	}
+	return fmt.Sprintf("max-age=%d", capped)
 }
 
 // ResolveMsg resolves a DNS query message using caching, smart routing, and upstream DoH/Direct
