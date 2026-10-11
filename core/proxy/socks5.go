@@ -497,16 +497,12 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 		targetAddr := joinDialAddr(dstHost, dstPort)
 
 		if decision == router.Direct {
-			// Resolve the destination once and share it between send and receive:
-			// the reply filter must match the exact endpoint datagrams go to.
-			// Looking the name up twice could disagree for a round-robin domain
-			// (RFC 1794), which would either drop legitimate replies or spray
-			// datagrams at different peers.
-			udpTarget, err := net.ResolveUDPAddr("udp", targetAddr)
-			if err != nil {
-				continue
-			}
-			dConn, fresh, err := directSessions.get(targetAddr)
+			// The registry resolves the target once per association and hands
+			// back the same endpoint for every send and for the reply filter.
+			// Re-resolving a round-robin name (RFC 1794) on later datagrams
+			// could send them to a second peer whose replies the read loop
+			// would then drop.
+			sess, fresh, err := directSessions.get(targetAddr)
 			if err != nil {
 				loggo.Warn("[SOCKS5] direct UDP session for %s rejected: %v", targetAddr, err)
 				continue
@@ -535,9 +531,9 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 							}
 						}
 					}
-				}(udpTarget, dConn)
+				}(sess.addr, sess.conn)
 			}
-			_, _ = dConn.WriteToUDP(payload, udpTarget)
+			_, _ = sess.conn.WriteToUDP(payload, sess.addr)
 		} else {
 			// Upstream SPP cannot route IPv6
 			if !s.cfg.EnableIPv6 && isIPv6Literal(dstHost) {
