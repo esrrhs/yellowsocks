@@ -48,13 +48,21 @@ type Server struct {
 	tcpServer     *dns.Server
 	dotServer     *dns.Server
 	httpServerDoH *http.Server
-	cache         sync.Map // domain+type -> DNSCacheEntry
-	ipToDomain    sync.Map // ip.String() -> ipMapping, learned from answered queries
-	enableIPv6    bool
-	httpClientDoH *http.Client
-	stopCh        chan struct{}
-	stopOnce      sync.Once
-	janitorOnce   sync.Once
+	// Listeners are created before Start returns so Start fails
+	// synchronously on a bind error. Keep references because
+	// Shutdown/Close only release a listener after the serving goroutine has
+	// marked the server started; Stop force-closes them to cover that race
+	// and a Start that failed mid-way.
+	dnsTCPListener net.Listener
+	dohListener    net.Listener
+	dotListener    net.Listener
+	cache          sync.Map // domain+type -> DNSCacheEntry
+	ipToDomain     sync.Map // ip.String() -> ipMapping, learned from answered queries
+	enableIPv6     bool
+	httpClientDoH  *http.Client
+	stopCh         chan struct{}
+	stopOnce       sync.Once
+	janitorOnce    sync.Once
 }
 
 // cacheSweepInterval is how often expired cache and IP mappings are reclaimed.
@@ -117,12 +125,16 @@ func (s *Server) setupDoHClient() {
 
 	if s.socks5Addr != "" {
 		dialer, err := proxy.SOCKS5("tcp", s.socks5Addr, nil, proxy.Direct)
-		if err == nil {
+		if err != nil {
+			loggo.Error("[DNS] Failed to create socks5 dialer for DoH: %v", err)
+		} else if cd, ok := dialer.(proxy.ContextDialer); ok {
+			// Honor the request context so a stalled local SPP SOCKS5 cannot
+			// hang resolution past the client timeout.
+			transport.DialContext = cd.DialContext
+		} else {
 			transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 				return dialer.Dial(network, addr)
 			}
-		} else {
-			loggo.Error("[DNS] Failed to create socks5 dialer for DoH: %v", err)
 		}
 	}
 
@@ -156,14 +168,22 @@ func (s *Server) Start() error {
 	}()
 
 	// RFC 5966: also answer over TCP so clients that get a truncated (TC=1)
-	// UDP response can retry instead of failing the lookup.
+	// UDP response can retry instead of failing the lookup. Bind before
+	// Start returns so a successful Start means the port is already
+	// accepting connections.
+	tcpListener, err := net.Listen("tcp", s.listenAddr)
+	if err != nil {
+		s.Stop()
+		return fmt.Errorf("listen tcp %s: %w", s.listenAddr, err)
+	}
+	s.dnsTCPListener = tcpListener
 	s.tcpServer = &dns.Server{
-		Addr:    s.listenAddr,
-		Net:     "tcp",
-		Handler: mux,
+		Listener: tcpListener,
+		Net:      "tcp",
+		Handler:  mux,
 	}
 	go func() {
-		if err := s.tcpServer.ListenAndServe(); err != nil {
+		if err := s.tcpServer.ActivateAndServe(); err != nil {
 			loggo.Info("[DNS] TCP server stopped: %v", err)
 		}
 	}()
@@ -175,15 +195,21 @@ func (s *Server) Start() error {
 		muxDoH.HandleFunc("/dns-query", s.handleDoHHTTP)
 		muxDoH.HandleFunc("/", s.handleDoHHTTP)
 
+		dohListener, err := net.Listen("tcp", s.dohListenAddr)
+		if err != nil {
+			s.Stop()
+			return fmt.Errorf("listen DoH %s: %w", s.dohListenAddr, err)
+		}
+		s.dohListener = dohListener
 		s.httpServerDoH = &http.Server{
-			Addr:    s.dohListenAddr,
+			Addr:    dohListener.Addr().String(),
 			Handler: muxDoH,
 		}
 
 		loggo.Info("[DNS] DoH server starting on TCP %s (/dns-query)", s.dohListenAddr)
 		go func() {
-			if err := s.httpServerDoH.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				loggo.Error("[DNS] DoH ListenAndServe error: %v", err)
+			if err := s.httpServerDoH.Serve(dohListener); err != nil && err != http.ErrServerClosed {
+				loggo.Error("[DNS] DoH serve error: %v", err)
 			}
 		}()
 	}
@@ -191,6 +217,7 @@ func (s *Server) Start() error {
 	if s.dotListenAddr != "" {
 		cert, err := tls.LoadX509KeyPair(s.tlsCertFile, s.tlsKeyFile)
 		if err != nil {
+			s.Stop()
 			return fmt.Errorf("load DoT TLS certificate: %w", err)
 		}
 		tlsConfig := &tls.Config{
@@ -199,16 +226,21 @@ func (s *Server) Start() error {
 			// RFC 7858 DoT ALPN
 			NextProtos: []string{"dot"},
 		}
+		dotListener, err := net.Listen("tcp", s.dotListenAddr)
+		if err != nil {
+			s.Stop()
+			return fmt.Errorf("listen DoT %s: %w", s.dotListenAddr, err)
+		}
+		s.dotListener = dotListener
 		s.dotServer = &dns.Server{
-			Addr:      s.dotListenAddr,
-			Net:       "tcp-tls",
-			TLSConfig: tlsConfig,
-			Handler:   mux,
+			Listener: tls.NewListener(dotListener, tlsConfig),
+			Net:      "tcp-tls",
+			Handler:  mux,
 		}
 		loggo.Info("[DNS] DoT server starting on TCP-TLS %s (cert=%s)", s.dotListenAddr, s.tlsCertFile)
 		go func() {
-			if err := s.dotServer.ListenAndServe(); err != nil {
-				loggo.Error("[DNS] DoT ListenAndServe error: %v", err)
+			if err := s.dotServer.ActivateAndServe(); err != nil {
+				loggo.Error("[DNS] DoT serve error: %v", err)
 			}
 		}()
 	}
@@ -216,10 +248,19 @@ func (s *Server) Start() error {
 	return nil
 }
 
-// Stop stops DNS, DoH and DoT servers
+// Stop stops DNS, DoH and DoT servers. It is idempotent and safe to call
+// after a Start that failed mid-way (Start itself releases what it bound).
 func (s *Server) Stop() error {
+	var stopErr error
+	s.stopOnce.Do(func() {
+		close(s.stopCh)
+		stopErr = s.shutdownListeners()
+	})
+	return stopErr
+}
+
+func (s *Server) shutdownListeners() error {
 	var firstErr error
-	s.stopOnce.Do(func() { close(s.stopCh) })
 	if s.udpServer != nil && s.udpServer.PacketConn != nil {
 		// Shutdown() ignores a PacketConn when ActivateAndServe has not marked
 		// the server started yet, which would leak the UDP listen port.
@@ -237,19 +278,29 @@ func (s *Server) Stop() error {
 			firstErr = err
 		}
 	}
+	if s.dnsTCPListener != nil {
+		// Covers the window before ActivateAndServe marked the server started.
+		_ = s.dnsTCPListener.Close()
+	}
 	if s.httpServerDoH != nil {
 		if err := s.httpServerDoH.Close(); err != nil && firstErr == nil {
 			firstErr = err
 		}
 	}
+	if s.dohListener != nil {
+		_ = s.dohListener.Close()
+	}
+	if s.dotServer != nil {
+		if err := s.dotServer.Shutdown(); err != nil && firstErr == nil && !strings.Contains(err.Error(), "not started") {
+			firstErr = err
+		}
+	}
+	if s.dotListener != nil {
+		_ = s.dotListener.Close()
+	}
 	// Release keep-alive connections the upstream DoH client pooled.
 	if t, ok := s.httpClientDoH.Transport.(*http.Transport); ok {
 		t.CloseIdleConnections()
-	}
-	if s.dotServer != nil {
-		if err := s.dotServer.Shutdown(); err != nil && firstErr == nil {
-			firstErr = err
-		}
 	}
 	return firstErr
 }
@@ -449,7 +500,9 @@ func (s *Server) resolveDoH(r *dns.Msg) (*dns.Msg, error) {
 		return nil, fmt.Errorf("doh status error: %d", resp.StatusCode)
 	}
 
-	respData, err := io.ReadAll(resp.Body)
+	// A DoH answer is one DNS message (<= 65535 octets); reject anything
+	// larger instead of buffering an unbounded response body.
+	respData, err := io.ReadAll(io.LimitReader(resp.Body, 65535))
 	if err != nil {
 		return nil, err
 	}
@@ -466,10 +519,18 @@ func (s *Server) cacheAndRecordIP(domain, key string, msg *dns.Msg) {
 		return
 	}
 
+	// RFC 2181: a TTL of 0 means the answer MUST NOT be cached. Recording it
+	// with the floor TTL would pin a deliberately non-cacheable answer
+	// (common for health-based/CDN records) for five minutes.
 	var minTTL uint32 = 300
 	for _, ans := range msg.Answer {
-		if ans.Header().Ttl < minTTL && ans.Header().Ttl > 0 {
-			minTTL = ans.Header().Ttl
+		ttl := ans.Header().Ttl
+		if ttl == 0 {
+			minTTL = 0
+			break
+		}
+		if ttl < minTTL {
+			minTTL = ttl
 		}
 	}
 	mappingExpiry := time.Now().Add(ipMappingTTL)
@@ -482,6 +543,12 @@ func (s *Server) cacheAndRecordIP(domain, key string, msg *dns.Msg) {
 		}
 	}
 
+	if minTTL == 0 {
+		// Drop any stale entry from a previous positive-TTL answer so the
+		// authoritative no-cache directive takes effect immediately.
+		s.cache.Delete(key)
+		return
+	}
 	s.cache.Store(key, DNSCacheEntry{
 		Msg:       msg.Copy(),
 		ExpiresAt: time.Now().Add(time.Duration(minTTL) * time.Second),

@@ -2,6 +2,7 @@ package dns
 
 import (
 	"bytes"
+	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -315,6 +316,52 @@ func TestNewServerDoTRequiresCert(t *testing.T) {
 	}
 }
 
+// When a later listener fails to bind, Start must return an error and Stop
+// must release the UDP/TCP sockets already bound earlier in Start.
+func TestStartFailureReleasesBoundListeners(t *testing.T) {
+	udpL, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	udpAddr := udpL.LocalAddr().String()
+	_ = udpL.Close()
+
+	// Occupy the DoH TCP port so Start fails at the synchronous DoH bind.
+	occupied, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer occupied.Close()
+
+	srv, err := NewServer(Config{
+		ListenAddr:    udpAddr,
+		DoHListenAddr: occupied.Addr().String(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := srv.Start(); err == nil {
+		t.Fatal("expected Start to fail when DoH port is occupied")
+	}
+	if err := srv.Stop(); err != nil {
+		t.Fatalf("stop after failed start: %v", err)
+	}
+
+	// The UDP listener acquired before the failure must be released.
+	retryDeadline := time.Now().Add(2 * time.Second)
+	for {
+		pc, lerr := net.ListenPacket("udp", udpAddr)
+		if lerr == nil {
+			_ = pc.Close()
+			return
+		}
+		if time.Now().After(retryDeadline) {
+			t.Fatalf("UDP port %s still bound after failed Start: %v", udpAddr, lerr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestAAAAEmptyWhenIPv6Disabled(t *testing.T) {
 	// With EnableIPv6 off (the default) a proxied AAAA query is answered empty
 	// so clients fall back to the A record.
@@ -573,5 +620,114 @@ func TestDoHHTTPRejectsOversizedPost(t *testing.T) {
 	if resp.StatusCode != http.StatusRequestEntityTooLarge &&
 		resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("oversized POST status=%d, want 400 or 413", resp.StatusCode)
+	}
+}
+
+func answerWithTTL(name string, ttl uint32) *dns.Msg {
+	m := new(dns.Msg)
+	m.SetReply(&dns.Msg{})
+	m.Question = []dns.Question{{Name: name, Qtype: dns.TypeA, Qclass: dns.ClassINET}}
+	m.Answer = append(m.Answer, &dns.A{
+		Hdr: dns.RR_Header{Name: name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: ttl},
+		A:   net.ParseIP("1.2.3.4"),
+	})
+	return m
+}
+
+// RFC 2181: an answer with TTL 0 must not be cached. The old code only
+// considered positive TTLs and therefore cached it for the 300s floor.
+func TestCacheSkipsZeroTTLAnswers(t *testing.T) {
+	srv, err := NewServer(Config{ListenAddr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const key = "nocache.example_1_1"
+
+	// A previously cached positive-TTL answer must be evicted once the
+	// authoritative server returns TTL 0.
+	srv.cache.Store(key, DNSCacheEntry{Msg: answerWithTTL("nocache.example.", 60), ExpiresAt: time.Now().Add(time.Minute)})
+	srv.cacheAndRecordIP("nocache.example", key, answerWithTTL("nocache.example.", 0))
+
+	if _, ok := srv.cache.Load(key); ok {
+		t.Fatal("TTL=0 answer must not remain in cache")
+	}
+	// The learned IP mapping is still recorded for routing.
+	if d, ok := srv.LookupDomainByIP("1.2.3.4"); !ok || d != "nocache.example" {
+		t.Fatalf("IP mapping missing: %q %v", d, ok)
+	}
+}
+
+func TestCacheStoresPositiveTTLAnswers(t *testing.T) {
+	srv, err := NewServer(Config{ListenAddr: "127.0.0.1:0"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const key = "cached.example_1_1"
+	srv.cacheAndRecordIP("cached.example", key, answerWithTTL("cached.example.", 60))
+	entry, ok := srv.cache.Load(key)
+	if !ok {
+		t.Fatal("positive-TTL answer should be cached")
+	}
+	ttl := time.Until(entry.(DNSCacheEntry).ExpiresAt)
+	if ttl < 55*time.Second || ttl > 60*time.Second {
+		t.Fatalf("cache TTL=%v, want ~60s", ttl)
+	}
+}
+
+// DoH goes through the local SPP SOCKS5. When that endpoint accepts the TCP
+// connection but never completes the SOCKS5 handshake, the dial must abort
+// when the request context expires instead of hanging resolution forever.
+func TestDoHUpstreamDialerHonorsContext(t *testing.T) {
+	blackhole, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	held := make(chan net.Conn, 64)
+	// Cleanups run LIFO: stop accepting first, then release held conns.
+	t.Cleanup(func() {
+		for {
+			select {
+			case c := <-held:
+				_ = c.Close()
+			default:
+				return
+			}
+		}
+	})
+	t.Cleanup(func() { _ = blackhole.Close() })
+	go func() {
+		for {
+			c, err := blackhole.Accept()
+			if err != nil {
+				return
+			}
+			select {
+			case held <- c:
+			default:
+				_ = c.Close()
+			}
+		}
+	}()
+
+	srv, err := NewServer(Config{
+		ListenAddr: "127.0.0.1:0",
+		Socks5Addr: blackhole.Addr().String(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr, ok := srv.httpClientDoH.Transport.(*http.Transport)
+	if !ok || tr.DialContext == nil {
+		t.Fatal("DoH transport missing context-aware SOCKS5 dialer")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	if _, err := tr.DialContext(ctx, "tcp", "example.com:443"); err == nil {
+		t.Fatal("expected dial to fail when context expires")
+	}
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("dial did not honor context deadline, took %v", d)
 	}
 }
