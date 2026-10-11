@@ -999,6 +999,82 @@ func TestSocks5UDPRejectsSpoofedDirectUpstream(t *testing.T) {
 	}
 }
 
+// A domain-name (ATYP 0x03) direct target must be resolved once: the reply
+// filter and the outbound write share the resolved endpoint, so a round-robin
+// name cannot make the loop pin a different peer than the datagrams hit.
+func TestSocks5UDPDomainTargetSharesResolvedEndpoint(t *testing.T) {
+	udpEcho, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpEcho.Close()
+	echoPort := udpEcho.LocalAddr().(*net.UDPAddr).Port
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			n, rAddr, err := udpEcho.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			_, _ = udpEcho.WriteToUDP(buf[:n], rAddr)
+		}
+	}()
+
+	// The test is only meaningful where "localhost" resolves to the v4 echo.
+	resolved, err := net.ResolveUDPAddr("udp", net.JoinHostPort("localhost", strconv.Itoa(echoPort)))
+	if err != nil || resolved.IP.To4() == nil {
+		t.Skipf("localhost does not resolve to an IPv4 address: %v", err)
+	}
+
+	r := router.NewRouter()
+	defer r.Close()
+	r.AddDirectDomain("localhost")
+	s5 := NewSocks5Server(Socks5Config{ListenAddr: "127.0.0.1:0", Router: r})
+	if err := s5.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s5.Stop()
+
+	cc, err := net.DialTCP("tcp", nil, mustTCPAddr(t, s5.Addr().String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	if err := network.Sock5Handshake(cc, 5000, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	relayAddrStr, err := network.Sock5SetUDPRequest(cc, "0.0.0.0", 0, 5000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayUDP, _ := net.ResolveUDPAddr("udp", relayAddrStr)
+
+	client, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	payload := []byte("domain target")
+	pkt, _ := network.Sock5PackUDP("localhost", echoPort, payload)
+	if _, err := client.WriteToUDP(pkt, relayUDP); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = client.SetReadDeadline(time.Now().Add(3 * time.Second))
+	rbuf := make([]byte, 65535)
+	n, _, err := client.ReadFromUDP(rbuf)
+	if err != nil {
+		t.Fatalf("reply for domain target was dropped: %v", err)
+	}
+	srcHost, srcPort, data, err := network.Sock5UnpackUDP(rbuf[:n])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(payload) || srcPort != echoPort || net.ParseIP(srcHost) == nil {
+		t.Fatalf("unexpected reply from %s:%d (%q)", srcHost, srcPort, data)
+	}
+}
+
 // The SPP-side UDP socket is likewise unconnected: only the relay endpoint
 // advertised in the UDP ASSOCIATE reply may deliver upstream datagrams.
 func TestSocks5UDPRejectsSpoofedSPPRelay(t *testing.T) {

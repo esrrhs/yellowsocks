@@ -497,26 +497,34 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 		targetAddr := joinDialAddr(dstHost, dstPort)
 
 		if decision == router.Direct {
+			// Resolve the destination once and share it between send and receive:
+			// the reply filter must match the exact endpoint datagrams go to.
+			// Looking the name up twice could disagree for a round-robin domain
+			// (RFC 1794), which would either drop legitimate replies or spray
+			// datagrams at different peers.
+			udpTarget, err := net.ResolveUDPAddr("udp", targetAddr)
+			if err != nil {
+				continue
+			}
 			dConn, fresh, err := directSessions.get(targetAddr)
 			if err != nil {
 				loggo.Warn("[SOCKS5] direct UDP session for %s rejected: %v", targetAddr, err)
 				continue
 			}
 			if fresh {
-				go func(target string, conn *net.UDPConn) {
+				go func(wantAddr *net.UDPAddr, conn *net.UDPConn) {
 					defer common.CrashLog()
 					// Only datagrams from the target we sent to may be relayed; the
 					// outbound socket is unconnected, so anything else reaching its
 					// ephemeral port (a local process or off-path sender) would be
 					// forwarded with a spoofed source address.
-					wantAddr, _ := net.ResolveUDPAddr("udp", target)
 					buf := make([]byte, 65535)
 					for {
 						n, rAddr, err := conn.ReadFromUDP(buf)
 						if err != nil || assocClosed.Load() {
 							return
 						}
-						if wantAddr != nil && !sameUDPAddr(rAddr, wantAddr) {
+						if !sameUDPAddr(rAddr, wantAddr) {
 							continue
 						}
 						cAddr := activeClientUDP.Load()
@@ -527,11 +535,7 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 							}
 						}
 					}
-				}(targetAddr, dConn)
-			}
-			udpTarget, err := net.ResolveUDPAddr("udp", targetAddr)
-			if err != nil {
-				continue
+				}(udpTarget, dConn)
 			}
 			_, _ = dConn.WriteToUDP(payload, udpTarget)
 		} else {
