@@ -58,8 +58,10 @@ func listenUDPFor(host string) (*net.UDPConn, error) {
 func listenClientUDPRelay(client net.Conn) (*net.UDPConn, string, error) {
 	local := addrIP(client.LocalAddr())
 	remote := addrIP(client.RemoteAddr())
-	ipv6 := remote.To4() == nil && remote != nil
-	if remote == nil && local.To4() == nil && local != nil {
+	// nil guards must precede To4(): addrIP returns nil for a non-IP
+	// address, and calling To4() on nil would panic.
+	ipv6 := remote != nil && remote.To4() == nil
+	if remote == nil && local != nil && local.To4() == nil {
 		ipv6 = true
 	}
 
@@ -78,11 +80,13 @@ func listenClientUDPRelay(client net.Conn) (*net.UDPConn, string, error) {
 	replyIP := "127.0.0.1"
 	if ipv6 {
 		replyIP = "::1"
-		if local.To4() == nil && local != nil && !local.IsUnspecified() {
+		if local != nil && local.To4() == nil && !local.IsUnspecified() {
 			replyIP = local.String()
 		}
-	} else if v4 := local.To4(); v4 != nil && !v4.IsUnspecified() {
-		replyIP = v4.String()
+	} else if local != nil {
+		if v4 := local.To4(); v4 != nil && !v4.IsUnspecified() {
+			replyIP = v4.String()
+		}
 	}
 	return conn, net.JoinHostPort(replyIP, strconv.Itoa(port)), nil
 }
