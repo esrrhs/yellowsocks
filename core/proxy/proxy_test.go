@@ -910,6 +910,210 @@ func TestSocks5UDPRejectsSpoofedSource(t *testing.T) {
 	}
 }
 
+// The direct outbound socket is unconnected: a datagram arriving at its
+// ephemeral port from an address other than the dialed target must not be
+// relayed back to the SOCKS client (a local process or off-path sender could
+// otherwise inject a forged answer, e.g. a fake DNS reply).
+func TestSocks5UDPRejectsSpoofedDirectUpstream(t *testing.T) {
+	sawProxy := make(chan *net.UDPAddr, 4)
+	udpEcho, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer udpEcho.Close()
+	go func() {
+		buf := make([]byte, 2048)
+		for {
+			n, rAddr, err := udpEcho.ReadFromUDP(buf)
+			if err != nil {
+				return
+			}
+			select {
+			case sawProxy <- rAddr:
+			default:
+			}
+			_, _ = udpEcho.WriteToUDP(buf[:n], rAddr)
+		}
+	}()
+
+	r := router.NewRouter()
+	defer r.Close()
+	s5 := NewSocks5Server(Socks5Config{ListenAddr: "127.0.0.1:0", Router: r})
+	if err := s5.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s5.Stop()
+
+	cc, err := net.DialTCP("tcp", nil, mustTCPAddr(t, s5.Addr().String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	if err := network.Sock5Handshake(cc, 5000, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	relayAddrStr, err := network.Sock5SetUDPRequest(cc, "0.0.0.0", 0, 5000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayUDP, _ := net.ResolveUDPAddr("udp", relayAddrStr)
+
+	echoHost, echoPortStr, _ := net.SplitHostPort(udpEcho.LocalAddr().String())
+	echoPort, _ := strconv.Atoi(echoPortStr)
+
+	client, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	good, _ := network.Sock5PackUDP(echoHost, echoPort, []byte("legit"))
+	if _, err := client.WriteToUDP(good, relayUDP); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.SetReadDeadline(time.Now().Add(3 * time.Second))
+	rbuf := make([]byte, 65535)
+	if _, _, err := client.ReadFromUDP(rbuf); err != nil {
+		t.Fatalf("legit echo: %v", err)
+	}
+
+	// The echo server saw the proxy's per-target outbound socket; an attacker
+	// that learns that endpoint fires a raw datagram at it from another addr.
+	var proxySession *net.UDPAddr
+	select {
+	case proxySession = <-sawProxy:
+	case <-time.After(2 * time.Second):
+		t.Fatal("never observed proxy outbound socket")
+	}
+	attacker, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer attacker.Close()
+	if _, err := attacker.WriteToUDP([]byte("spoofed raw upstream answer"), proxySession); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = client.SetReadDeadline(time.Now().Add(600 * time.Millisecond))
+	if n, _, err := client.ReadFromUDP(rbuf); err == nil {
+		t.Fatalf("relay forwarded a spoofed upstream datagram (%d bytes)", n)
+	}
+}
+
+// The SPP-side UDP socket is likewise unconnected: only the relay endpoint
+// advertised in the UDP ASSOCIATE reply may deliver upstream datagrams.
+func TestSocks5UDPRejectsSpoofedSPPRelay(t *testing.T) {
+	gotClientSrc := make(chan *net.UDPAddr, 4)
+	tcpL, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tcpL.Close()
+
+	go func() {
+		c, err := tcpL.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		_ = network.Sock5HandshakeBy(c, "", "")
+		var head [4]byte
+		if _, err := io.ReadFull(c, head[:]); err != nil {
+			return
+		}
+		if _, _, err := readSocks5Addr(c, head[3]); err != nil {
+			return
+		}
+		uRelay, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+		if err != nil {
+			return
+		}
+		defer uRelay.Close()
+		relayPort := uRelay.LocalAddr().(*net.UDPAddr).Port
+		if err := network.Sock5SendConnectReply(c, 0x00, net.JoinHostPort("127.0.0.1", strconv.Itoa(relayPort))); err != nil {
+			return
+		}
+		go func() {
+			buf := make([]byte, 65535)
+			for {
+				_, src, err := uRelay.ReadFromUDP(buf)
+				if err != nil {
+					return
+				}
+				select {
+				case gotClientSrc <- src:
+				default:
+				}
+				// Intentionally never answer: any packet the SOCKS client
+				// receives can only come from a spoofing sender.
+			}
+		}()
+		dummy := make([]byte, 1)
+		_, _ = c.Read(dummy)
+	}()
+
+	r := router.NewRouter()
+	defer r.Close()
+	s5 := NewSocks5Server(Socks5Config{
+		ListenAddr: "127.0.0.1:0",
+		Router:     r,
+		Upstream:   &mockUpstream{addr: tcpL.Addr().String()},
+	})
+	if err := s5.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s5.Stop()
+
+	cc, err := net.DialTCP("tcp", nil, mustTCPAddr(t, s5.Addr().String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	if err := network.Sock5Handshake(cc, 5000, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	relayAddrStr, err := network.Sock5SetUDPRequest(cc, "0.0.0.0", 0, 5000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	relayUDP, _ := net.ResolveUDPAddr("udp", relayAddrStr)
+
+	// 8.8.8.8 is outside reserved CIDRs, so the route is Proxy via the mock SPP.
+	client, err := net.ListenUDP("udp", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	pkt, _ := network.Sock5PackUDP("8.8.8.8", 53, []byte("legit dns query"))
+	if _, err := client.WriteToUDP(pkt, relayUDP); err != nil {
+		t.Fatal(err)
+	}
+
+	var proxySppSocket *net.UDPAddr
+	select {
+	case proxySppSocket = <-gotClientSrc:
+	case <-time.After(3 * time.Second):
+		t.Fatal("mock SPP relay never saw the proxy's UDP session")
+	}
+
+	// A sender other than the advertised relay fires a fully framed answer at
+	// the proxy's SPP-side socket.
+	attacker, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer attacker.Close()
+	evil, _ := network.Sock5PackUDP("8.8.8.8", 53, []byte("spoofed dns answer"))
+	if _, err := attacker.WriteToUDP(evil, proxySppSocket); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = client.SetReadDeadline(time.Now().Add(600 * time.Millisecond))
+	rbuf := make([]byte, 65535)
+	if n, _, err := client.ReadFromUDP(rbuf); err == nil {
+		t.Fatalf("relay forwarded a datagram from a non-relay SPP sender (%d bytes)", n)
+	}
+}
+
 // startRawHTTPBackend accepts one connection, captures the full request head
 // block and replies 200. Unlike net/http.Server it applies no Host fallback,
 // exposing exactly what the proxy put on the wire.
