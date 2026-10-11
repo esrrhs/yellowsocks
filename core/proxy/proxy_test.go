@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -906,5 +907,110 @@ func TestSocks5UDPRejectsSpoofedSource(t *testing.T) {
 	_ = legit.SetReadDeadline(time.Now().Add(500 * time.Millisecond))
 	if n, _, err := legit.ReadFromUDP(rbuf); err == nil {
 		t.Fatalf("relay accepted a spoofed datagram and echoed %d bytes", n)
+	}
+}
+
+// startRawHTTPBackend accepts one connection, captures the full request head
+// block and replies 200. Unlike net/http.Server it applies no Host fallback,
+// exposing exactly what the proxy put on the wire.
+func startRawHTTPBackend(t *testing.T) (string, func() string) {
+	t.Helper()
+	bl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawCh := make(chan string, 1)
+	go func() {
+		conn, err := bl.Accept()
+		if err != nil {
+			rawCh <- ""
+			return
+		}
+		defer conn.Close()
+		br := bufio.NewReader(conn)
+		var sb strings.Builder
+		for {
+			line, err := br.ReadString('\n')
+			if err != nil {
+				break
+			}
+			sb.WriteString(line)
+			if line == "\r\n" || line == "\n" {
+				break
+			}
+		}
+		rawCh <- sb.String()
+		_, _ = conn.Write([]byte("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n"))
+	}()
+	return bl.Addr().String(), func() string {
+		select {
+		case raw := <-rawCh:
+			return raw
+		case <-time.After(3 * time.Second):
+			t.Fatal("backend never received a request")
+			return ""
+		}
+	}
+}
+
+// RFC 7230 5.4: a proxy MUST forward the client Host header. The request line
+// is rewritten to origin form, but Host is preserved verbatim so name-based
+// backends (nginx vhosts, CDNs) do not answer 400.
+func TestHTTPProxyForwardsHostHeader(t *testing.T) {
+	r := router.NewRouter()
+	defer r.Close()
+	hp := NewHTTPServer(HTTPConfig{ListenAddr: "127.0.0.1:0", Router: r})
+	if err := hp.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer hp.Stop()
+
+	// 1. HTTP/1.1 with a virtual-host Host that differs from the socket peer.
+	backend, getRaw := startRawHTTPBackend(t)
+	cc, err := net.Dial("tcp", hp.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := fmt.Sprintf("GET http://%s/path HTTP/1.1\r\nHost: vhost.example\r\nX-Trailer: ok\r\n\r\n", backend)
+	if _, err := cc.Write([]byte(req)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := http.ReadResponse(bufio.NewReader(cc), nil); err != nil {
+		t.Fatalf("response: %v", err)
+	}
+	_ = cc.Close()
+
+	raw := getRaw()
+	if !strings.HasPrefix(raw, "GET /path HTTP/1.1\r\n") {
+		t.Errorf("request line not rewritten to origin form:\n%s", raw)
+	}
+	if !strings.Contains(raw, "Host: vhost.example\r\n") {
+		t.Errorf("client Host header lost in forwarding:\n%s", raw)
+	}
+	if strings.Contains(raw, "\nHost:") && strings.Count(raw, "Host:") != 1 {
+		t.Errorf("Host header duplicated:\n%s", raw)
+	}
+
+	// 2. HTTP/1.0 without Host: the proxy synthesizes one from the target.
+	backend2, getRaw2 := startRawHTTPBackend(t)
+	cc2, err := net.Dial("tcp", hp.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cc2.Write([]byte(fmt.Sprintf("GET http://%s/ HTTP/1.0\r\n\r\n", backend2))); err != nil {
+		t.Fatal(err)
+	}
+	br := bufio.NewReader(cc2)
+	if _, err := http.ReadResponse(br, nil); err != nil {
+		t.Fatalf("response: %v", err)
+	}
+	_ = cc2.Close()
+
+	raw2 := getRaw2()
+	// Backend uses a non-default (ephemeral) port, so the synthesized Host
+	// keeps it.
+	want := "Host: " + backend2 + "\r\n"
+	if !strings.Contains(raw2, want) {
+		t.Errorf("missing synthesized Host %q, got:\n%s", want, raw2)
 	}
 }
