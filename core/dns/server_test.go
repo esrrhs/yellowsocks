@@ -1164,3 +1164,49 @@ func TestDNSInboundTransportAwareTruncation(t *testing.T) {
 		t.Fatal("truncated answer must not be cached")
 	}
 }
+
+// A DoH upstream body larger than the 65535-octet DNS wire ceiling must be
+// rejected rather than truncated: dns.Msg.Unpack ignores trailing bytes, so a
+// LimitReader at the ceiling would silently accept an oversized answer.
+func TestResolveDoHRejectsOversizedUpstreamBody(t *testing.T) {
+	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "bad body", http.StatusBadRequest)
+			return
+		}
+		req := new(dns.Msg)
+		if err := req.Unpack(raw); err != nil || len(req.Question) == 0 {
+			http.Error(w, "bad dns message", http.StatusBadRequest)
+			return
+		}
+		resp := new(dns.Msg)
+		resp.SetReply(req)
+		resp.Answer = append(resp.Answer, &dns.A{
+			Hdr: dns.RR_Header{Name: req.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+			A:   net.ParseIP("192.0.2.7"),
+		})
+		packed, err := resp.Pack()
+		if err != nil {
+			http.Error(w, "pack failed", http.StatusInternalServerError)
+			return
+		}
+		// maxDNSMessageSize+1 octets total: a valid message plus trailing junk.
+		junk := make([]byte, maxDNSMessageSize+1-len(packed))
+		w.Header().Set("Content-Type", "application/dns-message")
+		_, _ = w.Write(append(packed, junk...))
+	}))
+	defer stub.Close()
+
+	srv, err := NewServer(Config{ListenAddr: "127.0.0.1:0", DoHURL: stub.URL})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Stop()
+
+	q := new(dns.Msg)
+	q.SetQuestion("oversized.example.", dns.TypeA)
+	if _, err := srv.resolveDoH(q); err == nil {
+		t.Fatal("resolveDoH must reject an upstream body larger than 65535 octets")
+	}
+}
