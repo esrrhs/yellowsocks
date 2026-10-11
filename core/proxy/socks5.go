@@ -450,49 +450,11 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 		return sppUDPConn, sppRelayUDP, nil
 	}
 
-	// Direct UDP session tracking (target -> net.UDPConn)
-	var directMu sync.Mutex
-	directSessions := make(map[string]*net.UDPConn)
-	defer func() {
-		directMu.Lock()
-		defer directMu.Unlock()
-		for _, c := range directSessions {
-			_ = c.Close()
-		}
-	}()
-
-	getOrCreateDirectConn := func(targetAddr string) (*net.UDPConn, error) {
-		directMu.Lock()
-		defer directMu.Unlock()
-		if c, ok := directSessions[targetAddr]; ok {
-			return c, nil
-		}
-		dConn, err := listenUDPFor(hostFromAddr(targetAddr))
-		if err != nil {
-			return nil, err
-		}
-		directSessions[targetAddr] = dConn
-
-		// Receive responses from direct target and pack back to client
-		go func() {
-			defer common.CrashLog()
-			buf := make([]byte, 65535)
-			for {
-				n, rAddr, err := dConn.ReadFromUDP(buf)
-				if err != nil || assocClosed.Load() {
-					return
-				}
-				cAddr := activeClientUDP.Load()
-				if cAddr != nil && n > 0 {
-					packed, err := network.Sock5PackUDP(rAddr.IP.String(), rAddr.Port, buf[:n])
-					if err == nil {
-						_, _ = relayConn.WriteToUDP(packed, cAddr)
-					}
-				}
-			}
-		}()
-		return dConn, nil
-	}
+	// Direct UDP sessions, one socket (plus a read goroutine) per target. Bounded
+	// by directUDPSessions: without a cap one association could pin an FD and
+	// goroutine for every arbitrary target the client names.
+	directSessions := newDirectUDPRegistry()
+	defer directSessions.closeAll()
 
 	// Read UDP packets sent from client to relay socket
 	pktBuf := make([]byte, 65535)
@@ -529,15 +491,35 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 		targetAddr := joinDialAddr(dstHost, dstPort)
 
 		if decision == router.Direct {
-			dConn, err := getOrCreateDirectConn(targetAddr)
+			dConn, fresh, err := directSessions.get(targetAddr)
+			if err != nil {
+				loggo.Warn("[SOCKS5] direct UDP session for %s rejected: %v", targetAddr, err)
+				continue
+			}
+			if fresh {
+				go func(target string, conn *net.UDPConn) {
+					defer common.CrashLog()
+					buf := make([]byte, 65535)
+					for {
+						n, rAddr, err := conn.ReadFromUDP(buf)
+						if err != nil || assocClosed.Load() {
+							return
+						}
+						cAddr := activeClientUDP.Load()
+						if cAddr != nil && n > 0 {
+							packed, err := network.Sock5PackUDP(rAddr.IP.String(), rAddr.Port, buf[:n])
+							if err == nil {
+								_, _ = relayConn.WriteToUDP(packed, cAddr)
+							}
+						}
+					}
+				}(targetAddr, dConn)
+			}
+			udpTarget, err := net.ResolveUDPAddr("udp", targetAddr)
 			if err != nil {
 				continue
 			}
-			udpDst, err := net.ResolveUDPAddr("udp", targetAddr)
-			if err != nil {
-				continue
-			}
-			_, _ = dConn.WriteToUDP(payload, udpDst)
+			_, _ = dConn.WriteToUDP(payload, udpTarget)
 		} else {
 			// Upstream SPP cannot route IPv6
 			if !s.cfg.EnableIPv6 && isIPv6Literal(dstHost) {

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"fmt"
 	"net"
 	"testing"
 	"time"
@@ -87,5 +88,50 @@ func TestListenClientUDPRelayNilAddrDoesNotPanic(t *testing.T) {
 				t.Fatalf("relay bound to %s, wantIPv6=%v", bnd, tc.wantV6)
 			}
 		})
+	}
+}
+
+// A UDP association must not grow one socket (plus read goroutine) per arbitrary
+// target forever: the registry reuses sockets by target, caps the count, and closeAll
+// releases every socket.
+func TestDirectUDPRegistryReuseCapAndClose(t *testing.T) {
+	r := newDirectUDPRegistry()
+
+	first, fresh, err := r.get("127.0.0.1:9000")
+	if err != nil || !fresh {
+		t.Fatalf("first get: fresh=%v err=%v", fresh, err)
+	}
+	again, fresh, err := r.get("127.0.0.1:9000")
+	if err != nil || fresh || again != first {
+		t.Fatalf("second get must reuse: fresh=%v same=%v err=%v", fresh, again == first, err)
+	}
+	r.mu.Lock()
+	if len(r.conns) != 1 {
+		r.mu.Unlock()
+		t.Fatalf("map len=%d, want 1", len(r.conns))
+	}
+	r.mu.Unlock()
+
+	// Fill up to the cap with distinct ephemeral targets; none of these sockets
+	// ever send a packet, they only consume a wildcard local port.
+	for i := 1; i < maxDirectUDPSessions; i++ {
+		if _, _, err := r.get(fmt.Sprintf("127.0.0.1:%d", 20000+i)); err != nil {
+			t.Fatalf("session %d: %v", i, err)
+		}
+	}
+	if _, _, err := r.get("127.0.0.1:1"); err == nil {
+		t.Fatal("session beyond the cap must be rejected")
+	}
+
+	r.closeAll()
+	r.mu.Lock()
+	got := len(r.conns)
+	r.mu.Unlock()
+	if got != 0 {
+		t.Fatalf("closeAll left %d tracked conns", got)
+	}
+	// A closed socket fails immediately; no deadline needed, the close unblocks reads.
+	if _, _, err := first.ReadFromUDP(make([]byte, 1)); err == nil {
+		t.Fatal("read from closed socket unexpectedly succeeded")
 	}
 }
