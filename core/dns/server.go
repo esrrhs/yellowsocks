@@ -622,11 +622,17 @@ func (s *Server) resolveDoH(r *dns.Msg) (*dns.Msg, error) {
 		return nil, fmt.Errorf("doh status error: %d", resp.StatusCode)
 	}
 
-	// A DoH answer is one DNS message (<= 65535 octets); reject anything
-	// larger instead of buffering an unbounded response body.
-	respData, err := io.ReadAll(io.LimitReader(resp.Body, maxDNSMessageSize))
+	// A DoH answer is one DNS message (<= 65535 octets). Read one byte past the
+	// ceiling: LimitReader at the ceiling cannot tell an exactly-maximal
+	// message from an oversized one, and dns.Msg.Unpack ignores trailing
+	// bytes, so extra octets from a compromised or buggy resolver would be
+	// silently truncated and accepted instead of rejected.
+	respData, err := io.ReadAll(io.LimitReader(resp.Body, maxDNSMessageSize+1))
 	if err != nil {
 		return nil, err
+	}
+	if len(respData) > maxDNSMessageSize {
+		return nil, fmt.Errorf("doh response exceeds %d-octet DNS message limit", maxDNSMessageSize)
 	}
 
 	in := new(dns.Msg)
