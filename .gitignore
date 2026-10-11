@@ -21,3 +21,4 @@ pack.zip
 
 # Logs
 *.log
+*.stderr
