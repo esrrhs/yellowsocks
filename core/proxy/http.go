@@ -269,13 +269,15 @@ func (s *HTTPServer) parseTarget(method, rawURI, hostHeader string) (string, int
 
 func (s *HTTPServer) routeDecision(host string, port int) (router.RouteDecision, string) {
 	realHost := host
+	// Keep the literal IP even after a DNS reverse-lookup so CIDR/GeoIP rules
+	// still apply when the host was learned from one of our own DNS answers.
+	parsedIP := net.ParseIP(host)
 	if s.cfg.DNS != nil {
 		if d, ok := s.cfg.DNS.LookupDomainByIP(host); ok {
 			realHost = d
 		}
 	}
 
-	parsedIP := net.ParseIP(realHost)
 	decision := router.Proxy
 	if s.cfg.Router != nil {
 		decision = s.cfg.Router.Decide(realHost, parsedIP)

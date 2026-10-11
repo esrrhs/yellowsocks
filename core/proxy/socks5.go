@@ -223,13 +223,18 @@ func readSocks5Addr(r io.Reader, atyp byte) (string, int, error) {
 
 func (s *Socks5Server) routeDecision(host string, port int) (router.RouteDecision, string) {
 	realHost := host
+	// Parse the literal address before any DNS reverse-lookup: when host is an IP
+	// learned from one of our own answers, CIDR/GeoIP rules must still apply.
+	// Reparsing the learned domain would yield nil and silently bypass reserved-range
+	// and country routing (e.g. a domain resolving to 127.0.0.1 would then be
+	// sent through SPP instead of going direct).
+	parsedIP := net.ParseIP(host)
 	if s.cfg.DNS != nil {
 		if d, ok := s.cfg.DNS.LookupDomainByIP(host); ok {
 			realHost = d
 		}
 	}
 
-	parsedIP := net.ParseIP(realHost)
 	decision := router.Proxy
 	if s.cfg.Router != nil {
 		decision = s.cfg.Router.Decide(realHost, parsedIP)
