@@ -554,7 +554,24 @@ func emptyReply(r *dns.Msg) *dns.Msg {
 func (s *Server) resolveDirect(r *dns.Msg) (*dns.Msg, error) {
 	c := &dns.Client{Net: "udp", Timeout: 2 * time.Second}
 	in, _, err := c.Exchange(r, s.directDNS)
-	return in, err
+	if err != nil {
+		return in, err
+	}
+	// The upstream set TC: the answer did not fit in a UDP datagram. A
+	// caching resolver must retry the same question over TCP (RFC 2181 9,
+	// RFC 7766) instead of returning a truncated, unusable answer — this is
+	// also required when the original client spoke TCP to us, since a
+	// truncated reply over TCP is never valid.
+	if in.Truncated {
+		tcpClient := &dns.Client{Net: "tcp", Timeout: 2 * time.Second}
+		inTCP, _, tcpErr := tcpClient.Exchange(r, s.directDNS)
+		if tcpErr == nil && inTCP != nil {
+			return inTCP, nil
+		}
+		loggo.Warn("[DNS] direct upstream %s answered truncated over UDP and TCP retry failed: %v",
+			s.directDNS, tcpErr)
+	}
+	return in, nil
 }
 
 func (s *Server) resolveDoH(r *dns.Msg) (*dns.Msg, error) {
