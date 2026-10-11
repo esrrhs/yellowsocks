@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"crypto/subtle"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -17,6 +18,37 @@ import (
 	"github.com/esrrhs/yellowsocks/core/dns"
 	"github.com/esrrhs/yellowsocks/core/router"
 )
+
+// maxHTTPHeaderBytes bounds the combined size of the request line and the
+// header block, matching net/http's DefaultMaxHeaderBytes. The parser used to
+// accumulate lines without a cap, so a fast client could grow proxy memory
+// without limit (the read deadline only protects against slow sends).
+const maxHTTPHeaderBytes = 1 << 20
+
+var errHTTPHeaderTooLarge = errors.New("http request head exceeds the size limit")
+
+// readLimitedLine reads a single LF-terminated line from br while charging
+// every byte against remaining (the shared budget for the request line and
+// the whole header block). Unlike bufio.Reader.ReadString, it never buffers
+// more than the remaining budget when a line is overlong.
+func readLimitedLine(br *bufio.Reader, remaining *int) (string, error) {
+	var line []byte
+	for {
+		chunk, err := br.ReadSlice('\n')
+		n := len(chunk)
+		if n > *remaining {
+			return "", errHTTPHeaderTooLarge
+		}
+		*remaining -= n
+		line = append(line, chunk...)
+		if err == nil {
+			return string(line), nil
+		}
+		if err != bufio.ErrBufferFull {
+			return string(line), err
+		}
+	}
+}
 
 // HTTPConfig configures the HTTP proxy server
 type HTTPConfig struct {
@@ -136,8 +168,14 @@ func (s *HTTPServer) handleClient(clientConn net.Conn) {
 
 	br := bufio.NewReader(clientConn)
 
-	reqLine, err := br.ReadString('\n')
+	// Shared byte budget for the request line and all header lines.
+	headerBudget := maxHTTPHeaderBytes
+	reqLine, err := readLimitedLine(br, &headerBudget)
 	if err != nil {
+		if errors.Is(err, errHTTPHeaderTooLarge) {
+			const http400 = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n"
+			_, _ = clientConn.Write([]byte(http400))
+		}
 		return
 	}
 
@@ -157,8 +195,12 @@ func (s *HTTPServer) handleClient(clientConn net.Conn) {
 	var proxyAuthHeader string
 
 	for {
-		headerLine, err := br.ReadString('\n')
+		headerLine, err := readLimitedLine(br, &headerBudget)
 		if err != nil {
+			if errors.Is(err, errHTTPHeaderTooLarge) {
+				const http400 = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n"
+				_, _ = clientConn.Write([]byte(http400))
+			}
 			return
 		}
 		trimmed := strings.TrimRight(headerLine, "\r\n")

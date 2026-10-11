@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1292,5 +1293,110 @@ func TestHTTPProxyForwardsHostHeader(t *testing.T) {
 	want := "Host: " + backend2 + "\r\n"
 	if !strings.Contains(raw2, want) {
 		t.Errorf("missing synthesized Host %q, got:\n%s", want, raw2)
+	}
+}
+
+// The hand-rolled header parser used to place no bound on the request line
+// or the header block: a client sending a large request quickly (the 15s
+// idle deadline only stops slow sends) could grow proxy memory without
+// limit. The head is now capped at 1 MiB and rejected with 400 before the
+// proxy contacts any upstream.
+func TestHTTPProxyRejectsOversizedHead(t *testing.T) {
+	r := router.NewRouter()
+	defer r.Close()
+	hp := NewHTTPServer(HTTPConfig{ListenAddr: "127.0.0.1:0", Router: r})
+	if err := hp.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer hp.Stop()
+
+	// Canary upstream: the proxy must never dial it while rejecting.
+	cl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cl.Close()
+	var contacted int32
+	go func() {
+		for {
+			c, err := cl.Accept()
+			if err != nil {
+				return
+			}
+			atomic.StoreInt32(&contacted, 1)
+			_ = c.Close()
+		}
+	}()
+	target := cl.Addr().String()
+
+	// The proxy is allowed to reset the connection while the client is still
+	// streaming the oversized head, so write errors are tolerated. When a
+	// response does arrive it must be 400. The hard contract is that no
+	// upstream connection is ever made.
+	sendHead := func(t *testing.T, head string) {
+		t.Helper()
+		cc, err := net.Dial("tcp", hp.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cc.Close()
+		go func() { _, _ = cc.Write([]byte(head)) }()
+		_ = cc.SetReadDeadline(time.Now().Add(5 * time.Second))
+		if resp, err := http.ReadResponse(bufio.NewReader(cc), nil); err == nil {
+			if resp.StatusCode != http.StatusBadRequest {
+				t.Errorf("status = %d, want 400", resp.StatusCode)
+			}
+		}
+	}
+
+	t.Run("oversized request line", func(t *testing.T) {
+		head := "GET http://" + target + "/" + strings.Repeat("a", 2<<20) + " HTTP/1.1\r\nHost: x\r\n\r\n"
+		sendHead(t, head)
+	})
+
+	t.Run("oversized header block", func(t *testing.T) {
+		head := "GET http://" + target + "/ HTTP/1.1\r\n" +
+			"X-Big: " + strings.Repeat("b", 2<<20) + "\r\n\r\n"
+		sendHead(t, head)
+	})
+
+	// Give the proxy a moment in case it would (wrongly) dial after replying.
+	time.Sleep(100 * time.Millisecond)
+	if atomic.LoadInt32(&contacted) != 0 {
+		t.Fatal("proxy dialed upstream while rejecting an oversized head")
+	}
+}
+
+// A request whose head stays just under the 1 MiB cap must still be proxied.
+func TestHTTPProxyAcceptsHeadNearLimit(t *testing.T) {
+	r := router.NewRouter()
+	defer r.Close()
+	hp := NewHTTPServer(HTTPConfig{ListenAddr: "127.0.0.1:0", Router: r})
+	if err := hp.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer hp.Stop()
+
+	backend, getRaw := startRawHTTPBackend(t)
+	cc, err := net.Dial("tcp", hp.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	value := strings.Repeat("c", (1<<20)-8192)
+	head := "GET http://" + backend + "/ HTTP/1.1\r\nX-Big: " + value + "\r\n\r\n"
+	if _, err := cc.Write([]byte(head)); err != nil {
+		t.Fatal(err)
+	}
+	_ = cc.SetReadDeadline(time.Now().Add(5 * time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(cc), nil)
+	if err != nil {
+		t.Fatalf("reading proxy response: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	if raw := getRaw(); !strings.Contains(raw, "X-Big: "+value) {
+		t.Fatal("near-limit header was not forwarded")
 	}
 }
