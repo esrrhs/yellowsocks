@@ -1565,3 +1565,86 @@ func TestHTTPProxyRejectsOutOfRangePort(t *testing.T) {
 		sendHead(t, "GET / HTTP/1.1\r\nHost: example.com:abc\r\n\r\n")
 	})
 }
+
+// A peer that keeps sending but never reads must not pin the relay: the busy
+// direction refreshes the idle watchdog on every successful read, so a
+// stalled write used to block until the TCP retransmit timeout. The write
+// deadline bounds it by the idle window instead.
+func TestRelayWriteDeadlineBoundsStalledPeer(t *testing.T) {
+	bl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer bl.Close()
+
+	backendDone := make(chan struct{})
+	t.Cleanup(func() { close(backendDone) })
+	go func() {
+		c, err := bl.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		buf := make([]byte, 1024)
+		for {
+			// Keep sending so the relay's read side stays busy and the idle
+			// watchdog never fires...
+			if _, err := c.Write(buf); err != nil {
+				return
+			}
+			select {
+			case <-backendDone:
+				return
+			case <-time.After(20 * time.Millisecond):
+			}
+		}
+	}()
+
+	r := router.NewRouter()
+	defer r.Close()
+	s5 := NewSocks5Server(Socks5Config{ListenAddr: "127.0.0.1:0", Router: r, IdleTimeout: 300 * time.Millisecond})
+	if err := s5.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s5.Stop()
+
+	cc, err := net.DialTCP("tcp", nil, mustTCPAddr(t, s5.Addr().String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cc.Close()
+	if err := network.Sock5Handshake(cc, 5000, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	host, portStr, _ := net.SplitHostPort(bl.Addr().String())
+	port, _ := strconv.Atoi(portStr)
+	if err := network.Sock5SetRequest(cc, host, port, 5000); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+
+	// The client floods the tunnel; the backend never reads, so the relay's
+	// writes to it stall once the socket buffers fill.
+	go func() {
+		buf := make([]byte, 4096)
+		for {
+			if _, err := cc.Write(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	// Drain the backend's trickle so the opposite pipe keeps succeeding and
+	// the watchdog stays quiet: only the write deadline can end this relay.
+	// A close after the idle window (well under the guard) is the fix; one
+	// that only happens at the guard deadline is the old unbounded stall.
+	start := time.Now()
+	_ = cc.SetReadDeadline(start.Add(10 * time.Second))
+	for {
+		if _, err := cc.Read(make([]byte, 4096)); err != nil {
+			if elapsed := time.Since(start); elapsed > 5*time.Second {
+				t.Fatalf("relay held a stalled write open for %v, past the idle window", elapsed)
+			}
+			return
+		}
+	}
+}

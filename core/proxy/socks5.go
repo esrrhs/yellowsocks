@@ -597,6 +597,12 @@ func relayStreams(a, b net.Conn, idle time.Duration) {
 			n, rerr := src.Read(buf)
 			if n > 0 {
 				touch()
+				// A peer that stops reading must not pin this goroutine and
+				// both sockets: without a write deadline the Write blocks
+				// until the OS retransmit timeout (minutes), and the idle
+				// watchdog cannot fire because data keeps arriving. Bound
+				// every write by the idle window instead.
+				_ = dst.SetWriteDeadline(time.Now().Add(idle))
 				if _, werr := dst.Write(buf[:n]); werr != nil {
 					break
 				}
