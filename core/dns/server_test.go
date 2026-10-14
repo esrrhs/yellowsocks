@@ -1452,3 +1452,41 @@ func TestFailureAnswersAreNotCachedOrReverseMapped(t *testing.T) {
 		}
 	})
 }
+
+// RFC 8484 answers arrive over a stream transport and cannot be truncated: a
+// TC=1 from a DoH upstream is meaningless, must not be forwarded to the
+// client, and must not stop an otherwise valid, question-matching answer
+// from being cached.
+func TestResolveDoHClearsTruncatedBit(t *testing.T) {
+	stub, hits := dohAnsweringCounting(t, func(req, resp *dns.Msg) {
+		resp.Truncated = true
+	})
+	srv, err := NewServer(Config{ListenAddr: "127.0.0.1:0", DoHURL: stub.URL, DirectDNS: "127.0.0.1:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Stop()
+
+	q := new(dns.Msg)
+	q.SetQuestion("tc.example.", dns.TypeA)
+	resp, err := srv.ResolveMsg(q)
+	if err != nil {
+		t.Fatalf("resolve: %v", err)
+	}
+	if resp.Truncated {
+		t.Fatal("TC bit from a DoH upstream was forwarded to the client")
+	}
+	if len(resp.Answer) != 1 {
+		t.Fatalf("answer was dropped instead of being served: %v", resp)
+	}
+	if _, ok := srv.cache.Load("tc.example_1_1"); !ok {
+		t.Fatal("valid DoH answer was kept out of the cache because of the TC bit")
+	}
+	before := hits.Load()
+	if _, err := srv.ResolveMsg(q); err != nil {
+		t.Fatalf("second resolve: %v", err)
+	}
+	if hits.Load() != before {
+		t.Fatal("second query hit the upstream although the answer is cacheable")
+	}
+}

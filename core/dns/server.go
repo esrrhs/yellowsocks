@@ -675,6 +675,16 @@ func (s *Server) resolveDoH(r *dns.Msg) (*dns.Msg, error) {
 	if !responseMatchesQuery(r, in) {
 		return nil, errors.New("doh upstream answered a different question")
 	}
+	// RFC 8484 delivers the answer over a stream transport, which cannot
+	// truncate: TC is a UDP-only signal (RFC 2181 9, RFC 7766 4.1). A TC=1
+	// on a DoH response is meaningless, so it must not be forwarded to the
+	// client (same rule as the direct path) and must not stop an otherwise
+	// valid, question-matching answer from being cached.
+	if in.Truncated {
+		loggo.Warn("[DNS] DoH upstream %s set TC on a stream answer for %s; clearing the bit",
+			s.dohURL, r.Question[0].Name)
+		in.Truncated = false
+	}
 	return in, nil
 }
 
