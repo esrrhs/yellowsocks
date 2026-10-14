@@ -43,11 +43,32 @@ const (
 type Config struct {
 	// ListenAddr is the HTTP listen address (default 127.0.0.1:9090).
 	ListenAddr string
-	// Token is the shared secret every request must present. When empty a
-	// random token is generated and logged at startup.
+	// Token is the admin secret: it may read and reset. Your reverse proxy
+	// holds it, never the browser page. When empty a random token is
+	// generated and logged at startup.
 	Token string
+	// ReadonlyToken grants GET access only. Give it to anything that only
+	// needs to read (a page that talks to the API directly, a monitoring
+	// probe) so a leak cannot wipe the statistics. Empty disables it.
+	ReadonlyToken string
+	// AllowedCIDRs limits which peers may connect at all, by CIDR. The peer
+	// is the host that opened the TCP connection — for a proxied setup that
+	// is the reverse proxy, not the browser. Empty allows anyone who has a
+	// token. Set it to the proxy's address so the API is unreachable from
+	// anywhere else; forwarding headers cannot influence this check.
+	AllowedCIDRs []string
+	// ClientCIDRs limits the forwarded client address (X-Forwarded-For /
+	// X-Real-IP) by CIDR. It only has meaning together with TrustedProxies:
+	// without them the headers are ignored and this list is never consulted.
+	// Use it to allow only certain visitors behind a proxy you control.
+	ClientCIDRs []string
+	// TrustedProxies lists CIDRs allowed to speak for a client through
+	// X-Forwarded-For / X-Real-IP. Empty means those headers are ignored
+	// entirely, so a client cannot forge its address by sending them.
+	TrustedProxies []string
 	// AllowedOrigins lists CORS origins allowed to call the API from a
-	// browser. Empty or ["*"] allows any origin.
+	// browser. Empty or ["*"] allows any origin; ["none"] disables CORS,
+	// which is what you want when a reverse proxy makes the calls same-origin.
 	AllowedOrigins []string
 	// Dashboard serves the built-in single page dashboard at "/".
 	Dashboard    bool
@@ -55,6 +76,13 @@ type Config struct {
 	WriteTimeout time.Duration
 	IdleTimeout  time.Duration
 }
+
+// Access levels. A token carries one; a route requires one.
+const (
+	accessNone  = iota // public
+	accessRead         // GET endpoints
+	accessAdmin        // mutating endpoints (reset)
+)
 
 // Deps are the runtime dependencies of the API server.
 type Deps struct {
@@ -65,13 +93,17 @@ type Deps struct {
 
 // Server serves the statistics API.
 type Server struct {
-	cfg    Config
-	deps   Deps
-	start  time.Time
-	srv    *http.Server
-	ln     net.Listener
-	mu     sync.Mutex
-	closed bool
+	cfg          Config
+	deps         Deps
+	start        time.Time
+	srv          *http.Server
+	ln           net.Listener
+	mu           sync.Mutex
+	closed       bool
+	allowedNets  []*net.IPNet
+	clientNets   []*net.IPNet
+	trustedNets  []*net.IPNet
+	corsDisabled bool
 }
 
 // New builds an API server. It binds nothing until Start.
@@ -100,7 +132,35 @@ func New(cfg Config, deps Deps) (*Server, error) {
 		deps.Stats = stats.New(stats.Config{})
 	}
 
-	s := &Server{cfg: cfg, deps: deps, start: time.Now()}
+	allowedNets, err := parseCIDRs(cfg.AllowedCIDRs)
+	if err != nil {
+		return nil, fmt.Errorf("api_allowed_cidrs: %w", err)
+	}
+	clientNets, err := parseCIDRs(cfg.ClientCIDRs)
+	if err != nil {
+		return nil, fmt.Errorf("api_client_cidrs: %w", err)
+	}
+	trustedNets, err := parseCIDRs(cfg.TrustedProxies)
+	if err != nil {
+		return nil, fmt.Errorf("api_trusted_proxies: %w", err)
+	}
+	corsDisabled := false
+	for _, o := range cfg.AllowedOrigins {
+		if strings.EqualFold(strings.TrimSpace(o), "none") {
+			corsDisabled = true
+			break
+		}
+	}
+
+	s := &Server{
+		cfg:          cfg,
+		deps:         deps,
+		start:        time.Now(),
+		allowedNets:  allowedNets,
+		clientNets:   clientNets,
+		trustedNets:  trustedNets,
+		corsDisabled: corsDisabled,
+	}
 	s.srv = &http.Server{
 		Handler:           s.handler(),
 		ReadHeaderTimeout: cfg.ReadTimeout,
@@ -194,19 +254,19 @@ func (s *Server) handler() http.Handler {
 	}
 
 	// Unauthenticated liveness probe: it exposes nothing but the version.
-	mux.HandleFunc("/api/v1/health", s.route(false, s.handleHealth, http.MethodGet, http.MethodHead))
+	mux.HandleFunc("/api/v1/health", s.route(accessNone, s.handleHealth, http.MethodGet, http.MethodHead))
 
-	mux.HandleFunc("/api/v1/status", s.route(true, s.handleStatus, http.MethodGet))
-	mux.HandleFunc("/api/v1/overview", s.route(true, s.handleOverview, http.MethodGet))
-	mux.HandleFunc("/api/v1/connections", s.route(true, s.handleConnections, http.MethodGet))
-	mux.HandleFunc("/api/v1/traffic", s.route(true, s.handleTraffic, http.MethodGet))
-	mux.HandleFunc("/api/v1/domains", s.route(true, s.handleDomains, http.MethodGet))
-	mux.HandleFunc("/api/v1/routes", s.route(true, s.handleRoutes, http.MethodGet))
-	mux.HandleFunc("/api/v1/dns", s.route(true, s.handleDNS, http.MethodGet))
-	mux.HandleFunc("/api/v1/errors", s.route(true, s.handleErrors, http.MethodGet))
-	mux.HandleFunc("/api/v1/nodes", s.route(true, s.handleNodes, http.MethodGet))
-	mux.HandleFunc("/api/v1/snapshot", s.route(true, s.handleSnapshot, http.MethodGet))
-	mux.HandleFunc("/api/v1/reset", s.route(true, s.handleReset, http.MethodPost))
+	mux.HandleFunc("/api/v1/status", s.route(accessRead, s.handleStatus, http.MethodGet))
+	mux.HandleFunc("/api/v1/overview", s.route(accessRead, s.handleOverview, http.MethodGet))
+	mux.HandleFunc("/api/v1/connections", s.route(accessRead, s.handleConnections, http.MethodGet))
+	mux.HandleFunc("/api/v1/traffic", s.route(accessRead, s.handleTraffic, http.MethodGet))
+	mux.HandleFunc("/api/v1/domains", s.route(accessRead, s.handleDomains, http.MethodGet))
+	mux.HandleFunc("/api/v1/routes", s.route(accessRead, s.handleRoutes, http.MethodGet))
+	mux.HandleFunc("/api/v1/dns", s.route(accessRead, s.handleDNS, http.MethodGet))
+	mux.HandleFunc("/api/v1/errors", s.route(accessRead, s.handleErrors, http.MethodGet))
+	mux.HandleFunc("/api/v1/nodes", s.route(accessRead, s.handleNodes, http.MethodGet))
+	mux.HandleFunc("/api/v1/snapshot", s.route(accessRead, s.handleSnapshot, http.MethodGet))
+	mux.HandleFunc("/api/v1/reset", s.route(accessAdmin, s.handleReset, http.MethodPost))
 
 	// Any other /api path: a JSON 404 rather than the dashboard or a
 	// plain-text page. It is registered after the real routes, which are
@@ -215,9 +275,9 @@ func (s *Server) handler() http.Handler {
 	return mux
 }
 
-// route answers CORS preflight, rejects unexpected methods and, when auth is
-// required, rejects requests that do not present the token.
-func (s *Server) route(auth bool, next http.HandlerFunc, methods ...string) http.HandlerFunc {
+// route answers CORS preflight, rejects unexpected methods, then applies the
+// network and token checks the route needs.
+func (s *Server) route(need int, next http.HandlerFunc, methods ...string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		s.applyCORS(w, r)
 		if r.Method == http.MethodOptions {
@@ -236,12 +296,147 @@ func (s *Server) route(auth bool, next http.HandlerFunc, methods ...string) http
 			writeError(w, http.StatusMethodNotAllowed, "method "+r.Method+" not allowed")
 			return
 		}
-		if auth && s.cfg.Token != "" && !s.authorized(r) {
-			writeError(w, http.StatusUnauthorized, "missing or invalid token")
+		// Network first: a host that should not be talking to us at all
+		// never gets as far as presenting a token.
+		if why, ip := s.addressRejected(r); why != "" {
+			loggo.Warn("[API] Rejected %s from %s: %s", r.URL.Path, ip, why)
+			writeError(w, http.StatusForbidden, "client address not allowed")
+			return
+		}
+		if got := s.accessLevel(r); got < need {
+			if got == accessNone {
+				writeError(w, http.StatusUnauthorized, "missing or invalid token")
+			} else {
+				writeError(w, http.StatusForbidden, "token lacks permission for this endpoint")
+			}
 			return
 		}
 		next(w, r)
 	}
+}
+
+// accessLevel reports what the presented token may do: admin (the main
+// token), read-only, or nothing.
+func (s *Server) accessLevel(r *http.Request) int {
+	tok := requestToken(r)
+	if tok == "" {
+		return accessNone
+	}
+	if subtle.ConstantTimeCompare([]byte(tok), []byte(s.cfg.Token)) == 1 {
+		return accessAdmin
+	}
+	if s.cfg.ReadonlyToken != "" &&
+		subtle.ConstantTimeCompare([]byte(tok), []byte(s.cfg.ReadonlyToken)) == 1 {
+		return accessRead
+	}
+	return accessNone
+}
+
+// clientIP returns the address the request came from, consulting
+// X-Forwarded-For only when the peer is a configured trusted proxy. Without
+// that trust check any client could send the header and slip past
+// AllowedCIDRs.
+func (s *Server) clientIP(r *http.Request) net.IP {
+	remote := parseIPFromAddr(r.RemoteAddr)
+	if len(s.trustedNets) == 0 || remote == nil || !inNets(remote, s.trustedNets) {
+		return remote
+	}
+	// Walk the chain right to left and take the first hop we do not
+	// ourselves trust: that is the real client.
+	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+		parts := strings.Split(xff, ",")
+		for i := len(parts) - 1; i >= 0; i-- {
+			if ip := net.ParseIP(strings.TrimSpace(parts[i])); ip != nil && !inNets(ip, s.trustedNets) {
+				return ip
+			}
+		}
+		for _, p := range parts {
+			if ip := net.ParseIP(strings.TrimSpace(p)); ip != nil {
+				return ip
+			}
+		}
+	}
+	if xr := r.Header.Get("X-Real-IP"); xr != "" {
+		if ip := net.ParseIP(strings.TrimSpace(xr)); ip != nil {
+			return ip
+		}
+	}
+	return remote
+}
+
+// addressRejected applies the network gates. It returns a reason and the
+// offending address, or an empty reason when the request may proceed.
+//
+// AllowedCIDRs is checked against the peer that opened the connection, so
+// "only the reverse proxy may call" keeps working no matter what forwarding
+// headers the proxy sends. ClientCIDRs is checked against the forwarded
+// client and is only consulted when TrustedProxies is configured.
+func (s *Server) addressRejected(r *http.Request) (string, net.IP) {
+	peer := parseIPFromAddr(r.RemoteAddr)
+	if len(s.allowedNets) > 0 && !inNets(peer, s.allowedNets) {
+		return "peer not in api_allowed_cidrs", peer
+	}
+	if len(s.clientNets) > 0 {
+		client := s.clientIP(r)
+		if !inNets(client, s.clientNets) {
+			return "client not in api_client_cidrs", client
+		}
+	}
+	return "", peer
+}
+
+func parseIPFromAddr(addr string) net.IP {
+	host := addr
+	if h, _, err := net.SplitHostPort(addr); err == nil {
+		host = h
+	}
+	ip := net.ParseIP(host)
+	if v4 := ip.To4(); v4 != nil {
+		return v4
+	}
+	return ip
+}
+
+func inNets(ip net.IP, nets []*net.IPNet) bool {
+	if ip == nil {
+		return false
+	}
+	if v4 := ip.To4(); v4 != nil {
+		ip = v4
+	}
+	for _, n := range nets {
+		if n.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+// parseCIDRs parses a list of CIDR strings. An entry without a mask is
+// treated as a single host.
+func parseCIDRs(list []string) ([]*net.IPNet, error) {
+	var out []*net.IPNet
+	for _, raw := range list {
+		raw = strings.TrimSpace(raw)
+		if raw == "" {
+			continue
+		}
+		if !strings.Contains(raw, "/") {
+			if net.ParseIP(raw) == nil {
+				return nil, fmt.Errorf("invalid address %q", raw)
+			}
+			raw += "/32"
+			if strings.Contains(raw, ":") {
+				raw = strings.TrimSuffix(raw, "/32") + "/128"
+			}
+		}
+		_, n, err := net.ParseCIDR(raw)
+		if err != nil {
+			return nil, fmt.Errorf("invalid CIDR %q: %w", raw, err)
+		}
+		out = append(out, n)
+	}
+	return out, nil
 }
 
 func (s *Server) authorized(r *http.Request) bool {
@@ -268,8 +463,12 @@ func requestToken(r *http.Request) string {
 }
 
 // applyCORS writes the CORS headers a browser page needs to call the API
-// from another origin.
+// from another origin. It is a no-op when CORS is disabled ("none"), which
+// is the right setting behind a same-origin reverse proxy.
 func (s *Server) applyCORS(w http.ResponseWriter, r *http.Request) {
+	if s.corsDisabled {
+		return
+	}
 	origin := r.Header.Get("Origin")
 	allowed := "*"
 	for _, o := range s.cfg.AllowedOrigins {

@@ -42,10 +42,22 @@ type FileConfig struct {
 	GFWDomainsFile   string   `json:"gfw_domains" yaml:"gfw_domains"`
 
 	// Statistics HTTP API
-	APIListen    string   `json:"api_listen" yaml:"api_listen"`
-	APIToken     string   `json:"api_token" yaml:"api_token"`
-	APIOrigins   []string `json:"api_origins" yaml:"api_origins"`
-	APIDashboard *bool    `json:"api_dashboard" yaml:"api_dashboard"`
+	APIListen string `json:"api_listen" yaml:"api_listen"`
+	// APIToken is the admin token. Keep it on the reverse proxy or on the
+	// operator's machine, never in a page.
+	APIToken string `json:"api_token" yaml:"api_token"`
+	// APIReadonlyToken grants GET access only.
+	APIReadonlyToken string   `json:"api_readonly_token" yaml:"api_readonly_token"`
+	APIOrigins       []string `json:"api_origins" yaml:"api_origins"`
+	// APIAllowedCIDRs limits which peers may connect (e.g. only the reverse
+	// proxy). Empty means any host with a valid token.
+	APIAllowedCIDRs []string `json:"api_allowed_cidrs" yaml:"api_allowed_cidrs"`
+	// APIClientCIDRs limits the forwarded client address. Only meaningful
+	// together with APITrustedProxies.
+	APIClientCIDRs []string `json:"api_client_cidrs" yaml:"api_client_cidrs"`
+	// APITrustedProxies lists CIDRs whose X-Forwarded-For is honored.
+	APITrustedProxies []string `json:"api_trusted_proxies" yaml:"api_trusted_proxies"`
+	APIDashboard      *bool    `json:"api_dashboard" yaml:"api_dashboard"`
 
 	// Statistics storage
 	StatsFile         string `json:"stats_file" yaml:"stats_file"`
@@ -159,8 +171,20 @@ func (f *FileConfig) MergeWithEngineConfig(base core.EngineConfig) core.EngineCo
 	if f.APIToken != "" {
 		res.APIToken = f.APIToken
 	}
+	if f.APIReadonlyToken != "" {
+		res.APIReadonlyToken = f.APIReadonlyToken
+	}
 	if len(f.APIOrigins) > 0 {
 		res.APIOrigins = f.APIOrigins
+	}
+	if len(f.APIAllowedCIDRs) > 0 {
+		res.APIAllowedCIDRs = f.APIAllowedCIDRs
+	}
+	if len(f.APIClientCIDRs) > 0 {
+		res.APIClientCIDRs = f.APIClientCIDRs
+	}
+	if len(f.APITrustedProxies) > 0 {
+		res.APITrustedProxies = f.APITrustedProxies
 	}
 	if f.APIDashboard != nil {
 		res.APIDashboard = *f.APIDashboard

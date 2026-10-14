@@ -60,8 +60,17 @@ doh_url: "https://1.1.1.1/dns-query"
 # 开启后需要 token 访问；留空时会自动生成并打印在日志里。
 # api_listen: "127.0.0.1:9090"   # 只有本机能访问；用 "0.0.0.0:9090" 对外开放
 # api_token: "change-me"         # 建议显式设置
-# api_origins: ["*"]             # 浏览器跨域白名单
+# api_origins: ["*"]             # 浏览器跨域白名单；["none"] 关闭 CORS（反代同源时用）
 # api_dashboard: true            # 在 http://<api_listen>/ 提供内置看板
+
+# 页面与 API 分机部署时的加固（见 README「把页面和 API 分开部署」）：
+# api_readonly_token: ""         # 只读 token：只能 GET，即便泄露也清不掉统计数据
+# api_allowed_cidrs:             # 只允许这些"对端"连进来，填反代机器的地址
+#   - "10.0.0.1/32"
+# api_trusted_proxies:           # 只有这些来源发来的 X-Forwarded-For 才被采信
+#   - "10.0.0.1/32"
+# api_client_cidrs:              # 可选：再按反代透传的真实访客 IP 过滤（需配合上一项）
+#   - "203.0.113.0/24"
 
 # 统计数据的落盘与保留时长。历史按分钟聚合，重启后自动恢复。
 # stats_file: "stats.json"       # 默认：开启 API 时用工作目录下的 stats.json

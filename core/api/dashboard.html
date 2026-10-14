@@ -74,8 +74,8 @@
   <h1>YellowSocks 中转站监控</h1>
   <span id="msg"></span>
   <span class="spacer"></span>
-  <input id="server" placeholder="服务器 http://1.2.3.4:9090" size="30" autocomplete="off" title="中转站 API 地址；留空表示与本页面同源">
-  <input id="token" placeholder="API token" size="22" autocomplete="off">
+  <input id="server" placeholder="服务器（通常留空：由同源反代提供）" size="34" autocomplete="off" title="中转站 API 地址。留空表示与本页面同源 —— 推荐做法：由承载本页面的 Web 服务器反代 /api/ 到中转站，这样中转站地址与 token 都不会出现在页面上">
+  <input id="token" placeholder="API token（反代注入时留空）" size="26" autocomplete="off" title="留空时不发送 Authorization 头，由反代在转发时注入">
   <select id="range">
     <option value="30m">最近 30 分钟</option>
     <option value="1h" selected>最近 1 小时</option>
