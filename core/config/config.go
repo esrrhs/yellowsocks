@@ -41,6 +41,16 @@ type FileConfig struct {
 	ChinaDomainsFile string   `json:"china_domains" yaml:"china_domains"`
 	GFWDomainsFile   string   `json:"gfw_domains" yaml:"gfw_domains"`
 
+	// Statistics HTTP API
+	APIListen    string   `json:"api_listen" yaml:"api_listen"`
+	APIToken     string   `json:"api_token" yaml:"api_token"`
+	APIOrigins   []string `json:"api_origins" yaml:"api_origins"`
+	APIDashboard *bool    `json:"api_dashboard" yaml:"api_dashboard"`
+
+	// Statistics storage
+	StatsFile         string `json:"stats_file" yaml:"stats_file"`
+	StatsHistoryHours int    `json:"stats_history_hours" yaml:"stats_history_hours"`
+
 	LogLevel string `json:"loglevel" yaml:"loglevel"`
 }
 
@@ -141,6 +151,25 @@ func (f *FileConfig) MergeWithEngineConfig(base core.EngineConfig) core.EngineCo
 	}
 	if f.GFWDomainsFile != "" {
 		res.GFWDomainsFile = f.GFWDomainsFile
+	}
+
+	if f.APIListen != "" {
+		res.APIListen = f.APIListen
+	}
+	if f.APIToken != "" {
+		res.APIToken = f.APIToken
+	}
+	if len(f.APIOrigins) > 0 {
+		res.APIOrigins = f.APIOrigins
+	}
+	if f.APIDashboard != nil {
+		res.APIDashboard = *f.APIDashboard
+	}
+	if f.StatsFile != "" {
+		res.StatsFile = f.StatsFile
+	}
+	if f.StatsHistoryHours > 0 {
+		res.StatsHistoryHours = f.StatsHistoryHours
 	}
 
 	return res

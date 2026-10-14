@@ -1,8 +1,10 @@
 package core
 
 import (
+	"encoding/json"
 	"io"
 	"net"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -149,5 +151,86 @@ func TestEngineStartStopCycle(t *testing.T) {
 	}
 	if e.running {
 		t.Fatal("running flag still set after Stop")
+	}
+}
+
+// The statistics API is wired by the engine: it starts with the other
+// services, answers with the configured token, and is released on Stop.
+func TestEngineStatisticsAPI(t *testing.T) {
+	fakeSPP := startFakeSPPListener(t)
+	cfg := baseTestEngineConfig(fakeSPP.Addr().String())
+	cfg.APIListen = "127.0.0.1:0"
+	cfg.APIToken = "engine-token"
+	cfg.APIDashboard = true
+	cfg.SPPNodes = []*sppclient.Node{{
+		Name:        "n1",
+		Server:      fakeSPP.Addr().String(),
+		ServerProto: "tcp",
+		Key:         "testkey",
+	}}
+
+	e := NewEngine(cfg)
+	if err := e.Start(); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = e.Stop() }()
+
+	if e.apiServer == nil || e.collector == nil {
+		t.Fatal("API server or collector not created")
+	}
+	addr := e.apiServer.Addr().String()
+	base := "http://" + addr
+
+	// Engine state reaches the API: listeners, routing rules and nodes.
+	info := e.APIInfo()
+	if info.Listeners.API != cfg.APIListen || info.Listeners.DNS != cfg.DNSListen {
+		t.Fatalf("listeners = %+v", info.Listeners)
+	}
+	if len(info.Nodes) != 1 || info.Nodes[0].Name != "n1" {
+		t.Fatalf("nodes = %+v", info.Nodes)
+	}
+	if info.Router.DirectDomains == 0 {
+		t.Fatal("built-in direct domains missing from router info")
+	}
+
+	req, _ := http.NewRequest(http.MethodGet, base+"/api/v1/overview", nil)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("overview without token: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("overview without token -> %d, want 401", resp.StatusCode)
+	}
+
+	req, _ = http.NewRequest(http.MethodGet, base+"/api/v1/status", nil)
+	req.Header.Set("Authorization", "Bearer engine-token")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status -> %d, want 200", resp.StatusCode)
+	}
+	var status struct {
+		Version   string `json:"version"`
+		Running   bool   `json:"running"`
+		Listeners struct {
+			API string `json:"api"`
+		} `json:"listeners"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&status); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if !status.Running || status.Version == "" {
+		t.Fatalf("status = %+v", status)
+	}
+
+	if err := e.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if e.apiServer != nil || e.collector != nil {
+		t.Fatal("API server or collector retained after Stop")
 	}
 }

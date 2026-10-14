@@ -56,4 +56,15 @@ doh_url: "https://1.1.1.1/dns-query"
 #   - "192.168.0.0/16"
 #   - "10.0.0.0/8"
 
+# 统计 API：对外提供实时与历史数据，供网页看板查看。
+# 开启后需要 token 访问；留空时会自动生成并打印在日志里。
+# api_listen: "127.0.0.1:9090"   # 只有本机能访问；用 "0.0.0.0:9090" 对外开放
+# api_token: "change-me"         # 建议显式设置
+# api_origins: ["*"]             # 浏览器跨域白名单
+# api_dashboard: true            # 在 http://<api_listen>/ 提供内置看板
+
+# 统计数据的落盘与保留时长。历史按分钟聚合，重启后自动恢复。
+# stats_file: "stats.json"       # 默认：开启 API 时用工作目录下的 stats.json
+# stats_history_hours: 24        # 保留多少小时（最大 720）
+
 loglevel: "info"

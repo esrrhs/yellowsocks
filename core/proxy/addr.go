@@ -38,6 +38,15 @@ func joinDialAddr(host string, port int) string {
 	return net.JoinHostPort(canonicalHost(host), strconv.Itoa(port))
 }
 
+// addrString renders a peer address, tolerating a nil one (a closed
+// connection reports nil).
+func addrString(a net.Addr) string {
+	if a == nil {
+		return ""
+	}
+	return a.String()
+}
+
 // listenUDPFor opens a socket that can send to host. IPv6 literals use udp6
 // so the write is not stuck on an IPv4-only wildcard socket.
 func listenUDPFor(host string) (*net.UDPConn, error) {

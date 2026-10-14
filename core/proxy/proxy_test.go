@@ -75,7 +75,7 @@ func startMockUpstreamSocks5(t *testing.T) (string, func()) {
 					}
 					defer dstConn.Close()
 					_ = network.Sock5SendConnectReply(c, 0x00, "0.0.0.0:0")
-					relayStreams(c, dstConn, defaultIdleTimeout)
+					relayStreams(c, dstConn, defaultIdleTimeout, nil)
 				} else if cmd == network.Socks5CmdUDPAssociate {
 					uRelay, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 					if err != nil {

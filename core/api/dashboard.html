@@ -1,0 +1,411 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>YellowSocks 中转站监控</title>
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1d212a;
+    --line: #262b36;
+    --text: #e6e9ef;
+    --muted: #8b93a7;
+    --up: #f2a33c;
+    --down: #4aa3f0;
+    --proxy: #c05fd8;
+    --direct: #35c48a;
+    --err: #f0555f;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  header {
+    display: flex; flex-wrap: wrap; gap: 12px; align-items: center;
+    padding: 14px 20px; background: var(--panel); border-bottom: 1px solid var(--line);
+    position: sticky; top: 0; z-index: 10;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; letter-spacing: .5px; }
+  header .spacer { flex: 1; }
+  input, select, button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 10px; font-size: 13px;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: #3a4152; }
+  main { padding: 16px 20px 40px; max-width: 1400px; margin: 0 auto; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+  }
+  .card .label { color: var(--muted); font-size: 12px; }
+  .card .value { font-size: 22px; font-weight: 600; margin-top: 4px; }
+  .card .sub { color: var(--muted); font-size: 12px; margin-top: 2px; }
+  section { margin-top: 20px; }
+  h2 { font-size: 14px; margin: 0 0 10px; color: var(--muted); font-weight: 600; letter-spacing: .5px; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  @media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 500; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+  .bar { height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; }
+  .bar > span { display: block; height: 100%; }
+  .tag { padding: 1px 6px; border-radius: 4px; font-size: 11px; border: 1px solid var(--line); }
+  .tag.proxy { color: var(--proxy); border-color: var(--proxy); }
+  .tag.direct { color: var(--direct); border-color: var(--direct); }
+  .split { display: flex; height: 14px; border-radius: 7px; overflow: hidden; background: var(--panel-2); }
+  .split > div { height: 100%; }
+  .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+  .legend i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 5px; }
+  canvas { width: 100%; height: 240px; display: block; }
+  .err { color: var(--err); font-size: 12px; }
+  .muted { color: var(--muted); }
+  #msg { color: var(--err); font-size: 13px; }
+  .scroll { max-height: 320px; overflow: auto; }
+</style>
+</head>
+<body>
+<header>
+  <h1>YellowSocks 中转站监控</h1>
+  <span id="msg"></span>
+  <span class="spacer"></span>
+  <input id="server" placeholder="服务器 http://1.2.3.4:9090" size="30" autocomplete="off" title="中转站 API 地址；留空表示与本页面同源">
+  <input id="token" placeholder="API token" size="22" autocomplete="off">
+  <select id="range">
+    <option value="30m">最近 30 分钟</option>
+    <option value="1h" selected>最近 1 小时</option>
+    <option value="6h">最近 6 小时</option>
+    <option value="24h">最近 24 小时</option>
+    <option value="7d">最近 7 天</option>
+  </select>
+  <select id="interval">
+    <option value="0">停止刷新</option>
+    <option value="2000">2 秒</option>
+    <option value="5000" selected>5 秒</option>
+    <option value="15000">15 秒</option>
+    <option value="60000">60 秒</option>
+  </select>
+  <button id="refresh">刷新</button>
+</header>
+
+<main>
+  <div class="cards" id="cards"></div>
+
+  <section class="panel">
+    <h2>流量趋势</h2>
+    <canvas id="chart"></canvas>
+    <div class="legend">
+      <span><i style="background:var(--down)"></i>下载 (目标 → 客户端)</span>
+      <span><i style="background:var(--up)"></i>上传 (客户端 → 目标)</span>
+      <span class="spacer"></span>
+      <span id="chartInfo" class="muted"></span>
+    </div>
+  </section>
+
+  <section class="grid2">
+    <div class="panel">
+      <h2>分流情况</h2>
+      <div class="split"><div id="splitDirect" style="background:var(--direct)"></div><div id="splitProxy" style="background:var(--proxy)"></div></div>
+      <div class="legend">
+        <span><i style="background:var(--direct)"></i>直连 <b id="directPct">0%</b></span>
+        <span><i style="background:var(--proxy)"></i>经 SPP <b id="proxyPct">0%</b></span>
+      </div>
+      <table style="margin-top:10px">
+        <tr><th>路径</th><th class="num">连接数</th><th class="num">上传</th><th class="num">下载</th></tr>
+        <tr><td><span class="tag direct">直连</span></td><td class="num" id="directConns">0</td><td class="num" id="directUp">0</td><td class="num" id="directDown">0</td></tr>
+        <tr><td><span class="tag proxy">SPP</span></td><td class="num" id="proxyConns">0</td><td class="num" id="proxyUp">0</td><td class="num" id="proxyDown">0</td></tr>
+      </table>
+    </div>
+    <div class="panel">
+      <h2>SPP 节点</h2>
+      <table id="nodes"><tr><th>节点</th><th>地址</th><th class="num">连接</th><th class="num">流量</th><th>状态</th></tr></table>
+    </div>
+  </section>
+
+  <section class="grid2">
+    <div class="panel">
+      <h2>域名分布（按流量）</h2>
+      <div class="scroll"><table id="domains"></table></div>
+    </div>
+    <div class="panel">
+      <h2>DNS 查询</h2>
+      <div id="dnsSummary" class="cards" style="grid-template-columns:repeat(2,1fr)"></div>
+      <div class="scroll" style="margin-top:10px"><table id="dnsDomains"></table></div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>当前连接</h2>
+    <div class="scroll"><table id="conns"></table></div>
+  </section>
+
+  <section class="panel">
+    <h2>最近错误</h2>
+    <div class="scroll"><table id="errors"></table></div>
+  </section>
+</main>
+
+<script>
+(function () {
+  var tokenEl = document.getElementById('token');
+  var serverEl = document.getElementById('server');
+  var msgEl = document.getElementById('msg');
+  var timer = null;
+  var params = new URLSearchParams(location.search);
+
+  // The page can be served by the proxy itself or hosted anywhere else, so
+  // the API address is configurable. Same origin (relative paths) is the
+  // default; an absolute address makes the page talk to another host, which
+  // needs CORS enabled there (api_origins).
+  var sameOrigin = (/^https?:$/.test(location.protocol)) ? location.origin : '';
+
+  function normalizeBase(v) {
+    v = (v || '').trim().replace(/\/+$/, '');
+    if (!v) return '';
+    if (!/^https?:\/\//i.test(v)) v = 'http://' + v;
+    return v;
+  }
+
+  var savedServer = localStorage.getItem('ys_server') || '';
+  var serverFromUrl = params.get('server');
+  serverEl.value = normalizeBase(serverFromUrl || savedServer) || sameOrigin;
+  if (serverFromUrl) localStorage.setItem('ys_server', normalizeBase(serverFromUrl));
+
+  var savedToken = localStorage.getItem('ys_token') || '';
+  var tokenFromUrl = params.get('token');
+  tokenEl.value = tokenFromUrl || savedToken;
+  if (tokenFromUrl) localStorage.setItem('ys_token', tokenFromUrl);
+
+  serverEl.addEventListener('change', function () {
+    localStorage.setItem('ys_server', normalizeBase(serverEl.value));
+    refresh();
+  });
+  tokenEl.addEventListener('change', function () {
+    localStorage.setItem('ys_token', tokenEl.value.trim());
+    refresh();
+  });
+
+  function baseUrl() { return normalizeBase(serverEl.value); }
+
+  function api(path) {
+    var base = baseUrl();
+    var url = base ? base + '/' + path : path;
+    var headers = {};
+    var token = tokenEl.value.trim();
+    if (token) headers['Authorization'] = 'Bearer ' + token;
+    if (base) headers['Accept'] = 'application/json';
+    return fetch(url, { headers: headers, cache: 'no-store' }).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status + ' ' + url);
+      return r.json();
+    });
+  }
+
+  function fmtBytes(n) {
+    if (n === null || n === undefined) return '-';
+    var units = ['B', 'KB', 'MB', 'GB', 'TB', 'PB'];
+    var v = n, i = 0;
+    while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
+    return (i === 0 ? v : v.toFixed(v < 10 ? 2 : 1)) + ' ' + units[i];
+  }
+  function fmtBps(n) { return fmtBytes(n) + '/s'; }
+  function fmtAgo(ts) {
+    var d = Math.max(0, Date.now() / 1000 - ts);
+    if (d < 60) return Math.floor(d) + 's';
+    if (d < 3600) return Math.floor(d / 60) + 'm';
+    if (d < 86400) return Math.floor(d / 3600) + 'h';
+    return Math.floor(d / 86400) + 'd';
+  }
+  function el(id) { return document.getElementById(id); }
+
+  function renderCards(ov, status) {
+    var cards = [
+      ['活跃连接', ov.active_conns, '当前中继中的会话'],
+      ['上传速率', fmtBps(ov.rate.upload_bps), '近 5 秒 · 峰值 ' + fmtBps(ov.peak.upload_bps)],
+      ['下载速率', fmtBps(ov.rate.download_bps), '近 5 秒 · 峰值 ' + fmtBps(ov.peak.download_bps)],
+      ['累计上传', fmtBytes(ov.totals.upload_bytes), ov.totals.conns + ' 次连接'],
+      ['累计下载', fmtBytes(ov.totals.download_bytes), '直连 ' + fmtBytes(ov.direct.download_bytes) + ' / SPP ' + fmtBytes(ov.proxy.download_bytes)],
+      ['运行时长', fmtAgo(ov.start_time), status && status.version ? 'v' + status.version : '']
+    ];
+    el('cards').innerHTML = cards.map(function (c) {
+      return '<div class="card"><div class="label">' + c[0] + '</div><div class="value">' + c[1] + '</div><div class="sub">' + (c[2] || '') + '</div></div>';
+    }).join('');
+  }
+
+  var lastPoints = [];
+  function drawChart(points) {
+    lastPoints = points || [];
+    var c = el('chart');
+    var dpr = window.devicePixelRatio || 1;
+    var w = c.clientWidth, h = c.clientHeight;
+    c.width = w * dpr; c.height = h * dpr;
+    var g = c.getContext('2d');
+    g.scale(dpr, dpr);
+    g.clearRect(0, 0, w, h);
+    if (!points || points.length === 0) {
+      g.fillStyle = '#8b93a7'; g.font = '13px sans-serif';
+      g.fillText('暂无数据', 8, h / 2);
+      return;
+    }
+    var pad = { l: 52, r: 8, t: 10, b: 20 };
+    var maxV = 1;
+    points.forEach(function (p) {
+      maxV = Math.max(maxV, p.upload_bytes, p.download_bytes);
+    });
+    var iw = w - pad.l - pad.r, ih = h - pad.t - pad.b;
+    // grid
+    g.strokeStyle = '#262b36'; g.lineWidth = 1;
+    g.fillStyle = '#8b93a7'; g.font = '11px sans-serif';
+    for (var i = 0; i <= 4; i++) {
+      var y = pad.t + ih * i / 4;
+      g.beginPath(); g.moveTo(pad.l, y); g.lineTo(w - pad.r, y); g.stroke();
+      g.fillText(fmtBytes(maxV * (1 - i / 4)), 4, y + 4);
+    }
+    function line(key, color) {
+      g.beginPath();
+      points.forEach(function (p, i) {
+        var x = pad.l + iw * (points.length === 1 ? 0 : i / (points.length - 1));
+        var y = pad.t + ih * (1 - p[key] / maxV);
+        if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+      });
+      g.strokeStyle = color; g.lineWidth = 2; g.stroke();
+    }
+    // area under download
+    g.beginPath();
+    points.forEach(function (p, i) {
+      var x = pad.l + iw * (points.length === 1 ? 0 : i / (points.length - 1));
+      var y = pad.t + ih * (1 - p.download_bytes / maxV);
+      if (i === 0) g.moveTo(x, y); else g.lineTo(x, y);
+    });
+    g.lineTo(pad.l + iw, pad.t + ih); g.lineTo(pad.l, pad.t + ih); g.closePath();
+    g.fillStyle = 'rgba(74,163,240,0.12)'; g.fill();
+
+    line('download_bytes', '#4aa3f0');
+    line('upload_bytes', '#f2a33c');
+  }
+
+  function hex(n) { return n; }
+
+  function renderRoutes(r) {
+    var dp = (r.direct_bytes_ratio * 100) || 0;
+    el('splitDirect').style.width = dp + '%';
+    el('splitProxy').style.width = (100 - dp) + '%';
+    el('directPct').textContent = dp.toFixed(1) + '%';
+    el('proxyPct').textContent = (100 - dp).toFixed(1) + '%';
+    el('directConns').textContent = r.direct.conns;
+    el('proxyConns').textContent = r.proxy.conns;
+    el('directUp').textContent = fmtBytes(r.direct.upload_bytes);
+    el('directDown').textContent = fmtBytes(r.direct.download_bytes);
+    el('proxyUp').textContent = fmtBytes(r.proxy.upload_bytes);
+    el('proxyDown').textContent = fmtBytes(r.proxy.download_bytes);
+  }
+
+  function renderDomains(list) {
+    var max = 1;
+    list.forEach(function (d) { max = Math.max(max, d.upload_bytes + d.download_bytes); });
+    var rows = ['<tr><th>域名</th><th class="num">流量</th><th class="num">连接</th><th>分流</th></tr>'];
+    list.forEach(function (d) {
+      var total = d.upload_bytes + d.download_bytes;
+      var proxyPct = d.conns ? Math.round(d.proxy_conns * 100 / d.conns) : 0;
+      rows.push('<tr><td>' + d.domain + '</td>' +
+        '<td class="num">' + fmtBytes(total) + '<div class="bar"><span style="width:' + (total * 100 / max).toFixed(1) + '%;background:var(--down)"></span></div></td>' +
+        '<td class="num">' + d.conns + '</td>' +
+        '<td><span class="tag ' + (proxyPct > 50 ? 'proxy">SPP ' : 'direct">直连 ') + proxyPct + '%</span></td></tr>');
+    });
+    el('domains').innerHTML = rows.join('');
+  }
+
+  function renderDNS(dns) {
+    el('dnsSummary').innerHTML = [
+      ['查询总数', dns.queries], ['缓存命中', dns.cache_hits],
+      ['直连解析', dns.direct], ['DoH 解析', dns.doh], ['失败', dns.failures]
+    ].map(function (c) {
+      return '<div class="card"><div class="label">' + c[0] + '</div><div class="value">' + c[1] + '</div></div>';
+    }).join('');
+    var rows = ['<tr><th>域名</th><th class="num">查询次数</th></tr>'];
+    (dns.top_domains || []).forEach(function (d) {
+      rows.push('<tr><td>' + d.domain + '</td><td class="num">' + d.conns + '</td></tr>');
+    });
+    el('dnsDomains').innerHTML = rows.join('');
+  }
+
+  function renderNodes(nodes) {
+    var rows = ['<tr><th>节点</th><th>地址</th><th class="num">连接</th><th class="num">流量</th><th>状态</th></tr>'];
+    (nodes || []).forEach(function (n) {
+      var st = n.active ? '<span class="tag proxy">使用中</span>' : (n.alive ? '<span class="tag direct">可用</span>' : '<span class="err">不可达</span>');
+      rows.push('<tr><td>' + (n.name || '-') + '</td><td class="muted">' + (n.server || '-') + '</td>' +
+        '<td class="num">' + n.conns + '</td><td class="num">' + fmtBytes(n.upload_bytes + n.download_bytes) + '</td><td>' + st + '</td></tr>');
+    });
+    el('nodes').innerHTML = rows.join('');
+  }
+
+  function renderConns(list) {
+    var rows = ['<tr><th>协议</th><th>客户端</th><th>目标</th><th>分流</th><th class="num">上传</th><th class="num">下载</th><th class="num">时长</th></tr>'];
+    list.forEach(function (c) {
+      rows.push('<tr><td>' + c.proto + '</td><td class="muted">' + c.client + '</td>' +
+        '<td>' + (c.host || '-') + (c.port ? ':' + c.port : '') + '</td>' +
+        '<td>' + (c.decision === 'proxy' ? '<span class="tag proxy">SPP</span>' : c.decision === 'direct' ? '<span class="tag direct">直连</span>' : '-') + '</td>' +
+        '<td class="num">' + fmtBytes(c.upload_bytes) + '</td><td class="num">' + fmtBytes(c.download_bytes) + '</td>' +
+        '<td class="num">' + fmtAgo(c.start) + '</td></tr>');
+    });
+    el('conns').innerHTML = rows.join('');
+  }
+
+  function renderErrors(list) {
+    var rows = ['<tr><th>时间</th><th>模块</th><th>目标</th><th>错误</th></tr>'];
+    list.slice().reverse().forEach(function (e) {
+      rows.push('<tr><td class="muted">' + e.time + '</td><td>' + e.scope + '</td><td>' + (e.host || '-') + '</td><td class="err">' + e.message + '</td></tr>');
+    });
+    el('errors').innerHTML = rows.join('');
+  }
+
+  function refresh() {
+    var range = el('range').value;
+    var q = '?range=' + encodeURIComponent(range);
+    return Promise.all([
+      api('api/v1/overview'),
+      api('api/v1/status'),
+      api('api/v1/traffic' + q),
+      api('api/v1/routes'),
+      api('api/v1/domains?limit=30'),
+      api('api/v1/dns?limit=30'),
+      api('api/v1/connections?limit=100'),
+      api('api/v1/errors?limit=50')
+    ]).then(function (res) {
+      msgEl.textContent = '';
+      renderCards(res[0], res[1]);
+      drawChart(res[2].points);
+      el('chartInfo').textContent = '步长 ' + res[2].step_seconds + 's · ' + res[2].points.length + ' 个点';
+      renderRoutes(res[3]);
+      renderDomains(res[4].domains);
+      renderDNS(res[5]);
+      renderConns(res[6].connections);
+      renderErrors(res[7].errors);
+      renderNodes(res[1].nodes);
+    }).catch(function (e) {
+      var base = baseUrl() || '同源';
+      msgEl.textContent = '请求失败：' + e.message + '（目标 ' + base +
+        '，若跨域请确认服务端已开启 CORS / api_origins）';
+    });
+  }
+
+  function schedule() {
+    if (timer) clearInterval(timer);
+    var ms = parseInt(el('interval').value, 10);
+    if (ms > 0) timer = setInterval(refresh, ms);
+  }
+
+  el('refresh').addEventListener('click', refresh);
+  el('range').addEventListener('change', refresh);
+  el('interval').addEventListener('change', schedule);
+  window.addEventListener('resize', function () { drawChart(lastPoints); });
+
+  refresh().then(schedule);
+})();
+</script>
+</body>
+</html>
