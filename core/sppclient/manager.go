@@ -166,7 +166,12 @@ func (m *Manager) switchNode(index int) error {
 	m.alive[index].Store(true)
 	m.activeClient = cl
 	atomic.StoreInt32(&m.activeIndex, int32(index))
-	loggo.Info("[SPP Manager] Successfully connected to [%s]", target.Name)
+	// spp's client dials in the background and retries forever, so this line
+	// must not claim a live connection: at startup the probe may have just
+	// failed for every node (see newManager) and the client is still
+	// connecting. Real liveness is what the health check reports through
+	// NodeAlive, not what this switch log says.
+	loggo.Info("[SPP Manager] Active node set to [%s]", target.Name)
 	return nil
 }
 
