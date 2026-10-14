@@ -335,6 +335,198 @@ func TestTokenGeneratedWhenEmpty(t *testing.T) {
 	}
 }
 
+// request is a small helper for requests with arbitrary headers.
+func doRequest(t *testing.T, method, url string, headers map[string]string) *http.Response {
+	t.Helper()
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	for k, v := range headers {
+		req.Header.Set(k, v)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("do: %v", err)
+	}
+	return resp
+}
+
+// startServerOn builds a server with the given config on an ephemeral port.
+func startServerOn(t *testing.T, cfg Config) (*Server, string) {
+	t.Helper()
+	c := stats.New(stats.Config{HistoryMinutes: 60, BucketInterval: time.Minute})
+	cfg.ListenAddr = "127.0.0.1:0"
+	if cfg.Token == "" {
+		cfg.Token = "secret"
+	}
+	srv, err := New(cfg, Deps{Stats: c, Info: fakeInfo{}, Version: "test-1.0"})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
+	if err := srv.Start(); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	t.Cleanup(func() { _ = srv.Stop() })
+	return srv, "http://" + srv.Addr().String()
+}
+
+func TestReadonlyTokenCannotMutate(t *testing.T) {
+	_, base := startServerOn(t, Config{Token: "admin-token", ReadonlyToken: "ro-token"})
+
+	// Read-only token reads fine.
+	resp := doRequest(t, http.MethodGet, base+"/api/v1/overview", map[string]string{"Authorization": "Bearer ro-token"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("readonly GET -> %d, want 200", resp.StatusCode)
+	}
+	// ...but cannot reset: 403, not 401, because the token itself is valid.
+	resp = doRequest(t, http.MethodPost, base+"/api/v1/reset", map[string]string{"Authorization": "Bearer ro-token"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("readonly POST reset -> %d, want 403", resp.StatusCode)
+	}
+	// The admin token can.
+	resp = doRequest(t, http.MethodPost, base+"/api/v1/reset", map[string]string{"Authorization": "Bearer admin-token"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("admin POST reset -> %d, want 200", resp.StatusCode)
+	}
+	// An unknown token gets 401 even on a read endpoint.
+	resp = doRequest(t, http.MethodGet, base+"/api/v1/overview", map[string]string{"Authorization": "Bearer nope"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("bad token -> %d, want 401", resp.StatusCode)
+	}
+}
+
+func TestClientCIDRWhitelist(t *testing.T) {
+	// Only the loopback host may call: enough to prove the check runs.
+	_, base := startServerOn(t, Config{Token: "t", AllowedCIDRs: []string{"127.0.0.1/32"}})
+	resp := doRequest(t, http.MethodGet, base+"/api/v1/overview", map[string]string{"Authorization": "Bearer t"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("allowed client -> %d, want 200", resp.StatusCode)
+	}
+
+	// A whitelist the client is not on blocks it, even with a good token.
+	_, base2 := startServerOn(t, Config{Token: "t", AllowedCIDRs: []string{"10.0.0.1/32"}})
+	resp = doRequest(t, http.MethodGet, base2+"/api/v1/overview", map[string]string{"Authorization": "Bearer t"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("foreign client -> %d, want 403", resp.StatusCode)
+	}
+	// Health is public but still network-gated.
+	resp = doRequest(t, http.MethodGet, base2+"/api/v1/health", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("health from foreign client -> %d, want 403", resp.StatusCode)
+	}
+}
+
+// A peer whitelist must keep working no matter what forwarding headers the
+// peer sends: it gates on who connected, not on what the headers claim.
+func TestPeerWhitelistIgnoresForwardedHeaders(t *testing.T) {
+	// Only this host may connect; it is also declared as a trusted proxy,
+	// which is exactly how a reverse proxy is configured.
+	_, base := startServerOn(t, Config{
+		Token:          "t",
+		AllowedCIDRs:   []string{"127.0.0.1/32"},
+		TrustedProxies: []string{"127.0.0.1/32"},
+	})
+	// No header, and a header naming the browser behind the proxy: both
+	// must pass, because the peer is the proxy we allow.
+	for _, xff := range []string{"", "203.0.113.5"} {
+		headers := map[string]string{"Authorization": "Bearer t"}
+		if xff != "" {
+			headers["X-Forwarded-For"] = xff
+		}
+		resp := doRequest(t, http.MethodGet, base+"/api/v1/overview", headers)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("peer whitelist with XFF %q -> %d, want 200", xff, resp.StatusCode)
+		}
+	}
+
+	// A peer outside the whitelist is refused even when its headers claim
+	// an allowed address.
+	_, base2 := startServerOn(t, Config{Token: "t", AllowedCIDRs: []string{"10.0.0.1/32"}})
+	resp := doRequest(t, http.MethodGet, base2+"/api/v1/overview", map[string]string{
+		"Authorization": "Bearer t", "X-Forwarded-For": "10.0.0.1",
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("forged XFF -> %d, want 403", resp.StatusCode)
+	}
+}
+
+// Filtering on the forwarded client is opt-in and only works through a
+// trusted proxy, so an untrusted client cannot forge its way in.
+func TestClientWhitelistNeedsTrustedProxy(t *testing.T) {
+	cfg := Config{Token: "t", ClientCIDRs: []string{"10.0.0.1/32"}}
+
+	// Without a trusted proxy the header is ignored: the real peer (us) is
+	// not on the client list, so the call is refused.
+	_, base := startServerOn(t, cfg)
+	resp := doRequest(t, http.MethodGet, base+"/api/v1/overview", map[string]string{
+		"Authorization": "Bearer t", "X-Forwarded-For": "10.0.0.1",
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("untrusted XFF -> %d, want 403", resp.StatusCode)
+	}
+
+	// With the peer trusted, the forwarded address is used: allowed ...
+	cfg.TrustedProxies = []string{"127.0.0.1/32"}
+	_, base2 := startServerOn(t, cfg)
+	resp = doRequest(t, http.MethodGet, base2+"/api/v1/overview", map[string]string{
+		"Authorization": "Bearer t", "X-Forwarded-For": "10.0.0.1",
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("trusted proxy XFF -> %d, want 200", resp.StatusCode)
+	}
+	// ... and a visitor outside the list is refused. The last untrusted hop
+	// in a chain is the one that counts.
+	resp = doRequest(t, http.MethodGet, base2+"/api/v1/overview", map[string]string{
+		"Authorization": "Bearer t", "X-Forwarded-For": "203.0.113.5, 127.0.0.1",
+	})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("untrusted hop in chain -> %d, want 403", resp.StatusCode)
+	}
+}
+
+func TestCORSDisabled(t *testing.T) {
+	_, base := startServerOn(t, Config{Token: "t", AllowedOrigins: []string{"none"}})
+	resp := doRequest(t, http.MethodGet, base+"/api/v1/overview?token=t", map[string]string{"Origin": "https://elsewhere.example"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("same-origin style call -> %d, want 200", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Fatalf("CORS disabled but got Allow-Origin %q", got)
+	}
+}
+
+func TestInvalidCIDRConfig(t *testing.T) {
+	c := stats.New(stats.Config{})
+	if _, err := New(Config{Token: "t", AllowedCIDRs: []string{"not-a-cidr"}}, Deps{Stats: c}); err == nil {
+		t.Fatal("invalid CIDR should fail at construction")
+	}
+	if _, err := New(Config{Token: "t", TrustedProxies: []string{"10.0.0.0/33"}}, Deps{Stats: c}); err == nil {
+		t.Fatal("invalid trusted proxy CIDR should fail at construction")
+	}
+	// A bare address is accepted and treated as a single host.
+	srv, err := New(Config{Token: "t", AllowedCIDRs: []string{"127.0.0.1"}}, Deps{Stats: c})
+	if err != nil {
+		t.Fatalf("bare address: %v", err)
+	}
+	if len(srv.allowedNets) != 1 {
+		t.Fatalf("allowedNets = %d, want 1", len(srv.allowedNets))
+	}
+}
+
 func TestParseDuration(t *testing.T) {
 	cases := map[string]time.Duration{
 		"30m": 30 * time.Minute,

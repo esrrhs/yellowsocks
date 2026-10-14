@@ -52,11 +52,22 @@ type EngineConfig struct {
 
 	// APIListen serves the statistics HTTP API. Empty disables it.
 	APIListen string
-	// APIToken is the shared secret the API requires. When empty a random
-	// token is generated and logged at startup.
+	// APIToken is the admin secret: read and reset. Keep it on the reverse
+	// proxy, not in a page. When empty a random one is generated and logged.
 	APIToken string
+	// APIReadonlyToken grants GET access only.
+	APIReadonlyToken string
+	// APIAllowedCIDRs limits which peers may connect, by CIDR. Set it to the
+	// reverse proxy so the API is unreachable from anywhere else.
+	APIAllowedCIDRs []string
+	// APIClientCIDRs limits the forwarded client address, by CIDR. Only
+	// meaningful together with APITrustedProxies.
+	APIClientCIDRs []string
+	// APITrustedProxies lists CIDRs whose X-Forwarded-For is honored.
+	APITrustedProxies []string
 	// APIOrigins lists CORS origins allowed to call the API from a browser.
-	// Empty allows any origin.
+	// Empty allows any origin; ["none"] disables CORS (use behind a
+	// same-origin reverse proxy).
 	APIOrigins []string
 	// APIDashboard serves the built-in dashboard at "/".
 	APIDashboard bool
@@ -245,6 +256,10 @@ func (e *Engine) Start() error {
 		apiSrv, err := api.New(api.Config{
 			ListenAddr:     e.cfg.APIListen,
 			Token:          e.cfg.APIToken,
+			ReadonlyToken:  e.cfg.APIReadonlyToken,
+			AllowedCIDRs:   e.cfg.APIAllowedCIDRs,
+			ClientCIDRs:    e.cfg.APIClientCIDRs,
+			TrustedProxies: e.cfg.APITrustedProxies,
 			AllowedOrigins: e.cfg.APIOrigins,
 			Dashboard:      e.cfg.APIDashboard,
 		}, api.Deps{
