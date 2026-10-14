@@ -679,7 +679,12 @@ func (s *Server) resolveDoH(r *dns.Msg) (*dns.Msg, error) {
 }
 
 func (s *Server) cacheAndRecordIP(domain, key string, msg *dns.Msg) {
-	if len(msg.Answer) == 0 {
+	// Only a NOERROR answer is a positive result. Servers may return a
+	// partial Answer section alongside an error code (SERVFAIL, REFUSED,
+	// ...); caching it would serve the failure as if it were an answer and
+	// pin its IPs in the reverse map. Failure responses still reach the
+	// client untouched, they just never enter the cache.
+	if msg.Rcode != dns.RcodeSuccess || len(msg.Answer) == 0 {
 		return
 	}
 
