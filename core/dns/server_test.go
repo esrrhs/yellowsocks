@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1215,8 +1216,17 @@ func TestResolveDoHRejectsOversizedUpstreamBody(t *testing.T) {
 // supplied mutator. The mutator receives a copy of a normal reply for the
 // request question and may corrupt it (wrong question, QR cleared, ...).
 func dohAnswering(t *testing.T, mutate func(req, resp *dns.Msg)) *httptest.Server {
+	srv, _ := dohAnsweringCounting(t, mutate)
+	return srv
+}
+
+// dohAnsweringCounting is dohAnswering with a hit counter, for tests that
+// assert whether a second query was replayed from cache or hit the upstream.
+func dohAnsweringCounting(t *testing.T, mutate func(req, resp *dns.Msg)) (*httptest.Server, *atomic.Int64) {
 	t.Helper()
+	var hits atomic.Int64
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
 		raw, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "bad body", http.StatusBadRequest)
@@ -1244,7 +1254,7 @@ func dohAnswering(t *testing.T, mutate func(req, resp *dns.Msg)) *httptest.Serve
 		_, _ = w.Write(packed)
 	}))
 	t.Cleanup(srv.Close)
-	return srv
+	return srv, &hits
 }
 
 // RFC 5452 section 5: a resolver must only accept an upstream answer that
@@ -1338,6 +1348,107 @@ func TestRejectUpstreamAnswerForAnotherQuestion(t *testing.T) {
 		}
 		if _, ok := srv.cache.Load("mismatch.example_1_1"); ok {
 			t.Fatal("mismatched direct answer was cached under the sent question")
+		}
+	})
+}
+
+// A failure answer (SERVFAIL/REFUSED/...) still reaches the client with its
+// rcode, but a partial Answer section carried alongside the error code must
+// never enter the cache or the IP reverse map: caching it would replay the
+// failure as a positive answer and pin its IPs for later reverse lookups.
+func TestFailureAnswersAreNotCachedOrReverseMapped(t *testing.T) {
+	t.Run("doh servfail with answers", func(t *testing.T) {
+		stub, hits := dohAnsweringCounting(t, func(req, resp *dns.Msg) {
+			resp.Rcode = dns.RcodeServerFailure
+		})
+		srv, err := NewServer(Config{ListenAddr: "127.0.0.1:0", DoHURL: stub.URL, DirectDNS: "127.0.0.1:1"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer srv.Stop()
+
+		q := new(dns.Msg)
+		q.SetQuestion("fail.example.", dns.TypeA)
+		resp, err := srv.ResolveMsg(q)
+		if err != nil {
+			t.Fatalf("servfail must still reach the client: %v", err)
+		}
+		if resp.Rcode != dns.RcodeServerFailure {
+			t.Fatalf("client got rcode %s, want SERVFAIL", dns.RcodeToString[resp.Rcode])
+		}
+		if _, ok := srv.cache.Load("fail.example_1_1"); ok {
+			t.Fatal("servfail answer was cached under the sent question")
+		}
+		if _, ok := srv.LookupDomainByIP("6.6.6.6"); ok {
+			t.Fatal("servfail answer poisoned the IP reverse map")
+		}
+		before := hits.Load()
+		if _, err := srv.ResolveMsg(q); err != nil {
+			t.Fatalf("second resolve: %v", err)
+		}
+		if hits.Load() == before {
+			t.Fatal("servfail answer was cached and replayed instead of re-queried")
+		}
+	})
+
+	t.Run("direct udp servfail with answers", func(t *testing.T) {
+		pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer pc.Close()
+		go func() {
+			buf := make([]byte, 1500)
+			for {
+				n, addr, err := pc.ReadFrom(buf)
+				if err != nil {
+					return
+				}
+				req := new(dns.Msg)
+				if req.Unpack(buf[:n]) != nil || len(req.Question) == 0 {
+					continue
+				}
+				resp := new(dns.Msg)
+				resp.SetReply(req)
+				resp.Rcode = dns.RcodeServerFailure
+				resp.Answer = append(resp.Answer, &dns.A{
+					Hdr: dns.RR_Header{Name: req.Question[0].Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: 60},
+					A:   net.ParseIP("9.9.9.9"),
+				})
+				if packed, perr := resp.Pack(); perr == nil {
+					_, _ = pc.WriteTo(packed, addr)
+				}
+			}
+		}()
+
+		rt := router.NewRouter()
+		defer rt.Close()
+		rt.AddDirectDomain("fail.example")
+		srv, err := NewServer(Config{
+			ListenAddr: "127.0.0.1:0",
+			DirectDNS:  pc.LocalAddr().String(),
+			DoHURL:     "http://127.0.0.1:1/dns-query",
+			Router:     rt,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer srv.Stop()
+
+		q := new(dns.Msg)
+		q.SetQuestion("fail.example.", dns.TypeA)
+		resp, err := srv.ResolveMsg(q)
+		if err != nil {
+			t.Fatalf("servfail must still reach the client: %v", err)
+		}
+		if resp.Rcode != dns.RcodeServerFailure {
+			t.Fatalf("client got rcode %s, want SERVFAIL", dns.RcodeToString[resp.Rcode])
+		}
+		if _, ok := srv.cache.Load("fail.example_1_1"); ok {
+			t.Fatal("servfail answer was cached under the sent question")
+		}
+		if _, ok := srv.LookupDomainByIP("9.9.9.9"); ok {
+			t.Fatal("servfail answer poisoned the IP reverse map")
 		}
 	})
 }
