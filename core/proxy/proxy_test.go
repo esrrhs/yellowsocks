@@ -1400,3 +1400,168 @@ func TestHTTPProxyAcceptsHeadNearLimit(t *testing.T) {
 		t.Fatal("near-limit header was not forwarded")
 	}
 }
+
+// startCountingHTTPBackend answers every request with 204 and counts the
+// connections it saw, so a test can prove that rejected heads never reached
+// an upstream while a well-formed control head did.
+func startCountingHTTPBackend(t *testing.T) (string, *int32) {
+	t.Helper()
+	bl, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var hits int32
+	go func() {
+		for {
+			conn, err := bl.Accept()
+			if err != nil {
+				return
+			}
+			atomic.AddInt32(&hits, 1)
+			go func(c net.Conn) {
+				defer c.Close()
+				br := bufio.NewReader(c)
+				for {
+					line, err := br.ReadString('\n')
+					if err != nil {
+						return
+					}
+					if line == "\r\n" || line == "\n" {
+						break
+					}
+				}
+				_, _ = c.Write([]byte("HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"))
+			}(conn)
+		}
+	}()
+	t.Cleanup(func() { _ = bl.Close() })
+	return bl.Addr().String(), &hits
+}
+
+// RFC 7230 3.1.1: the request line is exactly three SP-separated printable
+// tokens. A doubled-space line parses into empty method/target/version
+// tokens, and the proxy used to forward that corrupted line to the origin; a
+// bare CR inside a header line is forwarded as a second line and can inject
+// a header there. Both must be answered with 400 and never reach an upstream.
+func TestHTTPProxyRejectsMalformedRequestLine(t *testing.T) {
+	r := router.NewRouter()
+	defer r.Close()
+	hp := NewHTTPServer(HTTPConfig{ListenAddr: "127.0.0.1:0", Router: r})
+	if err := hp.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer hp.Stop()
+
+	backend, hits := startCountingHTTPBackend(t)
+	backendHost, _, _ := net.SplitHostPort(backend)
+
+	sendHead := func(t *testing.T, head string) {
+		t.Helper()
+		cc, err := net.Dial("tcp", hp.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cc.Close()
+		if _, err := cc.Write([]byte(head)); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		_ = cc.SetReadDeadline(time.Now().Add(5 * time.Second))
+		resp, err := http.ReadResponse(bufio.NewReader(cc), nil)
+		if err != nil {
+			t.Fatalf("no response: %v", err)
+		}
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", resp.StatusCode)
+		}
+	}
+
+	// Control: the same head with exactly one space per token must still be
+	// proxied, proving the rejection below is about the malformed lines.
+	t.Run("well-formed head still proxied", func(t *testing.T) {
+		cc, err := net.Dial("tcp", hp.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cc.Close()
+		req := fmt.Sprintf("GET http://%s/ HTTP/1.1\r\nHost: %s\r\n\r\n", backend, backendHost)
+		if _, err := cc.Write([]byte(req)); err != nil {
+			t.Fatal(err)
+		}
+		_ = cc.SetReadDeadline(time.Now().Add(5 * time.Second))
+		resp, err := http.ReadResponse(bufio.NewReader(cc), nil)
+		if err != nil {
+			t.Fatalf("response: %v", err)
+		}
+		if resp.StatusCode != http.StatusNoContent {
+			t.Fatalf("status = %d, want 204", resp.StatusCode)
+		}
+	})
+	atomic.StoreInt32(hits, 0) // only the malformed cases must stay at zero
+
+	t.Run("doubled spaces in request line", func(t *testing.T) {
+		sendHead(t, "GET  http://"+backend+"/  HTTP/1.1\r\nHost: "+backendHost+"\r\n\r\n")
+	})
+	t.Run("trailing space in request line", func(t *testing.T) {
+		sendHead(t, "GET http://"+backend+"/ HTTP/1.1 \r\nHost: "+backendHost+"\r\n\r\n")
+	})
+	t.Run("control octet in request target", func(t *testing.T) {
+		sendHead(t, "GET http://"+backend+"/\x00 HTTP/1.1\r\nHost: "+backendHost+"\r\n\r\n")
+	})
+	t.Run("non-http version token", func(t *testing.T) {
+		sendHead(t, "GET http://"+backend+"/ FTP/1.1\r\nHost: "+backendHost+"\r\n\r\n")
+	})
+	t.Run("bare cr inside header line", func(t *testing.T) {
+		sendHead(t, "GET http://"+backend+"/ HTTP/1.1\r\nHost: "+backendHost+"\rX-Injected: 1\r\n\r\n")
+	})
+
+	time.Sleep(100 * time.Millisecond)
+	if got := atomic.LoadInt32(hits); got != 0 {
+		t.Fatalf("malformed heads reached the upstream %d times", got)
+	}
+}
+
+// A CONNECT or absolute-form target whose port token is not a number in
+// 1..65535 is a malformed request: answering 400 is correct, and dialing
+// "host:99999" just to fail is not.
+func TestHTTPProxyRejectsOutOfRangePort(t *testing.T) {
+	r := router.NewRouter()
+	defer r.Close()
+	hp := NewHTTPServer(HTTPConfig{ListenAddr: "127.0.0.1:0", Router: r})
+	if err := hp.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer hp.Stop()
+
+	sendHead := func(t *testing.T, head string) {
+		t.Helper()
+		cc, err := net.Dial("tcp", hp.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer cc.Close()
+		if _, err := cc.Write([]byte(head)); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+		_ = cc.SetReadDeadline(time.Now().Add(5 * time.Second))
+		resp, err := http.ReadResponse(bufio.NewReader(cc), nil)
+		if err != nil {
+			t.Fatalf("no response: %v", err)
+		}
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("status = %d, want 400", resp.StatusCode)
+		}
+	}
+
+	t.Run("connect port above 65535", func(t *testing.T) {
+		sendHead(t, "CONNECT example.com:99999 HTTP/1.1\r\nHost: example.com:99999\r\n\r\n")
+	})
+	t.Run("absolute uri port zero", func(t *testing.T) {
+		sendHead(t, "GET http://example.com:0/ HTTP/1.1\r\nHost: example.com:0\r\n\r\n")
+	})
+	t.Run("absolute uri negative port", func(t *testing.T) {
+		sendHead(t, "GET http://example.com:-1/ HTTP/1.1\r\nHost: example.com:-1\r\n\r\n")
+	})
+	t.Run("host header non-numeric port", func(t *testing.T) {
+		sendHead(t, "GET / HTTP/1.1\r\nHost: example.com:abc\r\n\r\n")
+	})
+}

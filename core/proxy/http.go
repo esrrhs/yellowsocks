@@ -180,8 +180,16 @@ func (s *HTTPServer) handleClient(clientConn net.Conn) {
 	}
 
 	reqLineTrimmed := strings.TrimRight(reqLine, "\r\n")
+	// RFC 7230 3.1.1: the request line is exactly three SP-separated tokens
+	// of visible ASCII. The old len(parts) >= 3 check let "GET  /  HTTP/1.1"
+	// through with an empty method and an empty request target, and the proxy
+	// then forwarded that corrupted line to the origin. Reject anything that
+	// is not exactly three non-empty printable tokens.
 	parts := strings.Split(reqLineTrimmed, " ")
-	if len(parts) < 3 {
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" ||
+		!isPrintableASCII(reqLineTrimmed) || !strings.HasPrefix(parts[2], "HTTP/") {
+		const http400 = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n"
+		_, _ = clientConn.Write([]byte(http400))
 		return
 	}
 
@@ -206,6 +214,14 @@ func (s *HTTPServer) handleClient(clientConn net.Conn) {
 		trimmed := strings.TrimRight(headerLine, "\r\n")
 		if trimmed == "" {
 			break
+		}
+		// A bare CR (or any other C0 control except the HTAB RFC 7230 allows
+		// inside values) is forwarded verbatim to the origin, where a naive
+		// parser reads it as a line end and honors the injected header.
+		if containsControl(trimmed) {
+			const http400 = "HTTP/1.1 400 Bad Request\r\nContent-Length: 0\r\n\r\n"
+			_, _ = clientConn.Write([]byte(http400))
+			return
 		}
 
 		colonIdx := strings.IndexByte(trimmed, ':')
@@ -279,12 +295,49 @@ func (s *HTTPServer) checkAuth(authHeader string) bool {
 	return subtle.ConstantTimeCompare(decoded, expected) == 1
 }
 
+// isPrintableASCII reports whether s consists only of printable ASCII octets
+// (0x20-0x7E, space included: it is the request-line token separator). Anything
+// else in a request line is a broken client or a response-splitting attempt.
+func isPrintableASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] < ' ' || s[i] > '~' {
+			return false
+		}
+	}
+	return true
+}
+
+// containsControl reports whether s holds a C0 control octet other than the
+// HTAB allowed inside header values, or DEL.
+func containsControl(s string) bool {
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c < 0x20 && c != '\t') || c == 0x7f {
+			return true
+		}
+	}
+	return false
+}
+
+// parseTargetPort converts a port token, rejecting anything outside
+// 1..65535. An out-of-range port is a malformed target: dialing it only
+// burns a 502 round trip on a request the client got wrong.
+func parseTargetPort(p string) (int, bool) {
+	port, err := strconv.Atoi(p)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, false
+	}
+	return port, true
+}
+
 func (s *HTTPServer) parseTarget(method, rawURI, hostHeader string) (string, int) {
 	if method == "CONNECT" {
 		h, p, err := net.SplitHostPort(rawURI)
 		if err == nil {
-			port, _ := strconv.Atoi(p)
-			return h, port
+			if port, ok := parseTargetPort(p); ok {
+				return h, port
+			}
+			return "", 0
 		}
 		return rawURI, 443
 	}
@@ -303,7 +356,11 @@ func (s *HTTPServer) parseTarget(method, rawURI, hostHeader string) (string, int
 	}
 
 	if h, p, err := net.SplitHostPort(host); err == nil {
-		port, _ = strconv.Atoi(p)
+		parsed, ok := parseTargetPort(p)
+		if !ok {
+			return "", 0
+		}
+		port = parsed
 		host = h
 	}
 	return canonicalHost(host), port
