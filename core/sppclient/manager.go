@@ -257,6 +257,41 @@ func (m *Manager) ActiveNodeIndex() int {
 	return int(atomic.LoadInt32(&m.activeIndex))
 }
 
+// ActiveNodeName returns the name of the currently active node, or "" when no
+// node is active. Used to attribute traffic to a node.
+func (m *Manager) ActiveNodeName() string {
+	idx := m.ActiveNodeIndex()
+	if idx < 0 || idx >= len(m.nodes) {
+		return ""
+	}
+	return m.nodes[idx].Name
+}
+
+// NodeStatus is a node's configured identity plus its latest probe result.
+type NodeStatus struct {
+	Name   string `json:"name"`
+	Server string `json:"server"`
+	Proto  string `json:"proto"`
+	Alive  bool   `json:"alive"`
+	Active bool   `json:"active"`
+}
+
+// NodeStatuses returns every configured node with its liveness.
+func (m *Manager) NodeStatuses() []NodeStatus {
+	active := m.ActiveNodeIndex()
+	out := make([]NodeStatus, 0, len(m.nodes))
+	for i, n := range m.nodes {
+		out = append(out, NodeStatus{
+			Name:   n.Name,
+			Server: n.Server,
+			Proto:  n.ServerProto,
+			Alive:  m.NodeAlive(i),
+			Active: i == active,
+		})
+	}
+	return out
+}
+
 // NodeAlive reports the latest probe result for the given node index.
 func (m *Manager) NodeAlive(index int) bool {
 	if index < 0 || index >= len(m.alive) {

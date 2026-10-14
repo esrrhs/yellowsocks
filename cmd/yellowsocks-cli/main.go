@@ -42,6 +42,9 @@ func run(args []string, stdout io.Writer) int {
 	chinaDomains := fs.String("china-domains", "", "Path to china domain list file")
 	gfwDomains := fs.String("gfw-domains", "", "Path to gfw domain list file")
 	geoipFile := fs.String("geoip", "", "Path to GeoLite2-Country.mmdb")
+	apiAddr := fs.String("api", "", "Statistics HTTP API listen address (e.g. 127.0.0.1:9090, empty disables)")
+	apiToken := fs.String("api-token", "", "Statistics API token (random one is generated and logged when empty)")
+	statsFile := fs.String("stats-file", "", "Path persisting statistics history (default stats.json when the API is on)")
 	loglevel := fs.String("loglevel", "info", "Log level (debug, info, warn, error)")
 	showVersion := fs.Bool("v", false, "Print version information and exit")
 	showVersionLong := fs.Bool("version", false, "Print version information and exit")
@@ -95,10 +98,20 @@ func run(args []string, stdout io.Writer) int {
 		ChinaDomainsFile: *chinaDomains,
 		GFWDomainsFile:   *gfwDomains,
 		GeoIPFile:        *geoipFile,
+		APIListen:        *apiAddr,
+		APIToken:         *apiToken,
+		APIDashboard:     true,
+		StatsFile:        *statsFile,
 	}
 
 	if fileCfg != nil {
 		cfg = fileCfg.MergeWithEngineConfig(cfg)
+	}
+
+	if cfg.APIListen != "" && cfg.StatsFile == "" {
+		// History is only useful when something is watching it, and the
+		// working directory is already guaranteed writable by launch.
+		cfg.StatsFile = "stats.json"
 	}
 
 	if cfg.SPPServer == "" && len(cfg.SPPNodes) == 0 {

@@ -17,6 +17,7 @@ import (
 	"github.com/esrrhs/gohome/network"
 	"github.com/esrrhs/yellowsocks/core/dns"
 	"github.com/esrrhs/yellowsocks/core/router"
+	"github.com/esrrhs/yellowsocks/core/stats"
 )
 
 // maxHTTPHeaderBytes bounds the combined size of the request line and the
@@ -58,6 +59,11 @@ type HTTPConfig struct {
 	Router     *router.Router
 	DNS        *dns.Server
 	Upstream   UpstreamProvider
+	// Stats records traffic per session. Nil disables accounting.
+	Stats *stats.Collector
+	// ActiveNode returns the name of the SPP node currently carrying proxy
+	// traffic, so forwarded bytes can be attributed to it. Optional.
+	ActiveNode func() string
 	// EnableIPv6 allows IPv6 destinations via SPP. When false they are rejected.
 	EnableIPv6 bool
 	// IdleTimeout closes a proxied connection that transfers no data for this
@@ -384,6 +390,17 @@ func (s *HTTPServer) routeDecision(host string, port int) (router.RouteDecision,
 	return decision, realHost
 }
 
+// beginSession registers a relay with the statistics collector. The returned
+// session is nil-safe: every method no-ops when statistics are disabled.
+func (s *HTTPServer) beginSession(p stats.Proto, client, host string, port int, decision router.RouteDecision) *stats.Session {
+	sd := statsDecision(decision)
+	node := ""
+	if sd == stats.DecisionProxy && s.cfg.ActiveNode != nil {
+		node = s.cfg.ActiveNode()
+	}
+	return s.cfg.Stats.Begin(p, client, host, port, sd, node)
+}
+
 func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, targetHost string, targetPort int) {
 	targetHost = canonicalHost(targetHost)
 	decision, realHost := s.routeDecision(targetHost, targetPort)
@@ -400,10 +417,14 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 	loggo.Info("[HTTP Proxy] CONNECT %s -> %s (%s, Decision: %s)",
 		clientConn.RemoteAddr(), targetAddr, realHost, ruleStr)
 
+	sess := s.beginSession(stats.ProtoHTTP, addrString(clientConn.RemoteAddr()), realHost, targetPort, decision)
+	defer sess.End(nil)
+
 	if decision == router.Direct {
 		targetConn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
 		if err != nil {
 			loggo.Warn("[HTTP Proxy] Direct dial %s failed: %v", targetAddr, err)
+			sess.Fail(fmt.Errorf("direct dial %s: %w", targetAddr, err))
 			const http502 = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
 			_, _ = clientConn.Write([]byte(http502))
 			return
@@ -414,7 +435,7 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 		if _, err := clientConn.Write([]byte(http200)); err != nil {
 			return
 		}
-		relayStreams(tunnelConn, targetConn, s.cfg.IdleTimeout)
+		relayStreams(tunnelConn, targetConn, s.cfg.IdleTimeout, sess)
 	} else {
 		// Upstream SPP server cannot route IPv6
 		if !s.cfg.EnableIPv6 && isIPv6Literal(targetHost) {
@@ -427,6 +448,7 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 		// Forward via SPP
 		if s.cfg.Upstream == nil || s.cfg.Upstream.Socks5Addr() == "" {
 			loggo.Error("[HTTP Proxy] No upstream SPP proxy available for proxy route to %s", targetAddr)
+			sess.Fail(errors.New("no upstream SPP proxy available"))
 			const http502 = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
 			_, _ = clientConn.Write([]byte(http502))
 			return
@@ -435,6 +457,7 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 		sppTCPAddr, err := net.ResolveTCPAddr("tcp", s.cfg.Upstream.Socks5Addr())
 		if err != nil {
 			loggo.Error("[HTTP Proxy] Resolve SPP upstream failed: %v", err)
+			sess.Fail(fmt.Errorf("resolve SPP upstream: %w", err))
 			const http502 = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
 			_, _ = clientConn.Write([]byte(http502))
 			return
@@ -443,6 +466,7 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 		sppConn, err := net.DialTCP("tcp", nil, sppTCPAddr)
 		if err != nil {
 			loggo.Error("[HTTP Proxy] Dial SPP upstream failed: %v", err)
+			sess.Fail(fmt.Errorf("dial SPP upstream: %w", err))
 			const http502 = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
 			_, _ = clientConn.Write([]byte(http502))
 			return
@@ -454,12 +478,14 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 			user, pass = s.cfg.Upstream.Socks5Auth()
 		}
 		if err := network.Sock5Handshake(sppConn, 5000, user, pass); err != nil {
+			sess.Fail(fmt.Errorf("SPP upstream handshake: %w", err))
 			const http502 = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
 			_, _ = clientConn.Write([]byte(http502))
 			return
 		}
 
 		if err := network.Sock5SetRequest(sppConn, targetHost, targetPort, 10000); err != nil {
+			sess.Fail(fmt.Errorf("SPP upstream connect: %w", err))
 			const http502 = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
 			_, _ = clientConn.Write([]byte(http502))
 			return
@@ -469,7 +495,7 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 		if _, err := clientConn.Write([]byte(http200)); err != nil {
 			return
 		}
-		relayStreams(tunnelConn, sppConn, s.cfg.IdleTimeout)
+		relayStreams(tunnelConn, sppConn, s.cfg.IdleTimeout, sess)
 	}
 }
 
@@ -484,6 +510,9 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 
 	loggo.Info("[HTTP Proxy] %s %s -> %s (%s, Decision: %s)",
 		method, rawURI, targetAddr, realHost, ruleStr)
+
+	sess := s.beginSession(stats.ProtoHTTP, addrString(clientConn.RemoteAddr()), realHost, targetPort, decision)
+	defer sess.End(nil)
 
 	// Rewrite absolute URI to relative origin-form
 	relPath := rawURI
@@ -518,6 +547,9 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 
 	if decision == router.Direct {
 		targetConn, err = net.DialTimeout("tcp", targetAddr, 10*time.Second)
+		if err != nil {
+			sess.Fail(fmt.Errorf("direct dial %s: %w", targetAddr, err))
+		}
 	} else {
 		// Upstream SPP server cannot route IPv6
 		if !s.cfg.EnableIPv6 && isIPv6Literal(targetHost) {
@@ -552,6 +584,7 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 		}
 		if targetConn == nil {
 			err = fmt.Errorf("spp connection failed")
+			sess.Fail(err)
 		}
 	}
 
@@ -572,7 +605,7 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 		br:   br,
 	}
 
-	relayStreams(clientPrefixed, targetConn, s.cfg.IdleTimeout)
+	relayStreams(clientPrefixed, targetConn, s.cfg.IdleTimeout, sess)
 }
 
 type prefixedReaderConn struct {

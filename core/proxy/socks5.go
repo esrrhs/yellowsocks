@@ -15,6 +15,7 @@ import (
 	"github.com/esrrhs/gohome/network"
 	"github.com/esrrhs/yellowsocks/core/dns"
 	"github.com/esrrhs/yellowsocks/core/router"
+	"github.com/esrrhs/yellowsocks/core/stats"
 )
 
 // UpstreamProvider provides upstream proxy address (e.g. from SPP Manager)
@@ -31,6 +32,11 @@ type Socks5Config struct {
 	Router     *router.Router
 	DNS        *dns.Server
 	Upstream   UpstreamProvider
+	// Stats records traffic per session. Nil disables accounting.
+	Stats *stats.Collector
+	// ActiveNode returns the name of the SPP node currently carrying proxy
+	// traffic, so forwarded bytes can be attributed to it. Optional.
+	ActiveNode func() string
 	// EnableIPv6 allows IPv6 destinations via SPP. When false they are rejected.
 	EnableIPv6 bool
 	// IdleTimeout closes a proxied connection that transfers no data for this
@@ -242,6 +248,20 @@ func (s *Socks5Server) routeDecision(host string, port int) (router.RouteDecisio
 	return decision, realHost
 }
 
+// beginSession registers a relay with the statistics collector. The returned
+// session is nil-safe: every method no-ops when statistics are disabled.
+func (s *Socks5Server) beginSession(p stats.Proto, client, host string, port int, decision router.RouteDecision) *stats.Session {
+	sd := stats.DecisionDirect
+	if decision == router.Proxy {
+		sd = stats.DecisionProxy
+	}
+	node := ""
+	if sd == stats.DecisionProxy && s.cfg.ActiveNode != nil {
+		node = s.cfg.ActiveNode()
+	}
+	return s.cfg.Stats.Begin(p, client, host, port, sd, node)
+}
+
 func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, targetPort int) {
 	targetHost = canonicalHost(targetHost)
 	decision, realHost := s.routeDecision(targetHost, targetPort)
@@ -254,10 +274,14 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 	loggo.Info("[SOCKS5] TCP CONNECT %s -> %s (%s, Decision: %s)",
 		clientConn.RemoteAddr(), targetAddr, realHost, ruleStr)
 
+	sess := s.beginSession(stats.ProtoSOCKS5, addrString(clientConn.RemoteAddr()), realHost, targetPort, decision)
+	defer sess.End(nil)
+
 	if decision == router.Direct {
 		outConn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
 		if err != nil {
 			loggo.Warn("[SOCKS5] Direct dial %s failed: %v", targetAddr, err)
+			sess.Fail(fmt.Errorf("direct dial %s: %w", targetAddr, err))
 			_ = network.Sock5SendConnectReply(clientConn, 0x05, "0.0.0.0:0")
 			return
 		}
@@ -266,7 +290,7 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 		if err := network.Sock5SendConnectReply(clientConn, 0x00, "0.0.0.0:0"); err != nil {
 			return
 		}
-		relayStreams(clientConn, outConn, s.cfg.IdleTimeout)
+		relayStreams(clientConn, outConn, s.cfg.IdleTimeout, sess)
 	} else {
 		// Upstream SPP server cannot route IPv6 (no IPv6 connectivity).
 		// When clients send IPv6 literals, reject with Network Unreachable (0x03)
@@ -280,6 +304,7 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 		// Forward via SPP
 		if s.cfg.Upstream == nil || s.cfg.Upstream.Socks5Addr() == "" {
 			loggo.Error("[SOCKS5] No upstream SPP proxy available for proxy route to %s", targetAddr)
+			sess.Fail(errors.New("no upstream SPP proxy available"))
 			_ = network.Sock5SendConnectReply(clientConn, 0x01, "0.0.0.0:0")
 			return
 		}
@@ -287,6 +312,7 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 		sppTCPAddr, err := net.ResolveTCPAddr("tcp", s.cfg.Upstream.Socks5Addr())
 		if err != nil {
 			loggo.Error("[SOCKS5] Resolve SPP upstream %s failed: %v", s.cfg.Upstream.Socks5Addr(), err)
+			sess.Fail(fmt.Errorf("resolve SPP upstream: %w", err))
 			_ = network.Sock5SendConnectReply(clientConn, 0x01, "0.0.0.0:0")
 			return
 		}
@@ -294,6 +320,7 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 		sppConn, err := net.DialTCP("tcp", nil, sppTCPAddr)
 		if err != nil {
 			loggo.Error("[SOCKS5] Dial SPP upstream %s failed: %v", s.cfg.Upstream.Socks5Addr(), err)
+			sess.Fail(fmt.Errorf("dial SPP upstream: %w", err))
 			_ = network.Sock5SendConnectReply(clientConn, 0x01, "0.0.0.0:0")
 			return
 		}
@@ -305,12 +332,14 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 		}
 		if err := network.Sock5Handshake(sppConn, 5000, user, pass); err != nil {
 			loggo.Error("[SOCKS5] SPP upstream handshake failed: %v", err)
+			sess.Fail(fmt.Errorf("SPP upstream handshake: %w", err))
 			_ = network.Sock5SendConnectReply(clientConn, 0x01, "0.0.0.0:0")
 			return
 		}
 
 		if err := network.Sock5SetRequest(sppConn, canonicalHost(targetHost), targetPort, 10000); err != nil {
 			loggo.Error("[SOCKS5] SPP upstream connect to %s failed: %v", targetAddr, err)
+			sess.Fail(fmt.Errorf("SPP upstream connect: %w", err))
 			_ = network.Sock5SendConnectReply(clientConn, 0x01, "0.0.0.0:0")
 			return
 		}
@@ -318,7 +347,7 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 		if err := network.Sock5SendConnectReply(clientConn, 0x00, "0.0.0.0:0"); err != nil {
 			return
 		}
-		relayStreams(clientConn, sppConn, s.cfg.IdleTimeout)
+		relayStreams(clientConn, sppConn, s.cfg.IdleTimeout, sess)
 	}
 }
 
@@ -337,6 +366,12 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 	}
 
 	loggo.Info("[SOCKS5] UDP ASSOCIATE ready on %s for client TCP %s", bndAddr, clientConn.RemoteAddr())
+
+	// One association carries datagrams for many destinations, so it is one
+	// statistics session; individual datagrams are attributed to their own
+	// target domain.
+	udpSess := s.cfg.Stats.Begin(stats.ProtoUDP, addrString(clientConn.RemoteAddr()), "", 0, stats.DecisionNone, "")
+	defer udpSess.End(nil)
 
 	assocClosed := atomic.Bool{}
 	activeClientUDP := atomic.Pointer[net.UDPAddr]{}
@@ -449,6 +484,7 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 				cAddr := activeClientUDP.Load()
 				if cAddr != nil && n > 0 {
 					_, _ = relayConn.WriteToUDP(buf[:n], cAddr)
+					udpSess.AddDatagram("", stats.DecisionProxy, 0, int64(n))
 				}
 			}
 		}()
@@ -508,7 +544,7 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 				continue
 			}
 			if fresh {
-				go func(wantAddr *net.UDPAddr, conn *net.UDPConn) {
+				go func(wantAddr *net.UDPAddr, conn *net.UDPConn, dec stats.Decision) {
 					defer common.CrashLog()
 					// Only datagrams from the target we sent to may be relayed; the
 					// outbound socket is unconnected, so anything else reaching its
@@ -528,12 +564,14 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 							packed, err := network.Sock5PackUDP(rAddr.IP.String(), rAddr.Port, buf[:n])
 							if err == nil {
 								_, _ = relayConn.WriteToUDP(packed, cAddr)
+								udpSess.AddDatagram("", dec, 0, int64(n))
 							}
 						}
 					}
-				}(sess.addr, sess.conn)
+				}(sess.addr, sess.conn, statsDecision(decision))
 			}
 			_, _ = sess.conn.WriteToUDP(payload, sess.addr)
+			udpSess.AddDatagram(dstHost, statsDecision(decision), int64(len(payload)), 0)
 		} else {
 			// Upstream SPP cannot route IPv6
 			if !s.cfg.EnableIPv6 && isIPv6Literal(dstHost) {
@@ -544,9 +582,14 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 			sppUConn, sppRelayTarget, err := getOrCreateSPPUDPSession()
 			if err != nil {
 				loggo.Warn("[SOCKS5] SPP UDP session error for %s (%s): %v", targetAddr, realHost, err)
+				// The association survives a failed datagram, so record the
+				// error without closing the statistics session.
+				s.cfg.Stats.RecordError("socks5", dstHost, "SPP UDP session for %s: %v", targetAddr, err)
 				continue
 			}
-			_, _ = sppUConn.WriteToUDP(pktBuf[:n], sppRelayTarget)
+			if _, err := sppUConn.WriteToUDP(pktBuf[:n], sppRelayTarget); err == nil {
+				udpSess.AddDatagram(dstHost, stats.DecisionProxy, int64(len(payload)), 0)
+			}
 		}
 	}
 }
@@ -558,7 +601,19 @@ const defaultIdleTimeout = 5 * time.Minute
 // relayCopyBufferSize matches io.Copy's default transfer buffer.
 const relayCopyBufferSize = 32 * 1024
 
-func relayStreams(a, b net.Conn, idle time.Duration) {
+// statsDecision converts a router decision into a statistics decision.
+func statsDecision(d router.RouteDecision) stats.Decision {
+	if d == router.Direct {
+		return stats.DecisionDirect
+	}
+	return stats.DecisionProxy
+}
+
+// relayStreams copies both ways. a is the client side and b the target side:
+// bytes read from a are upload (client -> target) and bytes read from b are
+// download (target -> client). sess may be nil, in which case no traffic is
+// accounted.
+func relayStreams(a, b net.Conn, idle time.Duration, sess *stats.Session) {
 	// lastActivity is shared by both directions, so a one-way transfer (e.g. a
 	// long download with no upstream data) keeps the connection alive.
 	lastActivity := time.Now().UnixNano()
@@ -590,13 +645,14 @@ func relayStreams(a, b net.Conn, idle time.Duration) {
 
 	var wg sync.WaitGroup
 	wg.Add(2)
-	pipe := func(dst, src net.Conn) {
+	pipe := func(dst, src net.Conn, count func(int64)) {
 		defer wg.Done()
 		buf := make([]byte, relayCopyBufferSize)
 		for {
 			n, rerr := src.Read(buf)
 			if n > 0 {
 				touch()
+				count(int64(n))
 				// A peer that stops reading must not pin this goroutine and
 				// both sockets: without a write deadline the Write blocks
 				// until the OS retransmit timeout (minutes), and the idle
@@ -620,8 +676,9 @@ func relayStreams(a, b net.Conn, idle time.Duration) {
 		_ = b.Close()
 	}
 
-	go pipe(a, b)
-	go pipe(b, a)
+	// a is the client side: reading b and writing a is target -> client.
+	go pipe(a, b, sess.AddDownload)
+	go pipe(b, a, sess.AddUpload)
 	wg.Wait()
 	close(done)
 }

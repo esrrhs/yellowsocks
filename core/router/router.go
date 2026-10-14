@@ -43,6 +43,7 @@ type Router struct {
 	directHosts sync.Map     // direct host whitelist
 	proxyHosts  sync.Map     // proxy host list
 	geoDB       *matcher.GeoDB
+	geoipLoaded bool // GeoIP database successfully opened
 	skipCountry string
 }
 
@@ -74,10 +75,12 @@ func NewRouterWithOptions(opt Options) *Router {
 		if err := r.geoDB.Open(opt.GeoIPFile); err != nil {
 			loggo.Warn("[Router] Failed to load GeoIP file %s: %v", opt.GeoIPFile, err)
 		} else {
+			r.geoipLoaded = true
 			loggo.Info("[Router] Loaded GeoIP file: %s", opt.GeoIPFile)
 		}
 	} else if _, err := os.Stat("GeoLite2-Country.mmdb"); err == nil {
 		if err := r.geoDB.Open("GeoLite2-Country.mmdb"); err == nil {
+			r.geoipLoaded = true
 			loggo.Info("[Router] Loaded default GeoIP file: GeoLite2-Country.mmdb")
 		}
 	}
@@ -265,6 +268,34 @@ func (r *Router) ShouldDirectIP(ip net.IP) bool {
 	}
 	list := val.(IPNetList)
 	return list.Contains(ip)
+}
+
+// Info reports the size of the loaded rule sets. Counts are computed on
+// demand: they are only read by the status API, never on the routing path.
+type Info struct {
+	DirectDomains int
+	ProxyDomains  int
+	DirectCIDRs   int
+	GeoIP         bool
+	SkipCountry   string
+}
+
+// Info returns a snapshot of the currently loaded rules.
+func (r *Router) Info() Info {
+	info := Info{SkipCountry: r.skipCountry}
+	r.directHosts.Range(func(_, _ any) bool {
+		info.DirectDomains++
+		return true
+	})
+	r.proxyHosts.Range(func(_, _ any) bool {
+		info.ProxyDomains++
+		return true
+	})
+	if v := r.directIPs.Load(); v != nil {
+		info.DirectCIDRs = len(v.(IPNetList))
+	}
+	info.GeoIP = r.geoipLoaded
+	return info
 }
 
 // Decide determines route action based on host and destination IP

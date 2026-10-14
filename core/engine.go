@@ -7,10 +7,13 @@ import (
 	"sync"
 
 	"github.com/esrrhs/gohome/loggo"
+	"github.com/esrrhs/yellowsocks/core/api"
 	appdns "github.com/esrrhs/yellowsocks/core/dns"
 	"github.com/esrrhs/yellowsocks/core/proxy"
 	"github.com/esrrhs/yellowsocks/core/router"
 	"github.com/esrrhs/yellowsocks/core/sppclient"
+	"github.com/esrrhs/yellowsocks/core/stats"
+	"github.com/esrrhs/yellowsocks/core/version"
 )
 
 // EngineConfig is the Linux proxy engine configuration.
@@ -46,6 +49,24 @@ type EngineConfig struct {
 	GeoIPFile        string
 	ChinaDomainsFile string
 	GFWDomainsFile   string
+
+	// APIListen serves the statistics HTTP API. Empty disables it.
+	APIListen string
+	// APIToken is the shared secret the API requires. When empty a random
+	// token is generated and logged at startup.
+	APIToken string
+	// APIOrigins lists CORS origins allowed to call the API from a browser.
+	// Empty allows any origin.
+	APIOrigins []string
+	// APIDashboard serves the built-in dashboard at "/".
+	APIDashboard bool
+
+	// StatsFile persists counters and history across restarts. Empty
+	// disables persistence.
+	StatsFile string
+	// StatsHistoryHours is how many hours of minute-resolution history are
+	// kept (default 24, capped at 24*30).
+	StatsHistoryHours int
 }
 
 // Engine runs DNS, DoT, DoH, SOCKS5 and HTTP proxy, with SPP as the upstream.
@@ -56,6 +77,8 @@ type Engine struct {
 	socks5Server *proxy.Socks5Server
 	httpServer   *proxy.HTTPServer
 	sppManager   *sppclient.Manager
+	collector    *stats.Collector
+	apiServer    *api.Server
 	mu           sync.Mutex
 	running      bool
 }
@@ -123,6 +146,14 @@ func (e *Engine) Start() error {
 		return fmt.Errorf("no SPP servers or nodes specified")
 	}
 
+	// Statistics precede every service so DNS and the proxies can record
+	// from the first query and the first connection.
+	e.collector = stats.New(stats.Config{
+		HistoryMinutes: historyMinutes(e.cfg.StatsHistoryHours),
+		File:           e.cfg.StatsFile,
+		SaveInterval:   stats.DefaultSaveInterval,
+	})
+
 	loggo.Info("[Engine] Initializing SPP manager with %d nodes...", len(nodes))
 	mgr, err := sppclient.NewManager(nodes, e.cfg.LocalSocks5)
 	if err != nil {
@@ -144,6 +175,7 @@ func (e *Engine) Start() error {
 		Socks5Addr:    e.sppManager.Socks5Addr(),
 		Router:        e.router,
 		EnableIPv6:    e.cfg.EnableIPv6,
+		Stats:         e.collector,
 	})
 	if err != nil {
 		e.cleanupServices()
@@ -178,6 +210,8 @@ func (e *Engine) Start() error {
 			Router:     e.router,
 			DNS:        e.dnsServer,
 			Upstream:   e.sppManager,
+			Stats:      e.collector,
+			ActiveNode: e.activeNodeName,
 			EnableIPv6: e.cfg.EnableIPv6,
 		})
 		if err := s5.Start(); err != nil {
@@ -196,6 +230,8 @@ func (e *Engine) Start() error {
 			Router:     e.router,
 			DNS:        e.dnsServer,
 			Upstream:   e.sppManager,
+			Stats:      e.collector,
+			ActiveNode: e.activeNodeName,
 			EnableIPv6: e.cfg.EnableIPv6,
 		})
 		if err := hSrv.Start(); err != nil {
@@ -205,9 +241,105 @@ func (e *Engine) Start() error {
 		e.httpServer = hSrv
 	}
 
+	if e.cfg.APIListen != "" {
+		apiSrv, err := api.New(api.Config{
+			ListenAddr:     e.cfg.APIListen,
+			Token:          e.cfg.APIToken,
+			AllowedOrigins: e.cfg.APIOrigins,
+			Dashboard:      e.cfg.APIDashboard,
+		}, api.Deps{
+			Stats:   e.collector,
+			Info:    e,
+			Version: version.String(),
+		})
+		if err != nil {
+			e.cleanupServices()
+			return fmt.Errorf("init statistics API: %w", err)
+		}
+		if err := apiSrv.Start(); err != nil {
+			_ = apiSrv.Stop()
+			e.cleanupServices()
+			return fmt.Errorf("start statistics API: %w", err)
+		}
+		e.apiServer = apiSrv
+		// The token is the only credential to the API; print it so an
+		// operator who did not set one can still use it.
+		loggo.Info("[Engine] Statistics API on http://%s  token=%s", apiSrv.Addr(), apiSrv.Token())
+	}
+
 	e.running = true
 	loggo.Info("[Engine] YellowSocks is up")
 	return nil
+}
+
+// activeNodeName reports the SPP node currently used for proxy traffic.
+func (e *Engine) activeNodeName() string {
+	if e.sppManager == nil {
+		return ""
+	}
+	return e.sppManager.ActiveNodeName()
+}
+
+// historyMinutes converts the configured hours into history buckets.
+func historyMinutes(hours int) int {
+	if hours <= 0 {
+		return stats.DefaultHistoryMinutes
+	}
+	if hours > 24*30 {
+		hours = 24 * 30
+	}
+	return hours * 60
+}
+
+// APIInfo implements api.InfoProvider: it reports the engine state the
+// statistics collector cannot observe.
+func (e *Engine) APIInfo() api.SystemInfo {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	info := api.SystemInfo{
+		Version: version.String(),
+		Running: e.running,
+		IPv6:    e.cfg.EnableIPv6,
+		Listeners: api.Listeners{
+			DNS:    e.cfg.DNSListen,
+			DoH:    e.cfg.DoHListen,
+			DoT:    e.cfg.DoTListen,
+			Socks5: e.cfg.Socks5Listen,
+			HTTP:   e.cfg.HTTPListen,
+			API:    e.cfg.APIListen,
+		},
+		Nodes: []api.NodeInfo{},
+	}
+	if e.router != nil {
+		r := e.router.Info()
+		info.Router = api.RouterInfo{
+			DirectDomains: r.DirectDomains,
+			ProxyDomains:  r.ProxyDomains,
+			DirectCIDRs:   r.DirectCIDRs,
+			GeoIP:         r.GeoIP,
+			SkipCountry:   r.SkipCountry,
+		}
+	}
+	if e.sppManager != nil {
+		for _, n := range e.sppManager.NodeStatuses() {
+			info.Nodes = append(info.Nodes, api.NodeInfo{
+				Name:   n.Name,
+				Server: n.Server,
+				Proto:  n.Proto,
+				Alive:  n.Alive,
+				Active: n.Active,
+			})
+		}
+	}
+	return info
+}
+
+// Stats returns the collector feeding the statistics API.
+func (e *Engine) Stats() *stats.Collector {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.collector
 }
 
 func sppHost(server string) string {
@@ -222,6 +354,10 @@ func sppHost(server string) string {
 // router's GeoIP mapping. It is used both on normal shutdown and on failed
 // startup, so any partially built engine leaves nothing behind.
 func (e *Engine) cleanupServices() {
+	if e.apiServer != nil {
+		_ = e.apiServer.Stop()
+		e.apiServer = nil
+	}
 	if e.socks5Server != nil {
 		_ = e.socks5Server.Stop()
 		e.socks5Server = nil
@@ -241,6 +377,10 @@ func (e *Engine) cleanupServices() {
 	if e.router != nil {
 		e.router.Close()
 		e.router = nil
+	}
+	if e.collector != nil {
+		e.collector.Close()
+		e.collector = nil
 	}
 }
 

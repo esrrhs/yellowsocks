@@ -16,6 +16,7 @@ import (
 
 	"github.com/esrrhs/gohome/loggo"
 	"github.com/esrrhs/yellowsocks/core/router"
+	"github.com/esrrhs/yellowsocks/core/stats"
 	"github.com/miekg/dns"
 	"golang.org/x/net/proxy"
 )
@@ -63,6 +64,7 @@ type Server struct {
 	ipToDomain     sync.Map // ip.String() -> ipMapping, learned from answered queries
 	enableIPv6     bool
 	httpClientDoH  *http.Client
+	stats          *stats.Collector
 	stopCh         chan struct{}
 	stopOnce       sync.Once
 	janitorOnce    sync.Once
@@ -90,6 +92,8 @@ type Config struct {
 	Socks5Addr    string // upstream proxy socks5 address
 	Router        *router.Router
 	EnableIPv6    bool // answer AAAA for proxied domains; off returns empty AAAA
+	// Stats counts queries, cache hits and failures. Nil disables accounting.
+	Stats *stats.Collector
 }
 
 // NewServer creates a DNS/DoH/DoT server.
@@ -118,6 +122,7 @@ func NewServer(cfg Config) (*Server, error) {
 		router:        cfg.Router,
 		socks5Addr:    cfg.Socks5Addr,
 		enableIPv6:    cfg.EnableIPv6,
+		stats:         cfg.Stats,
 		stopCh:        make(chan struct{}),
 	}
 
@@ -511,6 +516,7 @@ func (s *Server) resolve(r *dns.Msg, viaTCP bool) (*dns.Msg, error) {
 		entry := val.(DNSCacheEntry)
 		remaining := time.Until(entry.ExpiresAt)
 		if remaining > 0 {
+			s.stats.RecordDNS(qName, qtypeString(q.Qtype), "cache", nil)
 			resp := entry.Msg.Copy()
 			// A caching resolver must age RR TTLs by the time the record
 			// spent in cache (RFC 1034 3.6, RFC 2181 8). Returning the
@@ -527,31 +533,41 @@ func (s *Server) resolve(r *dns.Msg, viaTCP bool) (*dns.Msg, error) {
 	// 2. Routing resolution
 	var resp *dns.Msg
 	var err error
+	// upstream records which path answered, for the statistics API. Every
+	// query is recorded exactly once, whichever branch it takes.
+	upstream := "doh"
 
 	isDirect := s.router != nil && s.router.ShouldDirectDomain(qName)
 	switch {
 	case isDirect:
+		upstream = "direct"
 		resp, err = s.resolveDirect(r, viaTCP)
 	case !s.enableIPv6 && q.Qtype == dns.TypeAAAA:
 		// Upstream has no IPv6 route. An empty AAAA makes clients use the A record.
+		upstream = "synthetic"
 		resp = emptyReply(r)
 	default:
 		resp, err = s.resolveDoH(r)
 		if err != nil {
 			loggo.Warn("[DNS] DoH failed for %s, falling back to direct DNS: %v", qName, err)
+			upstream = "direct"
 			resp, err = s.resolveDirect(r, viaTCP)
 		}
 	}
 
 	// A missing AAAA must not fail the lookup. Clients fall back to the A answer.
 	if q.Qtype == dns.TypeAAAA && (err != nil || resp == nil) {
+		upstream = "synthetic"
 		resp = emptyReply(r)
 		err = nil
 	}
 
 	if err != nil || resp == nil {
+		s.stats.RecordDNS(qName, qtypeString(q.Qtype), upstream, err)
 		return nil, err
 	}
+
+	s.stats.RecordDNS(qName, qtypeString(q.Qtype), upstream, nil)
 
 	resp.Id = r.Id
 	// 3. Cache response and mapping. TC is a hop-by-hop transport signal
@@ -567,6 +583,14 @@ func emptyReply(r *dns.Msg) *dns.Msg {
 	resp := new(dns.Msg)
 	resp.SetReply(r)
 	return resp
+}
+
+// qtypeString renders a query type for the statistics API.
+func qtypeString(qtype uint16) string {
+	if name, ok := dns.TypeToString[qtype]; ok {
+		return name
+	}
+	return fmt.Sprintf("TYPE%d", qtype)
 }
 
 // responseMatchesQuery verifies that an upstream message actually answers the
