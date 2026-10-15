@@ -7,6 +7,9 @@ import (
 )
 
 func TestEnsureWritableWorkDirFromReadOnly(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("skipping read-only directory test under root (root bypasses mode 0555)")
+	}
 	cwd, err := os.Getwd()
 	if err != nil {
 		t.Fatal(err)

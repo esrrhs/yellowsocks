@@ -68,8 +68,8 @@ func NewClient(cfg *Config) (*Client, error) {
 
 	c, err := proxy.NewClient(
 		proxyCfg,
-		[]string{strings.ToLower(cfg.ServerProto)},
-		[]string{cfg.Server},
+		strings.ToLower(cfg.ServerProto),
+		cfg.Server,
 		cfg.Name,
 		"SOCKS5",
 		proxyProtos,
