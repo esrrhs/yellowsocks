@@ -37,11 +37,85 @@ const (
 	Proxy
 )
 
+// hostSet is a set of domain suffix rules.
+//
+// Reads happen on the hot path: every routed connection, every UDP datagram
+// and every DNS query looks a host up. Writes happen only when rules are
+// loaded. The set is therefore copied on write and read through an atomic
+// pointer, which makes a lookup a plain map access: no lock, and no
+// interface boxing (sync.Map.Load would allocate on every call).
+type hostSet struct {
+	mu   sync.Mutex
+	rule atomic.Pointer[map[string]struct{}]
+}
+
+func newHostSet() *hostSet {
+	h := &hostSet{}
+	h.reset()
+	return h
+}
+
+func (h *hostSet) reset() {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	m := make(map[string]struct{})
+	h.rule.Store(&m)
+}
+
+// add publishes one suffix. Leading and trailing dots are trimmed, so rules
+// are matched by label boundary and never contain a dot themselves.
+func (h *hostSet) add(domain string) {
+	h.addAll([]string{domain})
+}
+
+// addAll publishes a batch of suffixes with one copy of the set. Copying per
+// suffix would be quadratic, and the built-in China domain list alone is
+// tens of thousands of entries long.
+func (h *hostSet) addAll(domains []string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	old := h.rule.Load()
+	m := make(map[string]struct{}, len(*old)+len(domains))
+	for k := range *old {
+		m[k] = struct{}{}
+	}
+	added := 0
+	for _, domain := range domains {
+		d := strings.ToLower(strings.Trim(domain, "."))
+		if d == "" {
+			continue
+		}
+		m[d] = struct{}{}
+		added++
+	}
+	if added == 0 {
+		return
+	}
+	h.rule.Store(&m)
+}
+
+func (h *hostSet) has(domain string) bool {
+	m := h.rule.Load()
+	if m == nil {
+		return false
+	}
+	_, ok := (*m)[domain]
+	return ok
+}
+
+func (h *hostSet) len() int {
+	m := h.rule.Load()
+	if m == nil {
+		return 0
+	}
+	return len(*m)
+}
+
 // Router handles IP and domain routing decisions.
 type Router struct {
 	directIPs   atomic.Value // holds IPNetList, supporting atomic lock-free hot swapping
-	directHosts sync.Map     // direct host whitelist
-	proxyHosts  sync.Map     // proxy host list
+	directHosts *hostSet     // direct host whitelist
+	proxyHosts  *hostSet     // proxy host list
 	geoDB       *matcher.GeoDB
 	geoipLoaded bool // GeoIP database successfully opened
 	skipCountry string
@@ -69,6 +143,8 @@ func NewRouterWithOptions(opt Options) *Router {
 	r := &Router{
 		skipCountry: skipCountry,
 		geoDB:       matcher.NewGeoDB(),
+		directHosts: newHostSet(),
+		proxyHosts:  newHostSet(),
 	}
 
 	if opt.GeoIPFile != "" {
@@ -87,19 +163,11 @@ func NewRouterWithOptions(opt Options) *Router {
 
 	// Initialize reserved subnets and configured domains.
 	if !opt.DisableBuiltin {
-		for _, d := range gohomedns.DefaultChinaMainDomains {
-			r.AddDirectDomain(d)
-		}
-		for _, d := range gohomedns.DefaultDirectTLDs {
-			r.AddDirectDomain(d)
-		}
+		r.directHosts.addAll(gohomedns.DefaultChinaMainDomains)
+		r.directHosts.addAll(gohomedns.DefaultDirectTLDs)
 	}
-	for _, d := range opt.DirectDomains {
-		r.AddDirectDomain(d)
-	}
-	for _, d := range opt.ProxyDomains {
-		r.AddProxyDomain(d)
-	}
+	r.directHosts.addAll(opt.DirectDomains)
+	r.proxyHosts.addAll(opt.ProxyDomains)
 
 	// Load domain files
 	for _, f := range opt.ChinaDomainFiles {
@@ -164,18 +232,12 @@ func (r *Router) AddDirectCIDR(cidr string) error {
 
 // AddDirectDomain adds a direct domain suffix
 func (r *Router) AddDirectDomain(domain string) {
-	d := strings.ToLower(strings.Trim(domain, "."))
-	if d != "" {
-		r.directHosts.Store(d, true)
-	}
+	r.directHosts.add(domain)
 }
 
 // AddProxyDomain adds a proxy domain suffix
 func (r *Router) AddProxyDomain(domain string) {
-	d := strings.ToLower(strings.Trim(domain, "."))
-	if d != "" {
-		r.proxyHosts.Store(d, true)
-	}
+	r.proxyHosts.add(domain)
 }
 
 // LoadDomainFile loads a domain list file (supports dnsmasq format server=/domain/... or plain domains)
@@ -187,7 +249,7 @@ func (r *Router) LoadDomainFile(filePath string, isDirect bool) error {
 	defer f.Close()
 
 	scanner := bufio.NewScanner(f)
-	count := 0
+	var lines []string
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" || strings.HasPrefix(line, "#") {
@@ -201,45 +263,50 @@ func (r *Router) LoadDomainFile(filePath string, isDirect bool) error {
 		}
 		line = strings.ToLower(strings.Trim(line, "."))
 		if line != "" {
-			if isDirect {
-				r.AddDirectDomain(line)
-			} else {
-				r.AddProxyDomain(line)
-			}
-			count++
+			lines = append(lines, line)
 		}
 	}
-	loggo.Info("[Router] Loaded %d domain rules from %s (direct: %v)", count, filePath, isDirect)
+	if isDirect {
+		r.directHosts.addAll(lines)
+	} else {
+		r.proxyHosts.addAll(lines)
+	}
+	loggo.Info("[Router] Loaded %d domain rules from %s (direct: %v)", len(lines), filePath, isDirect)
 	return scanner.Err()
 }
 
 // ShouldProxyDomain checks if domain matches proxy domain list
 func (r *Router) ShouldProxyDomain(domain string) bool {
-	return matchListed(&r.proxyHosts, domain)
+	return matchListed(r.proxyHosts, domain)
 }
 
 // ShouldDirectDomain checks if domain matches direct whitelist or suffix rules.
 func (r *Router) ShouldDirectDomain(domain string) bool {
-	return matchListed(&r.directHosts, domain)
+	return matchListed(r.directHosts, domain)
 }
 
-func matchListed(hosts *sync.Map, domain string) bool {
+func matchListed(hosts *hostSet, domain string) bool {
 	domain = strings.ToLower(strings.Trim(domain, "."))
 	if domain == "" {
 		return false
 	}
-	// Label-boundary suffix match, not substring and not regexp.
+	// Label-boundary suffix match, not substring and not regexp:
 	// baidu.com matches www.baidu.com, not notbaidu.com.
 	// A leading-dot rule (.cn) is stored as cn and matches that whole label.
-	parts := strings.Split(domain, ".")
-	for i := 0; i < len(parts); i++ {
-		sub := strings.Join(parts[i:], ".")
-		if _, ok := hosts.Load(sub); ok {
+	//
+	// The suffixes are walked on the '.' boundaries of the original string
+	// instead of being split and re-joined: a domain decision is taken on
+	// every connection, every UDP datagram and every DNS query, and building
+	// a []string plus a string per suffix allocated on each of them.
+	for i := 0; i < len(domain); {
+		if hosts.has(domain[i:]) {
 			return true
 		}
-		if _, ok := hosts.Load("." + sub); ok {
-			return true
+		dot := strings.IndexByte(domain[i:], '.')
+		if dot < 0 {
+			break
 		}
+		i += dot + 1
 	}
 	return false
 }
@@ -283,14 +350,8 @@ type Info struct {
 // Info returns a snapshot of the currently loaded rules.
 func (r *Router) Info() Info {
 	info := Info{SkipCountry: r.skipCountry}
-	r.directHosts.Range(func(_, _ any) bool {
-		info.DirectDomains++
-		return true
-	})
-	r.proxyHosts.Range(func(_, _ any) bool {
-		info.ProxyDomains++
-		return true
-	})
+	info.DirectDomains = r.directHosts.len()
+	info.ProxyDomains = r.proxyHosts.len()
 	if v := r.directIPs.Load(); v != nil {
 		info.DirectCIDRs = len(v.(IPNetList))
 	}
@@ -298,12 +359,31 @@ func (r *Router) Info() Info {
 	return info
 }
 
+// looksLikeIP is a cheap pre-filter in front of net.ParseIP, which allocates
+// before it can fail. An IPv6 literal always contains a colon and an IPv4
+// literal always starts and ends with a digit, so a host name can be
+// rejected without parsing. A false positive only costs one parse; a false
+// negative would be a routing bug, so the test is deliberately loose.
+func looksLikeIP(s string) bool {
+	if s == "" {
+		return false
+	}
+	if strings.IndexByte(s, ':') >= 0 {
+		return true
+	}
+	return isDigit(s[0]) && isDigit(s[len(s)-1])
+}
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
+
 // Decide determines route action based on host and destination IP
 func (r *Router) Decide(destHost string, destIP net.IP) RouteDecision {
 	destIP = canonicalIP(destIP)
-	if ip := net.ParseIP(destHost); ip != nil {
-		destIP = canonicalIP(ip)
-		destHost = ""
+	if looksLikeIP(destHost) {
+		if ip := net.ParseIP(destHost); ip != nil {
+			destIP = canonicalIP(ip)
+			destHost = ""
+		}
 	}
 
 	// If domain is specified, evaluate domain rules first
