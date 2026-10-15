@@ -25,6 +25,7 @@ import (
 
 	"github.com/esrrhs/gohome/loggo"
 	"github.com/esrrhs/yellowsocks/core/stats"
+	"github.com/esrrhs/yellowsocks/dashboard"
 )
 
 // Defaults for Config.
@@ -571,7 +572,7 @@ func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	w.WriteHeader(http.StatusOK)
-	_, _ = w.Write(dashboardHTML())
+	_, _ = w.Write(dashboard.HTML())
 }
 
 func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {

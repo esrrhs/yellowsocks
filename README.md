@@ -130,26 +130,28 @@ Byte direction is named from the relay's point of view:
 
 ### Dashboard page
 
-The proxy ships a single-page dashboard (`core/api/dashboard.html`) and
-serves it at `http://<api_listen>/` when `api_dashboard` is true.
+The proxy ships a dashboard (`dashboard/index.html`) and serves it at
+`http://<api_listen>/` when `api_dashboard` is true.
 
-The page does not have to be served by the proxy. Copy the HTML anywhere
-(a static host, another machine, even `file://`) and fill in the two boxes
-at the top:
+The page is one standalone HTML file: no build step, no CDN, no web font,
+no chart library. It does not have to be served by the proxy — copy it
+anywhere (a static host, another machine, even `file://`) and fill in the
+two boxes behind **设置**:
 
-- **服务器** — the API address of the relay, e.g. `http://1.2.3.4:9090`.
+- **API 地址** — the API address of the relay, e.g. `http://1.2.3.4:9090`.
   Leave it empty to talk to whoever serves the page (same origin).
-- **API token** — the token configured on that relay.
+- **Token** — the token configured on that relay.
 
 Both are kept in `localStorage` and can be pre-filled from the URL, which
 is handy for a bookmark or a shared link:
 
 ```
-http://dashboard-host/index.html?server=http://1.2.3.4:9090&token=change-me
+http://dashboard-host/index.html?server=http://1.2.3.4:9090&token=change-me&theme=dark
 ```
 
 A page served from another origin needs CORS on the relay side: keep
 `api_origins: ["*"]`, or list the page's origin explicitly.
+See [dashboard/README.md](dashboard/README.md) for the page's own notes.
 
 ## Deploying the page away from the relay
 
@@ -175,7 +177,7 @@ On A (nginx), with the token kept in a file readable only by root:
 server {
     listen 443 ssl;
     server_name status.example.com;
-    root /var/www/yellowsocks;          # dashboard.html as index.html
+    root /var/www/yellowsocks;          # dashboard/index.html as index.html
 
     # Optional: your own login in front of the page.
     # auth_basic "status";
