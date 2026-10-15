@@ -2,7 +2,6 @@ package router
 
 import (
 	"strings"
-	"sync"
 )
 
 // Rule is one domain routing policy.
@@ -60,8 +59,8 @@ func NormalizeRules(in []Rule) []Rule {
 
 // SetPolicy replaces domain rules. Private-network CIDRs stay in place.
 func (r *Router) SetPolicy(rules []Rule) {
-	clearMap(&r.directHosts)
-	clearMap(&r.proxyHosts)
+	r.directHosts.reset()
+	r.proxyHosts.reset()
 	for _, rule := range NormalizeRules(rules) {
 		if rule.Action == "proxy" {
 			r.AddProxyDomain(rule.Value)
@@ -69,11 +68,4 @@ func (r *Router) SetPolicy(rules []Rule) {
 			r.AddDirectDomain(rule.Value)
 		}
 	}
-}
-
-func clearMap(m *sync.Map) {
-	m.Range(func(key, _ any) bool {
-		m.Delete(key)
-		return true
-	})
 }

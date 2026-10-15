@@ -601,6 +601,19 @@ const defaultIdleTimeout = 5 * time.Minute
 // relayCopyBufferSize matches io.Copy's default transfer buffer.
 const relayCopyBufferSize = 32 * 1024
 
+// relayBufPool recycles the per-direction copy buffers. Two of them are
+// needed for every relayed connection, which made them the largest
+// allocation on the forwarding path by a wide margin (about 60% of all
+// bytes a busy relay allocates) and a steady source of GC work at
+// connection churn. Pooling keeps one set per in-flight connection instead
+// of one set per connection ever seen.
+//
+// The pool stores *[relayCopyBufferSize]byte rather than []byte so taking a
+// buffer does not allocate a slice header.
+var relayBufPool = sync.Pool{
+	New: func() any { return new([relayCopyBufferSize]byte) },
+}
+
 // statsDecision converts a router decision into a statistics decision.
 func statsDecision(d router.RouteDecision) stats.Decision {
 	if d == router.Direct {
@@ -617,7 +630,7 @@ func relayStreams(a, b net.Conn, idle time.Duration, sess *stats.Session) {
 	// lastActivity is shared by both directions, so a one-way transfer (e.g. a
 	// long download with no upstream data) keeps the connection alive.
 	lastActivity := time.Now().UnixNano()
-	touch := func() { atomic.StoreInt64(&lastActivity, time.Now().UnixNano()) }
+	touch := func(t int64) { atomic.StoreInt64(&lastActivity, t) }
 
 	done := make(chan struct{})
 	watchdog := func() {
@@ -647,18 +660,23 @@ func relayStreams(a, b net.Conn, idle time.Duration, sess *stats.Session) {
 	wg.Add(2)
 	pipe := func(dst, src net.Conn, count func(int64)) {
 		defer wg.Done()
-		buf := make([]byte, relayCopyBufferSize)
+		bufp := relayBufPool.Get().(*[relayCopyBufferSize]byte)
+		defer relayBufPool.Put(bufp)
+		buf := bufp[:]
 		for {
 			n, rerr := src.Read(buf)
 			if n > 0 {
-				touch()
+				// One clock read serves both the idle watchdog and the
+				// write deadline.
+				now := time.Now()
+				touch(now.UnixNano())
 				count(int64(n))
 				// A peer that stops reading must not pin this goroutine and
 				// both sockets: without a write deadline the Write blocks
 				// until the OS retransmit timeout (minutes), and the idle
 				// watchdog cannot fire because data keeps arriving. Bound
 				// every write by the idle window instead.
-				_ = dst.SetWriteDeadline(time.Now().Add(idle))
+				_ = dst.SetWriteDeadline(now.Add(idle))
 				if _, werr := dst.Write(buf[:n]); werr != nil {
 					break
 				}

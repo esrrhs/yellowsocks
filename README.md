@@ -214,6 +214,25 @@ reachable from the browser, so also set `api_allowed_cidrs` as tightly as
 you can and rate-limit at the edge. A read-only token is damage control,
 not a substitute for the proxy.
 
+## Benchmarks
+
+The forwarding path and the routing decision are covered by benchmarks:
+
+```bash
+go test ./core/proxy ./core/router ./core/stats -run XXX -bench . -benchmem
+```
+
+- `BenchmarkSocks5Throughput` - bulk transfer over one connection.
+- `BenchmarkSocks5Concurrent` - many connections at once, statistics on:
+  the case a busy relay actually runs in.
+- `BenchmarkSocks5Connections` - per-connection cost of handshake, routing
+  and setup.
+- `BenchmarkDecideDomain` / `BenchmarkDecideIP` - one routing decision,
+  taken on every connection, UDP datagram and DNS query.
+
+Run `BenchmarkLoggoInfo` on its own (`-bench LoggoInfo`): it has to be the
+one that initialises logging, and it prints a line per iteration.
+
 ## Build
 
 ```bash
