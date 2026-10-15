@@ -545,3 +545,55 @@ func TestParseDuration(t *testing.T) {
 		t.Fatal("parseDuration should reject garbage")
 	}
 }
+
+func TestPProfIsOffByDefault(t *testing.T) {
+	// Profiling exposes host names and stacks, so the default must be closed.
+	_, base := startServerOn(t, Config{Token: "admin-token"})
+	resp := doRequest(t, http.MethodGet, base+"/debug/pprof/", map[string]string{"Authorization": "Bearer admin-token"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("pprof with PProf off -> %d, want 404", resp.StatusCode)
+	}
+}
+
+func TestPProfNeedsAdminToken(t *testing.T) {
+	_, base := startServerOn(t, Config{
+		Token:         "admin-token",
+		ReadonlyToken: "ro-token",
+		PProf:         true,
+	})
+
+	// No token: 401.
+	resp := doRequest(t, http.MethodGet, base+"/debug/pprof/", nil)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("pprof without token -> %d, want 401", resp.StatusCode)
+	}
+	// Read-only token: 403, the same rule as reset.
+	resp = doRequest(t, http.MethodGet, base+"/debug/pprof/", map[string]string{"Authorization": "Bearer ro-token"})
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("pprof with readonly token -> %d, want 403", resp.StatusCode)
+	}
+	// Admin token: the index lists the profiles.
+	resp = doRequest(t, http.MethodGet, base+"/debug/pprof/", map[string]string{"Authorization": "Bearer admin-token"})
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("pprof index -> %d, want 200", resp.StatusCode)
+	}
+	if !strings.Contains(string(body), "goroutine") {
+		t.Fatalf("pprof index does not list profiles: %q", body)
+	}
+	// A named profile is served as pprof data.
+	resp = doRequest(t, http.MethodGet, base+"/debug/pprof/heap", map[string]string{"Authorization": "Bearer admin-token"})
+	body, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("pprof heap -> %d, want 200", resp.StatusCode)
+	}
+	// Profiles are served as gzipped pprof data.
+	if len(body) < 2 || body[0] != 0x1f || body[1] != 0x8b {
+		t.Fatalf("heap profile is not gzipped pprof data: %x", body[:min(len(body), 8)])
+	}
+}

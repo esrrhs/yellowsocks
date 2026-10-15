@@ -62,6 +62,7 @@ doh_url: "https://1.1.1.1/dns-query"
 # api_token: "change-me"         # 建议显式设置
 # api_origins: ["*"]             # 浏览器跨域白名单；["none"] 关闭 CORS（反代同源时用）
 # api_dashboard: true            # 在 http://<api_listen>/ 提供内置看板
+# api_pprof: false               # 抓热点时才开：/debug/pprof/ 需要管理 token，会暴露域名与堆栈
 
 # 页面与 API 分机部署时的加固（见 README「把页面和 API 分开部署」）：
 # api_readonly_token: ""         # 只读 token：只能 GET，即便泄露也清不掉统计数据

@@ -45,6 +45,7 @@ func run(args []string, stdout io.Writer) int {
 	apiAddr := fs.String("api", "", "Statistics HTTP API listen address (e.g. 127.0.0.1:9090, empty disables)")
 	apiToken := fs.String("api-token", "", "Statistics API token (random one is generated and logged when empty)")
 	statsFile := fs.String("stats-file", "", "Path persisting statistics history (default stats.json when the API is on)")
+	apiPProf := fs.Bool("api-pprof", false, "Serve /debug/pprof/ behind the admin token (off by default)")
 	loglevel := fs.String("loglevel", "info", "Log level (debug, info, warn, error)")
 	showVersion := fs.Bool("v", false, "Print version information and exit")
 	showVersionLong := fs.Bool("version", false, "Print version information and exit")
@@ -101,6 +102,7 @@ func run(args []string, stdout io.Writer) int {
 		APIListen:        *apiAddr,
 		APIToken:         *apiToken,
 		APIDashboard:     true,
+		APIPProf:         *apiPProf,
 		StatsFile:        *statsFile,
 	}
 

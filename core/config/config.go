@@ -58,6 +58,8 @@ type FileConfig struct {
 	// APITrustedProxies lists CIDRs whose X-Forwarded-For is honored.
 	APITrustedProxies []string `json:"api_trusted_proxies" yaml:"api_trusted_proxies"`
 	APIDashboard      *bool    `json:"api_dashboard" yaml:"api_dashboard"`
+	// APIPProf exposes /debug/pprof/ behind the admin token. Off unless set.
+	APIPProf *bool `json:"api_pprof" yaml:"api_pprof"`
 
 	// Statistics storage
 	StatsFile         string `json:"stats_file" yaml:"stats_file"`
@@ -188,6 +190,9 @@ func (f *FileConfig) MergeWithEngineConfig(base core.EngineConfig) core.EngineCo
 	}
 	if f.APIDashboard != nil {
 		res.APIDashboard = *f.APIDashboard
+	}
+	if f.APIPProf != nil {
+		res.APIPProf = *f.APIPProf
 	}
 	if f.StatsFile != "" {
 		res.StatsFile = f.StatsFile
