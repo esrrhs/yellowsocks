@@ -3,6 +3,12 @@
 中继运行面板。**一个 HTML 文件，无构建、无依赖、无外部请求** —— 没有 CDN、
 没有 Web Font、没有图表库，所以它既能被二进制直接吐出来，也能单独部署。
 
+![运行面板 · 浅色](screenshot-light.png)
+
+深色主题：
+
+![运行面板 · 深色](screenshot-dark.png)
+
 ## 三种用法
 
 1. **跟服务一起用**：`api_dashboard: true`（命令行默认开）时，

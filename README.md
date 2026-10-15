@@ -153,6 +153,17 @@ A page served from another origin needs CORS on the relay side: keep
 `api_origins: ["*"]`, or list the page's origin explicitly.
 See [dashboard/README.md](dashboard/README.md) for the page's own notes.
 
+![运行面板 · 浅色](dashboard/screenshot-light.png)
+
+<details>
+<summary>深色主题</summary>
+
+![运行面板 · 深色](dashboard/screenshot-dark.png)
+
+</details>
+
+Both screenshots show synthetic demo data.
+
 ## Deploying the page away from the relay
 
 A page that anyone can read cannot hold a secret. If the dashboard is
