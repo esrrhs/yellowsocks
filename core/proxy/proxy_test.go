@@ -824,7 +824,7 @@ func TestHTTPConnectPreservesCoalescedTunnelBytes(t *testing.T) {
 
 	_ = cc.SetReadDeadline(time.Now().Add(3 * time.Second))
 	got := make([]byte, len(payload))
-	if _, err := io.ReadFull(cc, got); err != nil {
+	if _, err := io.ReadFull(br, got); err != nil {
 		t.Fatalf("coalesced tunnel bytes were not forwarded: %v", err)
 	}
 	if string(got) != string(payload) {
