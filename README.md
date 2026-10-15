@@ -216,7 +216,9 @@ not a substitute for the proxy.
 
 ## Benchmarks
 
-The forwarding path and the routing decision are covered by benchmarks:
+The forwarding path and the routing decision are covered by benchmarks.
+Run them on the host you actually serve from: loopback on a laptop is
+syscall bound and hides most of the cost.
 
 ```bash
 go test ./core/proxy ./core/router ./core/stats -run XXX -bench . -benchmem
@@ -232,6 +234,30 @@ go test ./core/proxy ./core/router ./core/stats -run XXX -bench . -benchmem
 
 Run `BenchmarkLoggoInfo` on its own (`-bench LoggoInfo`): it has to be the
 one that initialises logging, and it prints a line per iteration.
+
+## Profiling a running relay
+
+Set `api_pprof: true` (or pass `-api-pprof`) to serve the runtime profiles
+at `/debug/pprof/`. They need the admin token, the same as `reset`, so the
+readonly token cannot reach them. Turn it on while you are looking at a hot
+path and off afterwards: a heap profile names the domains being relayed and
+a goroutine dump shows the live connections.
+
+```bash
+# 30s CPU profile of the live process
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:9090/debug/pprof/profile?seconds=30" -o cpu.out
+go tool pprof -http=:0 cpu.out
+
+# where the memory goes
+curl -H "Authorization: Bearer $TOKEN" \
+  "http://127.0.0.1:9090/debug/pprof/heap" -o heap.out
+go tool pprof -sample_index=alloc_space -http=:0 heap.out
+```
+
+`/debug/pprof/profile` and `/debug/pprof/trace` hold the connection open for
+as long as they run; the write timeout is lifted for these routes, so a
+30-second profile is not cut off.
 
 ## Build
 

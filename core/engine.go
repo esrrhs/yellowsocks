@@ -71,6 +71,9 @@ type EngineConfig struct {
 	APIOrigins []string
 	// APIDashboard serves the built-in dashboard at "/".
 	APIDashboard bool
+	// APIPProf serves /debug/pprof/ behind the admin token. Leave it off
+	// unless you are profiling: the profiles name the hosts being relayed.
+	APIPProf bool
 
 	// StatsFile persists counters and history across restarts. Empty
 	// disables persistence.
@@ -262,6 +265,7 @@ func (e *Engine) Start() error {
 			TrustedProxies: e.cfg.APITrustedProxies,
 			AllowedOrigins: e.cfg.APIOrigins,
 			Dashboard:      e.cfg.APIDashboard,
+			PProf:          e.cfg.APIPProf,
 		}, api.Deps{
 			Stats:   e.collector,
 			Info:    e,

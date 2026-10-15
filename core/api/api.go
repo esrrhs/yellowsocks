@@ -15,6 +15,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	// Imported for its handlers only; see registerPProf before assuming it is
+	// safe to serve http.DefaultServeMux anywhere in this binary.
+	"net/http/pprof"
 	"strconv"
 	"strings"
 	"sync"
@@ -71,7 +74,12 @@ type Config struct {
 	// which is what you want when a reverse proxy makes the calls same-origin.
 	AllowedOrigins []string
 	// Dashboard serves the built-in single page dashboard at "/".
-	Dashboard    bool
+	Dashboard bool
+	// PProf serves the runtime profiling endpoints at /debug/pprof/ behind
+	// the admin token. Off by default: a heap profile lists every domain
+	// the relay has seen and a goroutine dump shows live connections, so
+	// turn it on while you are looking at a hot path and off afterwards.
+	PProf        bool
 	ReadTimeout  time.Duration
 	WriteTimeout time.Duration
 	IdleTimeout  time.Duration
@@ -272,7 +280,36 @@ func (s *Server) handler() http.Handler {
 	// plain-text page. It is registered after the real routes, which are
 	// more specific and therefore win.
 	mux.HandleFunc("/api/", s.handleNotFound)
+
+	if s.cfg.PProf {
+		s.registerPProf(mux)
+	}
 	return mux
+}
+
+// registerPProf mounts the net/http/pprof handlers.
+//
+// Note for anyone touching the imports: importing net/http/pprof also
+// registers these handlers on http.DefaultServeMux. Nothing in yellowsocks
+// serves DefaultServeMux (the DoH listener has its own mux), but adding a
+// server without an explicit Handler would publish profiles to the world.
+func (s *Server) registerPProf(mux *http.ServeMux) {
+	// Admin, not read: /debug/pprof/heap and /debug/pprof/goroutine?debug=2
+	// expose the host names being relayed and the live connection stacks.
+	admin := func(h http.HandlerFunc) http.HandlerFunc {
+		inner := s.route(accessAdmin, h, http.MethodGet)
+		return func(w http.ResponseWriter, r *http.Request) {
+			// A CPU profile or a trace holds the response open for as long
+			// as it runs, so the API write timeout must not cut it off.
+			_ = http.NewResponseController(w).SetWriteDeadline(time.Time{})
+			inner(w, r)
+		}
+	}
+	mux.HandleFunc("/debug/pprof/", admin(pprof.Index))
+	mux.HandleFunc("/debug/pprof/cmdline", admin(pprof.Cmdline))
+	mux.HandleFunc("/debug/pprof/profile", admin(pprof.Profile))
+	mux.HandleFunc("/debug/pprof/symbol", admin(pprof.Symbol))
+	mux.HandleFunc("/debug/pprof/trace", admin(pprof.Trace))
 }
 
 // route answers CORS preflight, rejects unexpected methods, then applies the
