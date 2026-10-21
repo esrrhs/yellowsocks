@@ -5,6 +5,7 @@
 *.so
 *.dylib
 /yellowsocks-cli
+/yellowsocks
 
 # macOS
 .DS_Store

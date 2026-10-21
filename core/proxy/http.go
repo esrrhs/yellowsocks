@@ -466,6 +466,9 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 		sppConn, err := net.DialTCP("tcp", nil, sppTCPAddr)
 		if err != nil {
 			loggo.Error("[HTTP Proxy] Dial SPP upstream failed: %v", err)
+			if rep, ok := s.cfg.Upstream.(interface{ ReportFailure(error) }); ok {
+				rep.ReportFailure(err)
+			}
 			sess.Fail(fmt.Errorf("dial SPP upstream: %w", err))
 			const http502 = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
 			_, _ = clientConn.Write([]byte(http502))
@@ -478,6 +481,9 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 			user, pass = s.cfg.Upstream.Socks5Auth()
 		}
 		if err := network.Sock5Handshake(sppConn, 5000, user, pass); err != nil {
+			if rep, ok := s.cfg.Upstream.(interface{ ReportFailure(error) }); ok {
+				rep.ReportFailure(err)
+			}
 			sess.Fail(fmt.Errorf("SPP upstream handshake: %w", err))
 			const http502 = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
 			_, _ = clientConn.Write([]byte(http502))

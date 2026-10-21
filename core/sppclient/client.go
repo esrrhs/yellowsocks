@@ -11,13 +11,15 @@ import (
 
 // Config SPP 客户端配置
 type Config struct {
-	ServerProto string // 主通道协议: tcp, udp, kcp, quic 等
-	Server      string // 远端 SPP 服务器地址: ip:port
-	Key         string // 连接密钥
-	Encrypt     string // 加密密钥
-	Compress    int    // 压缩阈值 (0表示不压缩)
-	LocalSocks5 string // 本地监听的 Socks5 端口，如 127.0.0.1:10808
-	Name        string
+	ServerProto  string // 主通道协议: tcp, udp, kcp, quic, rudp 等
+	Server       string // 远端 SPP 服务器地址: ip:port
+	Key          string // 连接密钥
+	Encrypt      string // 加密密钥
+	Compress     int    // 压缩阈值 (0表示不压缩)
+	LocalSocks5  string // 本地监听的 Socks5 端口，如 127.0.0.1:10808
+	Name         string
+	KcpFecData   int // KCP 前向纠错数据分片 (可选)
+	KcpFecParity int // KCP 前向纠错校验分片 (可选)
 }
 
 // Client wraps the spp proxy.Client.
@@ -53,6 +55,12 @@ func NewClient(cfg *Config) (*Client, error) {
 	}
 	proxyCfg.Encrypt = enc
 	proxyCfg.Compress = cfg.Compress
+	if cfg.KcpFecData > 0 {
+		proxyCfg.KcpFecDataShards = cfg.KcpFecData
+	}
+	if cfg.KcpFecParity > 0 {
+		proxyCfg.KcpFecParityShards = cfg.KcpFecParity
+	}
 
 	// 构造 NewClient 参数
 	// 启动 socks5_client 模式:
