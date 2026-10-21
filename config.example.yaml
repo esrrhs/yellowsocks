@@ -25,6 +25,12 @@ spp_key: "123456"
 #     key: "your-auth-key"
 #     priority: 2             # 第二优先级
 #     bandwidth: 200
+#   - name: "cf-ricmp"
+#     server: "cf.esrrhs.xyz"
+#     server_proto: "ricmp"
+#     key: "your-auth-key"
+#     priority: 2             # 第二优先级
+#     bandwidth: 120
 #   - name: "cf-rudp"
 #     server: "cf.esrrhs.xyz:60000"
 #     server_proto: "rudp"
