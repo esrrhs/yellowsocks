@@ -8,16 +8,37 @@ spp_key: "123456"
 # spp_encrypt: ""
 # spp_compress: 128
 
-# 多节点故障转移。配置后覆盖上面的单节点。
+# 多信道优先级与故障转移。配置后覆盖上面的单节点。
+# 调度规则：按照 priority 优先级使用（数值越小优先级越高，1 > 2）。
+# 同一优先级内，自动选择更稳健（协议抗丢包能力与连通率）其次带宽大的信道。
+# 当第一优先级节点可用时优先使用；不可用时自动降级到第二级；第一级恢复后自动抢占切回。
 # nodes:
-#   - name: "Node-US"
-#     server: "us.example.com:8888"
+#   - name: "bwh-rudp"
+#     server: "bwh.esrrhs.xyz:60000"
+#     server_proto: "rudp"
+#     key: "your-auth-key"
+#     priority: 1             # 第一优先级
+#     bandwidth: 300          # 标称带宽 (Mbps)
+#   - name: "cf-tcp"
+#     server: "cf.esrrhs.xyz:60000"
 #     server_proto: "tcp"
-#     key: "123456"
-#   - name: "Node-EU"
-#     server: "eu.example.com:8888"
-#     server_proto: "quic"
-#     key: "123456"
+#     key: "your-auth-key"
+#     priority: 2             # 第二优先级
+#     bandwidth: 200
+#   - name: "cf-rudp"
+#     server: "cf.esrrhs.xyz:60000"
+#     server_proto: "rudp"
+#     key: "your-auth-key"
+#     priority: 2             # 第二优先级
+#     bandwidth: 150
+#   - name: "cf-kcp"
+#     server: "cf.esrrhs.xyz:60001"
+#     server_proto: "kcp"
+#     key: "your-auth-key"
+#     priority: 2             # 第二优先级
+#     bandwidth: 100
+#     kcpfecdata: 10
+#     kcpfecparity: 3
 
 # 入站 SOCKS5（TCP CONNECT + UDP ASSOCIATE）。
 # 用 ":1080" 同时接受 IPv4 和 IPv6，用 "[::1]:1080" 只听 IPv6。

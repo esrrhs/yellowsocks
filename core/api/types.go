@@ -29,14 +29,17 @@ type RouterInfo struct {
 // NodeInfo is one configured SPP node: identity, liveness and the traffic it
 // has carried (zero when the node has not been used yet).
 type NodeInfo struct {
-	Name     string `json:"name"`
-	Server   string `json:"server"`
-	Proto    string `json:"proto"`
-	Alive    bool   `json:"alive"`
-	Active   bool   `json:"active"`
-	Conns    int64  `json:"conns"`
-	Upload   int64  `json:"upload_bytes"`
-	Download int64  `json:"download_bytes"`
+	Name      string `json:"name"`
+	Server    string `json:"server"`
+	Proto     string `json:"proto"`
+	Priority  int    `json:"priority"`
+	Bandwidth int    `json:"bandwidth"`
+	RTTMs     int64  `json:"rtt_ms"`
+	Alive     bool   `json:"alive"`
+	Active    bool   `json:"active"`
+	Conns     int64  `json:"conns"`
+	Upload    int64  `json:"upload_bytes"`
+	Download  int64  `json:"download_bytes"`
 }
 
 // HistoryInfo describes what history the collector keeps.

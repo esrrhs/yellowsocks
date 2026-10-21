@@ -320,6 +320,9 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 		sppConn, err := net.DialTCP("tcp", nil, sppTCPAddr)
 		if err != nil {
 			loggo.Error("[SOCKS5] Dial SPP upstream %s failed: %v", s.cfg.Upstream.Socks5Addr(), err)
+			if rep, ok := s.cfg.Upstream.(interface{ ReportFailure(error) }); ok {
+				rep.ReportFailure(err)
+			}
 			sess.Fail(fmt.Errorf("dial SPP upstream: %w", err))
 			_ = network.Sock5SendConnectReply(clientConn, 0x01, "0.0.0.0:0")
 			return
@@ -332,6 +335,9 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 		}
 		if err := network.Sock5Handshake(sppConn, 5000, user, pass); err != nil {
 			loggo.Error("[SOCKS5] SPP upstream handshake failed: %v", err)
+			if rep, ok := s.cfg.Upstream.(interface{ ReportFailure(error) }); ok {
+				rep.ReportFailure(err)
+			}
 			sess.Fail(fmt.Errorf("SPP upstream handshake: %w", err))
 			_ = network.Sock5SendConnectReply(clientConn, 0x01, "0.0.0.0:0")
 			return

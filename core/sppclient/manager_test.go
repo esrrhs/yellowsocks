@@ -270,3 +270,96 @@ func TestProbeNode(t *testing.T) {
 		t.Fatal("UDP probe against a local address must succeed")
 	}
 }
+
+// TestPrioritySelectionAndPreemption tests:
+// 1. Higher priority (lower priority number) is selected first.
+// 2. When priority 1 dies, fails over to priority 2.
+// 3. When priority 1 recovers, preempts priority 2 and fails back.
+func TestPrioritySelectionAndPreemption(t *testing.T) {
+	pri1L := listenTCP(t)
+	acceptAndClose(t, pri1L)
+	pri1Addr := pri1L.Addr().String()
+
+	pri2L := listenTCP(t)
+	acceptAndClose(t, pri2L)
+	pri2Addr := pri2L.Addr().String()
+
+	n1 := &Node{Name: "p1-bwh", Server: pri1Addr, ServerProto: "tcp", Priority: 1, Bandwidth: 200, Key: "k"}
+	n2 := &Node{Name: "p2-cf", Server: pri2Addr, ServerProto: "tcp", Priority: 2, Bandwidth: 100, Key: "k"}
+
+	m, err := newManager([]*Node{n1, n2}, reserveTCPPort(t), 30*time.Millisecond)
+	if err != nil {
+		t.Fatalf("newManager: %v", err)
+	}
+	defer m.Close()
+
+	if idx := m.ActiveNodeIndex(); idx != 0 {
+		t.Fatalf("Initial active node = %d, want 0 (priority 1)", idx)
+	}
+
+	// 1. Priority 1 dies -> failover to Priority 2
+	_ = pri1L.Close()
+	waitFor(t, "failover to priority 2", func() bool {
+		return m.ActiveNodeIndex() == 1
+	})
+	if m.ActiveNodeName() != "p2-cf" {
+		t.Fatalf("Active node = %s, want p2-cf", m.ActiveNodeName())
+	}
+
+	// 2. Priority 1 recovers -> preemption / failback to Priority 1
+	pri1Recovered := rebindTCP(t, pri1Addr)
+	acceptAndClose(t, pri1Recovered)
+
+	waitFor(t, "preemption/failback to priority 1", func() bool {
+		return m.ActiveNodeIndex() == 0
+	})
+	if m.ActiveNodeName() != "p1-bwh" {
+		t.Fatalf("Active node = %s, want p1-bwh after recovery", m.ActiveNodeName())
+	}
+}
+
+// TestSamePriorityRobustnessAndBandwidthSelection tests:
+// In the same priority, TCP (higher baseline robustness) is preferred over RUDP,
+// and higher bandwidth is preferred within similar robustness.
+func TestSamePriorityRobustnessAndBandwidthSelection(t *testing.T) {
+	tcpL := listenTCP(t)
+	acceptAndClose(t, tcpL)
+
+	tcpHighBw := &Node{Name: "cf-tcp-high", Server: tcpL.Addr().String(), ServerProto: "tcp", Priority: 2, Bandwidth: 500, Key: "k"}
+	tcpLowBw := &Node{Name: "cf-tcp-low", Server: tcpL.Addr().String(), ServerProto: "tcp", Priority: 2, Bandwidth: 100, Key: "k"}
+
+	// Both are alive and TCP, so higher bandwidth wins
+	m, err := newManager([]*Node{tcpLowBw, tcpHighBw}, reserveTCPPort(t), 50*time.Millisecond)
+	if err != nil {
+		t.Fatalf("newManager: %v", err)
+	}
+	defer m.Close()
+
+	if idx := m.ActiveNodeIndex(); idx != 1 {
+		t.Fatalf("ActiveNodeIndex = %d, want 1 (cf-tcp-high)", idx)
+	}
+}
+
+func TestFastFailoverOnReportFailure(t *testing.T) {
+	pri1Addr := reserveTCPPort(t)
+	pri2L := listenTCP(t)
+	acceptAndClose(t, pri2L)
+
+	n1 := &Node{Name: "node1", Server: pri1Addr, ServerProto: "tcp", Priority: 1, Key: "k"}
+	n2 := &Node{Name: "node2", Server: pri2L.Addr().String(), ServerProto: "tcp", Priority: 2, Key: "k"}
+
+	m, err := newManager([]*Node{n1, n2}, reserveTCPPort(t), 1*time.Second)
+	if err != nil {
+		t.Fatalf("newManager: %v", err)
+	}
+	defer m.Close()
+
+	// Initial node 1 was selected but will fail in-flight
+	m.ReportFailure(net.ErrClosed)
+	m.ReportFailure(net.ErrClosed)
+
+	waitFor(t, "fast failover after report failures", func() bool {
+		return m.ActiveNodeIndex() == 1
+	})
+}
+
