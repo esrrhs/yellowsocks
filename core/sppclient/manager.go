@@ -3,6 +3,7 @@ package sppclient
 import (
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -138,6 +139,8 @@ func protoRobustnessBase(proto string) int {
 
 type nodeRuntime struct {
 	node             *Node
+	localSocks5      string
+	client           *Client
 	alive            atomic.Bool
 	rttMs            atomic.Int64
 	consecutiveOks   atomic.Int32
@@ -221,9 +224,22 @@ func newManager(nodes []*Node, localSocks5 string, interval time.Duration) (*Man
 		interval = defaultHealthCheckInterval
 	}
 
+	host, portStr, err := net.SplitHostPort(localSocks5)
+	basePort := 10808
+	if err == nil {
+		if p, err := strconv.Atoi(portStr); err == nil {
+			basePort = p
+		}
+	} else {
+		host = "127.0.0.1"
+	}
+
 	runtimes := make([]*nodeRuntime, len(nodes))
 	for i, n := range nodes {
-		runtimes[i] = &nodeRuntime{node: n}
+		runtimes[i] = &nodeRuntime{
+			node:        n,
+			localSocks5: fmt.Sprintf("%s:%d", host, basePort+i),
+		}
 	}
 
 	m := &Manager{
@@ -293,16 +309,7 @@ func (m *Manager) selectBestNodeLocked() int {
 	}
 
 	if len(aliveIndices) == 0 {
-		// All down: return highest priority node
-		bestIdx := 0
-		bestPri := m.nodes[0].getEffectivePriority()
-		for i := 1; i < len(m.nodes); i++ {
-			if pri := m.nodes[i].getEffectivePriority(); pri < bestPri {
-				bestPri = pri
-				bestIdx = i
-			}
-		}
-		return bestIdx
+		return -1
 	}
 
 	// Find best priority among alive nodes
@@ -341,37 +348,36 @@ func (m *Manager) switchNode(index int) error {
 		return fmt.Errorf("node index out of range")
 	}
 
-	target := m.nodes[index]
-	loggo.Info("[SPP Manager] Switching active channel to [%s] (%s via %s, priority=%d, bw=%d)...",
-		target.Name, target.Server, target.ServerProto, target.getEffectivePriority(), target.getEffectiveBandwidth())
+	rt := m.runtimes[index]
+	target := rt.node
+	loggo.Info("[SPP Manager] Switching active channel to [%s] (%s via %s, priority=%d, bw=%d, local=%s)...",
+		target.Name, target.Server, target.ServerProto, target.getEffectivePriority(), target.getEffectiveBandwidth(), rt.localSocks5)
 
-	if m.activeClient != nil {
-		_ = m.activeClient.Close()
-		m.activeClient = nil
+	// Keep existing client connections intact so in-flight transfers (e.g. git clone, long streams) drain gracefully without being killed!
+	if rt.client == nil {
+		cfg := &Config{
+			ServerProto:  target.ServerProto,
+			Server:       target.Server,
+			Key:          target.Key,
+			Encrypt:      target.Encrypt,
+			Compress:     target.Compress,
+			LocalSocks5:  rt.localSocks5,
+			Name:         target.Name,
+			KcpFecData:   target.KcpFecData,
+			KcpFecParity: target.KcpFecParity,
+		}
+
+		cl, err := NewClient(cfg)
+		if err != nil {
+			rt.alive.Store(false)
+			return err
+		}
+		rt.client = cl
 	}
 
-	cfg := &Config{
-		ServerProto:  target.ServerProto,
-		Server:       target.Server,
-		Key:          target.Key,
-		Encrypt:      target.Encrypt,
-		Compress:     target.Compress,
-		LocalSocks5:  m.localSocks5,
-		Name:         target.Name,
-		KcpFecData:   target.KcpFecData,
-		KcpFecParity: target.KcpFecParity,
-	}
-
-	cl, err := NewClient(cfg)
-	if err != nil {
-		m.runtimes[index].alive.Store(false)
-		return err
-	}
-
-	m.runtimes[index].alive.Store(true)
-	m.activeClient = cl
+	rt.alive.Store(true)
 	atomic.StoreInt32(&m.activeIndex, int32(index))
-	loggo.Info("[SPP Manager] Active channel set to [%s]", target.Name)
+	loggo.Info("[SPP Manager] Active channel set to [%s] (local socks5 %s)", target.Name, rt.localSocks5)
 	return nil
 }
 
@@ -442,12 +448,18 @@ func (m *Manager) checkNodes() {
 	bestIdx := m.selectBestNodeLocked()
 
 	if currIdx < 0 {
-		_ = m.switchNode(bestIdx)
+		if bestIdx >= 0 {
+			_ = m.switchNode(bestIdx)
+		}
 		return
 	}
 
 	currAlive := currIdx < len(m.runtimes) && m.runtimes[currIdx].alive.Load()
 	if !currAlive {
+		if bestIdx < 0 || !m.runtimes[bestIdx].alive.Load() {
+			// All nodes down; do not flap
+			return
+		}
 		loggo.Warn("[SPP Manager] Current active channel [%s] is down, failing over to [%s] (priority %d)...",
 			m.nodes[currIdx].Name, m.nodes[bestIdx].Name, m.nodes[bestIdx].getEffectivePriority())
 		_ = m.switchNode(bestIdx)
@@ -455,14 +467,16 @@ func (m *Manager) checkNodes() {
 	}
 
 	// Preemption / Failback:
-	// If a higher-priority node has become healthy, preempt the current lower-priority node!
-	currPri := m.nodes[currIdx].getEffectivePriority()
-	bestPri := m.nodes[bestIdx].getEffectivePriority()
-	if bestPri < currPri {
-		loggo.Info("[SPP Manager] Higher-priority channel [%s] (priority %d) is healthy; preempting [%s] (priority %d)",
-			m.nodes[bestIdx].Name, bestPri, m.nodes[currIdx].Name, currPri)
-		_ = m.switchNode(bestIdx)
-		return
+	// Only preempt if bestIdx is valid, actually alive, and has higher priority
+	if bestIdx >= 0 && m.runtimes[bestIdx].alive.Load() {
+		currPri := m.nodes[currIdx].getEffectivePriority()
+		bestPri := m.nodes[bestIdx].getEffectivePriority()
+		if bestPri < currPri {
+			loggo.Info("[SPP Manager] Higher-priority channel [%s] (priority %d) is healthy; preempting [%s] (priority %d)",
+				m.nodes[bestIdx].Name, bestPri, m.nodes[currIdx].Name, currPri)
+			_ = m.switchNode(bestIdx)
+			return
+		}
 	}
 
 	// When priorities are equal, maintain stickiness to avoid connection disruption
@@ -477,14 +491,23 @@ func (m *Manager) ReportFailure(err error) {
 	if currIdx >= 0 && currIdx < len(m.runtimes) {
 		fails := m.runtimes[currIdx].consecutiveFails.Add(1)
 		m.runtimes[currIdx].consecutiveOks.Store(0)
-		if fails >= 2 {
-			loggo.Warn("[SPP Manager] Active channel [%s] encountered %d failures (%v), triggering fast failover",
+		if fails >= 5 {
+			loggo.Warn("[SPP Manager] Active channel [%s] encountered %d failures (%v), probing liveness",
 				m.nodes[currIdx].Name, fails, err)
-			m.runtimes[currIdx].alive.Store(false)
-			select {
-			case m.triggerCheckCh <- struct{}{}:
-			default:
-			}
+			go func(idx int) {
+				alive, rtt := probeNodeWithRTT(m.nodes[idx], nodeProbeTimeout)
+				m.runtimes[idx].alive.Store(alive)
+				if !alive {
+					loggo.Warn("[SPP Manager] Active channel [%s] probe confirms down, triggering failover", m.nodes[idx].Name)
+					select {
+					case m.triggerCheckCh <- struct{}{}:
+					default:
+					}
+				} else {
+					m.runtimes[idx].rttMs.Store(rtt.Milliseconds())
+					m.runtimes[idx].consecutiveFails.Store(0)
+				}
+			}(currIdx)
 		}
 	}
 }
@@ -548,6 +571,10 @@ func (m *Manager) NodeAlive(index int) bool {
 
 // Socks5Addr is the local SOCKS5 address exposed by the active SPP client.
 func (m *Manager) Socks5Addr() string {
+	idx := m.ActiveNodeIndex()
+	if idx >= 0 && idx < len(m.runtimes) {
+		return m.runtimes[idx].localSocks5
+	}
 	return m.localSocks5
 }
 
@@ -556,7 +583,7 @@ func (m *Manager) Socks5Auth() (string, string) {
 	return "", ""
 }
 
-// Close stops health checks and the active SPP client.
+// Close stops health checks and all active SPP clients.
 func (m *Manager) Close() {
 	if !m.closed.CompareAndSwap(false, true) {
 		return
@@ -565,6 +592,12 @@ func (m *Manager) Close() {
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	for _, rt := range m.runtimes {
+		if rt.client != nil {
+			_ = rt.client.Close()
+			rt.client = nil
+		}
+	}
 	if m.activeClient != nil {
 		_ = m.activeClient.Close()
 		m.activeClient = nil
