@@ -381,7 +381,7 @@ footer{
     <div class="panel">
       <div class="band-head"><span class="no">04</span><h2>SPP 节点</h2></div>
       <table id="tbl-nodes"><thead><tr>
-        <th>节点</th><th>连接</th><th>下行</th><th>上行</th><th>状态</th>
+        <th>节点</th><th>协议</th><th>延迟</th><th>连接</th><th>下行</th><th>上行</th><th>状态</th>
       </tr></thead><tbody></tbody></table>
       <div class="k" style="margin-top:20px">DNS</div>
       <div class="dnsgrid" style="margin-top:10px">
@@ -760,13 +760,18 @@ footer{
   // ---------- 节点 ----------
   function renderNodes(nodes) {
     var tb = $('tbl-nodes').querySelector('tbody');
-    if (!nodes.length) { tb.innerHTML = '<tr><td colspan="5" class="hint">未配置节点</td></tr>'; return; }
+    if (!nodes.length) { tb.innerHTML = '<tr><td colspan="7" class="hint">未配置节点</td></tr>'; return; }
     var html = '';
     for (var i = 0; i < nodes.length; i++) {
       var n = nodes[i];
-      var st = n.active ? '<span class="tag p">使用中</span>' : n.alive ? '<span class="tag ok">在线</span>'
+      var rtt = (n.alive && n.rtt_ms > 0) ? n.rtt_ms + 'ms' : '–';
+      var proto = n.proto ? n.proto.toUpperCase() : '–';
+      var st = n.active ? '<span class="tag p">服务中' + (n.active_conns ? ' (' + n.active_conns + ')' : '') + '</span>'
+        : n.alive ? '<span class="tag ok">就绪</span>'
         : '<span class="tag bad">离线</span>';
       html += '<tr><td title="' + esc(n.server) + '">' + esc(n.name) + '</td>' +
+        '<td>' + esc(proto) + '</td>' +
+        '<td>' + rtt + '</td>' +
         '<td>' + fmtNum(n.conns) + '</td>' +
         '<td>' + fmtBytes(n.download_bytes) + '</td>' +
         '<td>' + fmtBytes(n.upload_bytes) + '</td>' +
