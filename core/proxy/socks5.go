@@ -24,6 +24,17 @@ type UpstreamProvider interface {
 	Socks5Auth() (string, string)
 }
 
+// SmartUpstreamProvider can dynamically select an upstream node per connection.
+type SmartUpstreamProvider interface {
+	UpstreamProvider
+	PickNode() (addr string, name string, release func())
+}
+
+// NodeFailureReporter reports errors on a specific upstream node.
+type NodeFailureReporter interface {
+	ReportNodeFailure(nodeName string, err error)
+}
+
 // Socks5Config configures the SOCKS5 server
 type Socks5Config struct {
 	ListenAddr string
@@ -302,16 +313,31 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 		}
 
 		// Forward via SPP
-		if s.cfg.Upstream == nil || s.cfg.Upstream.Socks5Addr() == "" {
+		var sppAddr string
+		var nodeName string
+		var release func()
+		if smart, ok := s.cfg.Upstream.(SmartUpstreamProvider); ok {
+			sppAddr, nodeName, release = smart.PickNode()
+		} else if s.cfg.Upstream != nil {
+			sppAddr = s.cfg.Upstream.Socks5Addr()
+		}
+		if release != nil {
+			defer release()
+		}
+		if nodeName != "" {
+			sess.SetNode(nodeName)
+		}
+
+		if sppAddr == "" {
 			loggo.Error("[SOCKS5] No upstream SPP proxy available for proxy route to %s", targetAddr)
 			sess.Fail(errors.New("no upstream SPP proxy available"))
 			_ = network.Sock5SendConnectReply(clientConn, 0x01, "0.0.0.0:0")
 			return
 		}
 
-		sppTCPAddr, err := net.ResolveTCPAddr("tcp", s.cfg.Upstream.Socks5Addr())
+		sppTCPAddr, err := net.ResolveTCPAddr("tcp", sppAddr)
 		if err != nil {
-			loggo.Error("[SOCKS5] Resolve SPP upstream %s failed: %v", s.cfg.Upstream.Socks5Addr(), err)
+			loggo.Error("[SOCKS5] Resolve SPP upstream %s failed: %v", sppAddr, err)
 			sess.Fail(fmt.Errorf("resolve SPP upstream: %w", err))
 			_ = network.Sock5SendConnectReply(clientConn, 0x01, "0.0.0.0:0")
 			return
@@ -319,8 +345,10 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 
 		sppConn, err := net.DialTCP("tcp", nil, sppTCPAddr)
 		if err != nil {
-			loggo.Error("[SOCKS5] Dial SPP upstream %s failed: %v", s.cfg.Upstream.Socks5Addr(), err)
-			if rep, ok := s.cfg.Upstream.(interface{ ReportFailure(error) }); ok {
+			loggo.Error("[SOCKS5] Dial SPP upstream %s (%s) failed: %v", sppAddr, nodeName, err)
+			if rep, ok := s.cfg.Upstream.(NodeFailureReporter); ok && nodeName != "" {
+				rep.ReportNodeFailure(nodeName, err)
+			} else if rep, ok := s.cfg.Upstream.(interface{ ReportFailure(error) }); ok {
 				rep.ReportFailure(err)
 			}
 			sess.Fail(fmt.Errorf("dial SPP upstream: %w", err))
@@ -334,8 +362,10 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 			user, pass = s.cfg.Upstream.Socks5Auth()
 		}
 		if err := network.Sock5Handshake(sppConn, 5000, user, pass); err != nil {
-			loggo.Error("[SOCKS5] SPP upstream handshake failed: %v", err)
-			if rep, ok := s.cfg.Upstream.(interface{ ReportFailure(error) }); ok {
+			loggo.Error("[SOCKS5] SPP upstream %s (%s) handshake failed: %v", sppAddr, nodeName, err)
+			if rep, ok := s.cfg.Upstream.(NodeFailureReporter); ok && nodeName != "" {
+				rep.ReportNodeFailure(nodeName, err)
+			} else if rep, ok := s.cfg.Upstream.(interface{ ReportFailure(error) }); ok {
 				rep.ReportFailure(err)
 			}
 			sess.Fail(fmt.Errorf("SPP upstream handshake: %w", err))
@@ -344,7 +374,7 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 		}
 
 		if err := network.Sock5SetRequest(sppConn, canonicalHost(targetHost), targetPort, 10000); err != nil {
-			loggo.Error("[SOCKS5] SPP upstream connect to %s failed: %v", targetAddr, err)
+			loggo.Error("[SOCKS5] SPP upstream connect to %s via %s failed: %v", targetAddr, nodeName, err)
 			sess.Fail(fmt.Errorf("SPP upstream connect: %w", err))
 			_ = network.Sock5SendConnectReply(clientConn, 0x01, "0.0.0.0:0")
 			return
@@ -401,6 +431,7 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 	var sppTCPConn net.Conn
 	var sppUDPConn *net.UDPConn
 	var sppRelayUDP *net.UDPAddr
+	var sppRelease func()
 
 	closeSPP := func() {
 		sppMu.Lock()
@@ -413,6 +444,10 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 			_ = sppUDPConn.Close()
 			sppUDPConn = nil
 		}
+		if sppRelease != nil {
+			sppRelease()
+			sppRelease = nil
+		}
 	}
 	defer closeSPP()
 
@@ -422,16 +457,33 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 		if sppUDPConn != nil && sppRelayUDP != nil {
 			return sppUDPConn, sppRelayUDP, nil
 		}
-		if s.cfg.Upstream == nil || s.cfg.Upstream.Socks5Addr() == "" {
+		var sppAddr string
+		var nodeName string
+		var release func()
+		if smart, ok := s.cfg.Upstream.(SmartUpstreamProvider); ok {
+			sppAddr, nodeName, release = smart.PickNode()
+		} else if s.cfg.Upstream != nil {
+			sppAddr = s.cfg.Upstream.Socks5Addr()
+		}
+		if sppAddr == "" {
+			if release != nil {
+				release()
+			}
 			return nil, nil, errors.New("no upstream SPP socks5 available")
 		}
 
-		tcpUpAddr, err := net.ResolveTCPAddr("tcp", s.cfg.Upstream.Socks5Addr())
+		tcpUpAddr, err := net.ResolveTCPAddr("tcp", sppAddr)
 		if err != nil {
+			if release != nil {
+				release()
+			}
 			return nil, nil, err
 		}
 		tcpUp, err := net.DialTCP("tcp", nil, tcpUpAddr)
 		if err != nil {
+			if release != nil {
+				release()
+			}
 			return nil, nil, err
 		}
 
@@ -441,18 +493,27 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 		}
 		if err := network.Sock5Handshake(tcpUp, 5000, user, pass); err != nil {
 			_ = tcpUp.Close()
+			if release != nil {
+				release()
+			}
 			return nil, nil, err
 		}
 
 		bnd, err := network.Sock5SetUDPRequest(tcpUp, "0.0.0.0", 0, 5000)
 		if err != nil {
 			_ = tcpUp.Close()
+			if release != nil {
+				release()
+			}
 			return nil, nil, err
 		}
 
 		bndH, bndP, err := net.SplitHostPort(bnd)
 		if err != nil {
 			_ = tcpUp.Close()
+			if release != nil {
+				release()
+			}
 			return nil, nil, err
 		}
 		p, _ := strconv.Atoi(bndP)
@@ -465,12 +526,19 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 		uConn, err := net.ListenUDP("udp", nil)
 		if err != nil {
 			_ = tcpUp.Close()
+			if release != nil {
+				release()
+			}
 			return nil, nil, err
 		}
 
 		sppTCPConn = tcpUp
 		sppUDPConn = uConn
 		sppRelayUDP = relayTarget
+		sppRelease = release
+		if nodeName != "" {
+			udpSess.SetNode(nodeName)
+		}
 
 		// Receive responses from SPP UDP relay and forward back to client
 		go func() {
