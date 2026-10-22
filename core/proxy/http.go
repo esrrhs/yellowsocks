@@ -446,7 +446,22 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 		}
 
 		// Forward via SPP
-		if s.cfg.Upstream == nil || s.cfg.Upstream.Socks5Addr() == "" {
+		var sppAddr string
+		var nodeName string
+		var release func()
+		if smart, ok := s.cfg.Upstream.(SmartUpstreamProvider); ok {
+			sppAddr, nodeName, release = smart.PickNode()
+		} else if s.cfg.Upstream != nil {
+			sppAddr = s.cfg.Upstream.Socks5Addr()
+		}
+		if release != nil {
+			defer release()
+		}
+		if nodeName != "" {
+			sess.SetNode(nodeName)
+		}
+
+		if sppAddr == "" {
 			loggo.Error("[HTTP Proxy] No upstream SPP proxy available for proxy route to %s", targetAddr)
 			sess.Fail(errors.New("no upstream SPP proxy available"))
 			const http502 = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
@@ -454,7 +469,7 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 			return
 		}
 
-		sppTCPAddr, err := net.ResolveTCPAddr("tcp", s.cfg.Upstream.Socks5Addr())
+		sppTCPAddr, err := net.ResolveTCPAddr("tcp", sppAddr)
 		if err != nil {
 			loggo.Error("[HTTP Proxy] Resolve SPP upstream failed: %v", err)
 			sess.Fail(fmt.Errorf("resolve SPP upstream: %w", err))
@@ -465,8 +480,10 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 
 		sppConn, err := net.DialTCP("tcp", nil, sppTCPAddr)
 		if err != nil {
-			loggo.Error("[HTTP Proxy] Dial SPP upstream failed: %v", err)
-			if rep, ok := s.cfg.Upstream.(interface{ ReportFailure(error) }); ok {
+			loggo.Error("[HTTP Proxy] Dial SPP upstream %s (%s) failed: %v", sppAddr, nodeName, err)
+			if rep, ok := s.cfg.Upstream.(NodeFailureReporter); ok && nodeName != "" {
+				rep.ReportNodeFailure(nodeName, err)
+			} else if rep, ok := s.cfg.Upstream.(interface{ ReportFailure(error) }); ok {
 				rep.ReportFailure(err)
 			}
 			sess.Fail(fmt.Errorf("dial SPP upstream: %w", err))
@@ -481,7 +498,10 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 			user, pass = s.cfg.Upstream.Socks5Auth()
 		}
 		if err := network.Sock5Handshake(sppConn, 5000, user, pass); err != nil {
-			if rep, ok := s.cfg.Upstream.(interface{ ReportFailure(error) }); ok {
+			loggo.Error("[HTTP Proxy] SPP upstream %s (%s) handshake failed: %v", sppAddr, nodeName, err)
+			if rep, ok := s.cfg.Upstream.(NodeFailureReporter); ok && nodeName != "" {
+				rep.ReportNodeFailure(nodeName, err)
+			} else if rep, ok := s.cfg.Upstream.(interface{ ReportFailure(error) }); ok {
 				rep.ReportFailure(err)
 			}
 			sess.Fail(fmt.Errorf("SPP upstream handshake: %w", err))
@@ -491,6 +511,7 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 		}
 
 		if err := network.Sock5SetRequest(sppConn, targetHost, targetPort, 10000); err != nil {
+			loggo.Error("[HTTP Proxy] SPP upstream connect to %s via %s failed: %v", targetAddr, nodeName, err)
 			sess.Fail(fmt.Errorf("SPP upstream connect: %w", err))
 			const http502 = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
 			_, _ = clientConn.Write([]byte(http502))
@@ -565,12 +586,27 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 			return
 		}
 
-		if s.cfg.Upstream == nil || s.cfg.Upstream.Socks5Addr() == "" {
+		var sppAddr string
+		var nodeName string
+		var release func()
+		if smart, ok := s.cfg.Upstream.(SmartUpstreamProvider); ok {
+			sppAddr, nodeName, release = smart.PickNode()
+		} else if s.cfg.Upstream != nil {
+			sppAddr = s.cfg.Upstream.Socks5Addr()
+		}
+		if release != nil {
+			defer release()
+		}
+		if nodeName != "" {
+			sess.SetNode(nodeName)
+		}
+
+		if sppAddr == "" {
 			const http502 = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"
 			_, _ = clientConn.Write([]byte(http502))
 			return
 		}
-		sppTCPAddr, rErr := net.ResolveTCPAddr("tcp", s.cfg.Upstream.Socks5Addr())
+		sppTCPAddr, rErr := net.ResolveTCPAddr("tcp", sppAddr)
 		if rErr == nil {
 			sppConn, dialErr := net.DialTCP("tcp", nil, sppTCPAddr)
 			if dialErr == nil {
