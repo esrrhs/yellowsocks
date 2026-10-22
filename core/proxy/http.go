@@ -665,3 +665,10 @@ func (p *prefixedReaderConn) Read(b []byte) (int, error) {
 	}
 	return p.Conn.Read(b)
 }
+
+func (p *prefixedReaderConn) CloseWrite() error {
+	if cw, ok := p.Conn.(interface{ CloseWrite() error }); ok {
+		return cw.CloseWrite()
+	}
+	return p.Conn.Close()
+}

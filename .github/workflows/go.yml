@@ -52,7 +52,10 @@ jobs:
           cache: true
 
       - name: Run tests
-        run: go test -race ./...
+        run: go test -race -skip 'TestE2E_LargeStream_1GB' ./...
+
+      - name: Run 1GiB large stream E2E (no race)
+        run: go test -v -count=1 -timeout 5m ./core/proxy -run '^TestE2E_LargeStream_1GB_UploadAndDownload$'
 
       - name: Build Linux CLI
         run: |

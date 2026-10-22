@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
 	"fmt"
 	"io"
@@ -1646,5 +1647,522 @@ func TestRelayWriteDeadlineBoundsStalledPeer(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+type trafficRecordingUpstream struct {
+	addr         string
+	uploadN      int64
+	downloadN    int64
+	lastWireNano int64
+}
+
+func (u *trafficRecordingUpstream) Socks5Addr() string          { return u.addr }
+func (u *trafficRecordingUpstream) Socks5Auth() (string, string) { return "", "" }
+func (u *trafficRecordingUpstream) PickNode() (string, string, func()) {
+	return u.addr, "narrow-pipe-node", func() {}
+}
+func (u *trafficRecordingUpstream) RecordNodeTraffic(_ string, up, down int64) {
+	atomic.AddInt64(&u.uploadN, up)
+	atomic.AddInt64(&u.downloadN, down)
+	atomic.StoreInt64(&u.lastWireNano, time.Now().UnixNano())
+}
+func (u *trafficRecordingUpstream) HasRecentNodeTraffic(_ string, window time.Duration) bool {
+	last := atomic.LoadInt64(&u.lastWireNano)
+	if last <= 0 {
+		return false
+	}
+	return time.Since(time.Unix(0, last)) <= window
+}
+
+// startMinimalSocks5Tunnel simulates an SPP local SOCKS5 listener that forwards
+// TCP streams to the requested target address and mimics SPP's behavior where
+// an EOF from the client closes the tunnel once the upload has drained.
+func startMinimalSocks5Tunnel(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(clientConn net.Conn) {
+				defer clientConn.Close()
+				if err := network.Sock5HandshakeBy(clientConn, "", ""); err != nil {
+					return
+				}
+				cmd, _, targetAddr, err := network.Sock5GetRequest(clientConn)
+				if err != nil || cmd != network.Socks5CmdConnect {
+					return
+				}
+				if err := network.Sock5SendConnectReply(clientConn, 0, "0.0.0.0:0"); err != nil {
+					return
+				}
+				targetConn, err := net.DialTimeout("tcp", targetAddr, 5*time.Second)
+				if err != nil {
+					return
+				}
+				defer targetConn.Close()
+
+				// Mimic SPP: when either side hits EOF after draining its stream,
+				// tear down both sides so a premature client FIN would abort the
+				// server's delayed response if YellowSocks half-closed too early.
+				done := make(chan struct{}, 2)
+				go func() {
+					_, _ = io.Copy(targetConn, clientConn)
+					_ = targetConn.Close()
+					_ = clientConn.Close()
+					done <- struct{}{}
+				}()
+				go func() {
+					_, _ = io.Copy(clientConn, targetConn)
+					_ = clientConn.Close()
+					_ = targetConn.Close()
+					done <- struct{}{}
+				}()
+				<-done
+				<-done
+			}(c)
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func startNarrowPipeStreamServer(t *testing.T, uploadRateBps int64, onWireProgress func()) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				var hdr [9]byte
+				if _, err := io.ReadFull(conn, hdr[:]); err != nil {
+					return
+				}
+				mode := hdr[0]
+				total := int64(uint64(hdr[1])<<56 | uint64(hdr[2])<<48 | uint64(hdr[3])<<40 | uint64(hdr[4])<<32 |
+					uint64(hdr[5])<<24 | uint64(hdr[6])<<16 | uint64(hdr[7])<<8 | uint64(hdr[8]))
+				switch mode {
+				case 'U':
+					h := sha256.New()
+					buf := make([]byte, 64*1024)
+					var received int64
+					start := time.Now()
+					for received < total {
+						toRead := int64(len(buf))
+						if rem := total - received; rem < toRead {
+							toRead = rem
+						}
+						n, err := conn.Read(buf[:toRead])
+						if n > 0 {
+							_, _ = h.Write(buf[:n])
+							received += int64(n)
+							if onWireProgress != nil {
+								onWireProgress()
+							}
+							if uploadRateBps > 0 {
+								expected := time.Duration(float64(received) / float64(uploadRateBps) * float64(time.Second))
+								if sleep := expected - time.Since(start); sleep > 0 {
+									time.Sleep(sleep)
+								}
+							}
+						}
+						if err != nil {
+							return
+						}
+					}
+					_, _ = conn.Write(h.Sum(nil))
+				case 'D':
+					chunk := make([]byte, 64*1024)
+					var sent int64
+					var seq byte
+					for sent < total {
+						toWrite := int64(len(chunk))
+						if rem := total - sent; rem < toWrite {
+							toWrite = rem
+						}
+						for i := int64(0); i < toWrite; i++ {
+							chunk[i] = seq + byte(i*31)
+						}
+						seq++
+						if _, err := conn.Write(chunk[:toWrite]); err != nil {
+							return
+						}
+						if onWireProgress != nil {
+							onWireProgress()
+						}
+						sent += toWrite
+					}
+				}
+			}(c)
+		}
+	}()
+	return ln.Addr().String()
+}
+
+func makeStreamHeader(mode byte, total int64) [9]byte {
+	var hdr [9]byte
+	hdr[0] = mode
+	u := uint64(total)
+	hdr[1] = byte(u >> 56)
+	hdr[2] = byte(u >> 48)
+	hdr[3] = byte(u >> 40)
+	hdr[4] = byte(u >> 32)
+	hdr[5] = byte(u >> 24)
+	hdr[6] = byte(u >> 16)
+	hdr[7] = byte(u >> 8)
+	hdr[8] = byte(u)
+	return hdr
+}
+
+// TestRelayNarrowPipeSlowUploadAndDownload verifies that under "大流量 + 小水管"
+// (large burst + narrow pipe), both SOCKS5 and HTTP CONNECT relays:
+//  1. Do not prematurely send FIN to SPP when the client half-closes (CloseWrite)
+//     after finishing a large upload while the server is still slowly digesting it.
+//  2. Refresh SetReadDeadline on every active Read so transfers taking longer than
+//     the initial IdleTimeout/grace window complete smoothly as long as bytes trickle in.
+func TestRelayNarrowPipeSlowUploadAndDownload(t *testing.T) {
+	const (
+		totalBytes        = 8 * 1024 * 1024 // 8 MiB
+		narrowPipeRateBps = 2 * 1024 * 1024 // 2 MiB/s -> ~4s transfer (>2x the 1.5s IdleTimeout)
+		idleWindow        = 1500 * time.Millisecond
+	)
+
+	sppTunnelAddr := startMinimalSocks5Tunnel(t)
+	upstream := &trafficRecordingUpstream{addr: sppTunnelAddr}
+	rawTargetAddr := startNarrowPipeStreamServer(t, narrowPipeRateBps, func() {
+		atomic.StoreInt64(&upstream.lastWireNano, time.Now().UnixNano())
+	})
+	_, targetPortStr, _ := net.SplitHostPort(rawTargetAddr)
+	targetPort, _ := strconv.Atoi(targetPortStr)
+	targetAddr := net.JoinHostPort("localhost", targetPortStr)
+
+	r := proxyRouterWithLocalhost(t)
+
+	s5 := NewSocks5Server(Socks5Config{
+		ListenAddr:  "127.0.0.1:0",
+		Router:      r,
+		Upstream:    upstream,
+		IdleTimeout: idleWindow,
+	})
+	if err := s5.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s5.Stop()
+
+	hp := NewHTTPServer(HTTPConfig{
+		ListenAddr:  "127.0.0.1:0",
+		Router:      r,
+		Upstream:    upstream,
+		IdleTimeout: idleWindow,
+	})
+	if err := hp.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer hp.Stop()
+
+	dialViaSocks5 := func(t *testing.T) *net.TCPConn {
+		t.Helper()
+		cc, err := net.DialTCP("tcp", nil, mustTCPAddr(t, s5.Addr().String()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := network.Sock5Handshake(cc, 5000, "", ""); err != nil {
+			_ = cc.Close()
+			t.Fatal(err)
+		}
+		if err := network.Sock5SetRequest(cc, "localhost", targetPort, 5000); err != nil {
+			_ = cc.Close()
+			t.Fatal(err)
+		}
+		return cc
+	}
+
+	dialViaHTTPConnect := func(t *testing.T) *net.TCPConn {
+		t.Helper()
+		cc, err := net.DialTCP("tcp", nil, mustTCPAddr(t, hp.Addr().String()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", targetAddr, targetAddr)
+		if _, err := cc.Write([]byte(req)); err != nil {
+			_ = cc.Close()
+			t.Fatal(err)
+		}
+		br := bufio.NewReader(cc)
+		resp, err := http.ReadResponse(br, nil)
+		if err != nil || resp.StatusCode != http.StatusOK {
+			_ = cc.Close()
+			t.Fatalf("HTTP CONNECT failed: err=%v status=%v", err, resp)
+		}
+		return cc
+	}
+
+	for _, proto := range []struct {
+		name string
+		dial func(*testing.T) *net.TCPConn
+	}{
+		{"SOCKS5", dialViaSocks5},
+		{"HTTP_CONNECT", dialViaHTTPConnect},
+	} {
+		proto := proto
+		t.Run(proto.name+"_UploadWithHalfClose", func(t *testing.T) {
+			cc := proto.dial(t)
+			defer cc.Close()
+			_ = cc.SetDeadline(time.Now().Add(30 * time.Second))
+
+			hdr := makeStreamHeader('U', totalBytes)
+			if _, err := cc.Write(hdr[:]); err != nil {
+				t.Fatalf("write upload header: %v", err)
+			}
+
+			wantHash := sha256.New()
+			chunk := make([]byte, 64*1024)
+			var sent int64
+			var seq byte
+			for sent < totalBytes {
+				for i := range chunk {
+					chunk[i] = seq + byte(i*31)
+				}
+				seq++
+				_, _ = wantHash.Write(chunk)
+				if _, err := cc.Write(chunk); err != nil {
+					t.Fatalf("upload write at %d/%d: %v", sent, totalBytes, err)
+				}
+				sent += int64(len(chunk))
+			}
+
+			// Half-close write side while the server is still slowly digesting the 8 MiB
+			// over ~4 seconds (>2x the 1.5s IdleTimeout).
+			if err := cc.CloseWrite(); err != nil {
+				t.Fatalf("CloseWrite: %v", err)
+			}
+
+			var gotSum [32]byte
+			if _, err := io.ReadFull(cc, gotSum[:]); err != nil {
+				t.Fatalf("read upload sha256 response after slow narrow-pipe drain: %v", err)
+			}
+			var wantSum [32]byte
+			copy(wantSum[:], wantHash.Sum(nil))
+			if gotSum != wantSum {
+				t.Fatalf("upload sha256 mismatch: got %x, want %x", gotSum, wantSum)
+			}
+		})
+
+		t.Run(proto.name+"_DownloadWithHalfClose", func(t *testing.T) {
+			cc := proto.dial(t)
+			defer cc.Close()
+			_ = cc.SetDeadline(time.Now().Add(30 * time.Second))
+
+			hdr := makeStreamHeader('D', totalBytes)
+			if _, err := cc.Write(hdr[:]); err != nil {
+				t.Fatalf("write download header: %v", err)
+			}
+			// Half-close immediately after sending the 9-byte download request.
+			// In the old code, this set a static ReadDeadline that was never refreshed
+			// on Read(n > 0) and aborted any download lasting longer than grace/idle.
+			if err := cc.CloseWrite(); err != nil {
+				t.Fatalf("CloseWrite: %v", err)
+			}
+
+			wantHash := sha256.New()
+			expectedChunk := make([]byte, 64*1024)
+			for c := int64(0); c < totalBytes/(64*1024); c++ {
+				for i := range expectedChunk {
+					expectedChunk[i] = byte(c) + byte(i*31)
+				}
+				_, _ = wantHash.Write(expectedChunk)
+			}
+
+			gotHash := sha256.New()
+			buf := make([]byte, 64*1024)
+			var received int64
+			start := time.Now()
+			for received < totalBytes {
+				n, err := cc.Read(buf)
+				if n > 0 {
+					_, _ = gotHash.Write(buf[:n])
+					received += int64(n)
+					expected := time.Duration(float64(received) / float64(narrowPipeRateBps) * float64(time.Second))
+					if sleep := expected - time.Since(start); sleep > 0 {
+						time.Sleep(sleep)
+					}
+				}
+				if err != nil {
+					if err == io.EOF && received == totalBytes {
+						break
+					}
+					t.Fatalf("download read at %d/%d: %v", received, totalBytes, err)
+				}
+			}
+
+			var gotSum, wantSum [32]byte
+			copy(gotSum[:], gotHash.Sum(nil))
+			copy(wantSum[:], wantHash.Sum(nil))
+			if gotSum != wantSum {
+				t.Fatalf("download sha256 mismatch: got %x, want %x", gotSum, wantSum)
+			}
+		})
+	}
+
+	if atomic.LoadInt64(&upstream.uploadN) < totalBytes*2 {
+		t.Fatalf("expected upstream upload traffic >= %d, got %d", totalBytes*2, atomic.LoadInt64(&upstream.uploadN))
+	}
+	if atomic.LoadInt64(&upstream.downloadN) < totalBytes*2 {
+		t.Fatalf("expected upstream download traffic >= %d, got %d", totalBytes*2, atomic.LoadInt64(&upstream.downloadN))
+	}
+}
+
+// TestE2E_LargeStream_1GB_UploadAndDownload streams a full 1 GiB (1,073,741,824 bytes)
+// upload and a full 1 GiB download through YellowSocks -> SPP tunnel with throttled
+// digestion spanning multiple IdleTimeout windows, verifying byte-for-byte SHA-256 integrity.
+func TestE2E_LargeStream_1GB_UploadAndDownload(t *testing.T) {
+	const (
+		oneGiB          = int64(1) << 30    // 1,073,741,824 bytes (1 GiB)
+		throttleRateBps = 220 * 1024 * 1024 // ~220 MiB/s -> ~4.7s per 1 GiB (>2x the 2s IdleTimeout)
+	)
+
+	sppTunnelAddr := startMinimalSocks5Tunnel(t)
+	upstream := &trafficRecordingUpstream{addr: sppTunnelAddr}
+	rawTargetAddr := startNarrowPipeStreamServer(t, throttleRateBps, func() {
+		atomic.StoreInt64(&upstream.lastWireNano, time.Now().UnixNano())
+	})
+	_, targetPortStr, _ := net.SplitHostPort(rawTargetAddr)
+	targetPort, _ := strconv.Atoi(targetPortStr)
+
+	r := proxyRouterWithLocalhost(t)
+
+	s5 := NewSocks5Server(Socks5Config{
+		ListenAddr:  "127.0.0.1:0",
+		Router:      r,
+		Upstream:    upstream,
+		IdleTimeout: 2 * time.Second,
+	})
+	if err := s5.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer s5.Stop()
+
+	var patternChunks [256][]byte
+	for c := 0; c < 256; c++ {
+		b := make([]byte, 64*1024)
+		for i := range b {
+			b[i] = byte(c) + byte(i*31)
+		}
+		patternChunks[c] = b
+	}
+	wantHash := sha256.New()
+	totalChunks := oneGiB / (64 * 1024)
+	for i := int64(0); i < totalChunks; i++ {
+		_, _ = wantHash.Write(patternChunks[byte(i)])
+	}
+	var wantSum [32]byte
+	copy(wantSum[:], wantHash.Sum(nil))
+
+	dial := func(t *testing.T) *net.TCPConn {
+		t.Helper()
+		cc, err := net.DialTCP("tcp", nil, mustTCPAddr(t, s5.Addr().String()))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := network.Sock5Handshake(cc, 5000, "", ""); err != nil {
+			_ = cc.Close()
+			t.Fatal(err)
+		}
+		if err := network.Sock5SetRequest(cc, "localhost", targetPort, 5000); err != nil {
+			_ = cc.Close()
+			t.Fatal(err)
+		}
+		return cc
+	}
+
+	t.Run("Upload_1GiB", func(t *testing.T) {
+		start := time.Now()
+		cc := dial(t)
+		defer cc.Close()
+		_ = cc.SetDeadline(time.Now().Add(2 * time.Minute))
+
+		hdr := makeStreamHeader('U', oneGiB)
+		if _, err := cc.Write(hdr[:]); err != nil {
+			t.Fatalf("write 1GiB upload header: %v", err)
+		}
+		for i := int64(0); i < totalChunks; i++ {
+			if _, err := cc.Write(patternChunks[byte(i)]); err != nil {
+				t.Fatalf("1GiB upload write at chunk %d/%d: %v", i, totalChunks, err)
+			}
+		}
+		if err := cc.CloseWrite(); err != nil {
+			t.Fatalf("CloseWrite: %v", err)
+		}
+		var gotSum [32]byte
+		if _, err := io.ReadFull(cc, gotSum[:]); err != nil {
+			t.Fatalf("read 1GiB upload sha256 response: %v", err)
+		}
+		if gotSum != wantSum {
+			t.Fatalf("1GiB upload sha256 mismatch: got %x, want %x", gotSum, wantSum)
+		}
+		t.Logf("1GiB upload verified in %s", time.Since(start))
+	})
+
+	t.Run("Download_1GiB", func(t *testing.T) {
+		start := time.Now()
+		cc := dial(t)
+		defer cc.Close()
+		_ = cc.SetDeadline(time.Now().Add(2 * time.Minute))
+
+		hdr := makeStreamHeader('D', oneGiB)
+		if _, err := cc.Write(hdr[:]); err != nil {
+			t.Fatalf("write 1GiB download header: %v", err)
+		}
+		if err := cc.CloseWrite(); err != nil {
+			t.Fatalf("CloseWrite: %v", err)
+		}
+
+		gotHash := sha256.New()
+		buf := make([]byte, 64*1024)
+		var received int64
+		for received < oneGiB {
+			n, err := cc.Read(buf)
+			if n > 0 {
+				_, _ = gotHash.Write(buf[:n])
+				received += int64(n)
+				expected := time.Duration(float64(received) / float64(throttleRateBps) * float64(time.Second))
+				if sleep := expected - time.Since(start); sleep > 0 {
+					time.Sleep(sleep)
+				}
+			}
+			if err != nil {
+				if err == io.EOF && received == oneGiB {
+					break
+				}
+				t.Fatalf("1GiB download read at %d/%d: %v", received, oneGiB, err)
+			}
+		}
+		var gotSum [32]byte
+		copy(gotSum[:], gotHash.Sum(nil))
+		if gotSum != wantSum {
+			t.Fatalf("1GiB download sha256 mismatch: got %x, want %x", gotSum, wantSum)
+		}
+		t.Logf("1GiB download verified in %s", time.Since(start))
+	})
+
+	if atomic.LoadInt64(&upstream.uploadN) < oneGiB {
+		t.Fatalf("expected upstream upload >= 1GiB, got %d", atomic.LoadInt64(&upstream.uploadN))
+	}
+	if atomic.LoadInt64(&upstream.downloadN) < oneGiB {
+		t.Fatalf("expected upstream download >= 1GiB, got %d", atomic.LoadInt64(&upstream.downloadN))
 	}
 }

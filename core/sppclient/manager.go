@@ -144,6 +144,7 @@ type nodeRuntime struct {
 	node             *Node
 	localSocks5      string
 	client           *Client
+	clientPtr        atomic.Pointer[Client]
 	alive            atomic.Bool
 	rttMs            atomic.Int64
 	consecutiveOks   atomic.Int32
@@ -164,7 +165,7 @@ func (nr *nodeRuntime) hasRecentTraffic(window time.Duration) bool {
 	if up > 0 && down > 0 && (now-up) <= winNs && (now-down) <= winNs {
 		return true
 	}
-	if nr.client != nil && nr.client.HasRecentTraffic(window) {
+	if cl := nr.clientPtr.Load(); cl != nil && cl.HasRecentTraffic(window) {
 		return true
 	}
 	return false
@@ -469,6 +470,7 @@ func (m *Manager) ensureClientRunningLocked(rt *nodeRuntime) error {
 		return err
 	}
 	rt.client = cl
+	rt.clientPtr.Store(cl)
 	loggo.Info("[SPP Manager] Channel [%s] client started on %s", target.Name, rt.localSocks5)
 	return nil
 }
@@ -630,6 +632,20 @@ func (m *Manager) RecordNodeTraffic(nodeName string, uploadBytes, downloadBytes 
 	}
 }
 
+// HasRecentNodeTraffic reports whether the given node has active bidirectional
+// wire traffic within window (including SPP tunnel traffic draining in flight).
+func (m *Manager) HasRecentNodeTraffic(nodeName string, window time.Duration) bool {
+	if m == nil || m.closed.Load() || nodeName == "" {
+		return false
+	}
+	for _, rt := range m.runtimes {
+		if rt.node.Name == nodeName {
+			return rt.hasRecentTraffic(window)
+		}
+	}
+	return false
+}
+
 // ReportNodeFailure is called when proxying through a specific channel fails.
 func (m *Manager) ReportNodeFailure(nodeName string, err error) {
 	if m.closed.Load() || nodeName == "" {
@@ -779,6 +795,7 @@ func (m *Manager) Close() {
 	defer m.mu.Unlock()
 	for _, rt := range m.runtimes {
 		if rt.client != nil {
+			rt.clientPtr.Store(nil)
 			_ = rt.client.Close()
 			rt.client = nil
 		}
