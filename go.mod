@@ -3,8 +3,8 @@ module github.com/esrrhs/yellowsocks
 go 1.27.1
 
 require (
-	github.com/esrrhs/gohome v0.0.0-20261015024147-9e23221e1fd2
-	github.com/esrrhs/spp v0.14.2-0.20261022082209-bc3d530055c0
+	github.com/esrrhs/gohome v0.0.0-20261022114618-48af50246bae
+	github.com/esrrhs/spp v0.14.2-0.20261022115150-133962f0172c
 	github.com/miekg/dns v1.1.73
 	golang.org/x/net v0.61.0
 	gopkg.in/yaml.v3 v3.0.1
