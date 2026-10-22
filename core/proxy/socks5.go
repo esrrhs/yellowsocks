@@ -691,18 +691,27 @@ func relayStreams(a, b net.Conn, idle time.Duration, sess *stats.Session) {
 				break
 			}
 		}
-		// Half-close the write side if the peer supports it, then drop both
-		// sockets so the opposite pipe unblocks instead of leaking.
+		// Half-close the write side if the peer supports it so the peer sees EOF
+		// without aborting in-flight packets or triggering TCP RST.
 		if tcp, ok := dst.(*net.TCPConn); ok {
 			_ = tcp.CloseWrite()
+		} else {
+			_ = dst.Close()
 		}
-		_ = a.Close()
-		_ = b.Close()
+		// Give the opposite pipe a bounded grace period to complete reading/closing.
+		grace := idle
+		if grace > 15*time.Second {
+			grace = 15 * time.Second
+		}
+		_ = src.SetReadDeadline(time.Now().Add(grace))
+		_ = dst.SetReadDeadline(time.Now().Add(grace))
 	}
 
 	// a is the client side: reading b and writing a is target -> client.
 	go pipe(a, b, sess.AddDownload)
 	go pipe(b, a, sess.AddUpload)
 	wg.Wait()
+	_ = a.Close()
+	_ = b.Close()
 	close(done)
 }
