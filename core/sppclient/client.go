@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/esrrhs/gohome/loggo"
 	"github.com/esrrhs/spp/proxy"
@@ -46,8 +47,8 @@ func NewClient(cfg *Config) (*Client, error) {
 	}
 
 	proxyCfg := proxy.DefaultConfig()
-	proxyCfg.ConnBuffer = 256
-	proxyCfg.MainBuffer = 512
+	proxyCfg.ConnBuffer = 32
+	proxyCfg.MainBuffer = 128
 	proxyCfg.MainWriteChannelTimeoutMs = 0 // 0: 彻底去掉写入超时，只有真出错才报错断开
 	proxyCfg.ConnTimeout = 0               // 0: 彻底去掉空闲超时，不主动断开连接
 	proxyCfg.Key = cfg.Key
@@ -93,6 +94,22 @@ func NewClient(cfg *Config) (*Client, error) {
 	}
 
 	return &Client{sppProxy: c}, nil
+}
+
+// HasRecentTraffic reports whether the underlying SPP client session is
+// established and has recent bidirectional frame activity within window.
+func (c *Client) HasRecentTraffic(window time.Duration) bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	p := c.sppProxy
+	closed := c.closed
+	c.mu.Unlock()
+	if closed || p == nil {
+		return false
+	}
+	return p.HasRecentTraffic(window)
 }
 
 // Close 关闭客户端

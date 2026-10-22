@@ -11,8 +11,8 @@ github.com/envoyproxy/go-control-plane v0.9.4/go.mod h1:6rpuAdCZL397s3pYoYcLgu1m
 github.com/envoyproxy/protoc-gen-validate v0.1.0/go.mod h1:iSmxcyjqTsJpI2R4NaDN7+kN2VEUnK/pcBlmesArF7c=
 github.com/esrrhs/gohome v0.0.0-20261015024147-9e23221e1fd2 h1:uBk/Z/nio2Ye+TQJ+/IJ5sDoJRViT+NkrjCIEpoSx2w=
 github.com/esrrhs/gohome v0.0.0-20261015024147-9e23221e1fd2/go.mod h1:bhp2Q3Ss6WduzSUoSDsQ+owNePeFgp/YXwppsg2YKT4=
-github.com/esrrhs/spp v0.14.2-0.20261022015305-d2b026a6fe32 h1:LrrfF3bRLINl29vrSso/jsdKrNm3+aQOy6lTiKhcVqQ=
-github.com/esrrhs/spp v0.14.2-0.20261022015305-d2b026a6fe32/go.mod h1:mHdv9U6sQIqTeXTBSaljPJTjZh6/wqI1Xu82kreqTWk=
+github.com/esrrhs/spp v0.14.2-0.20261022072855-af4e12823319 h1:+hjXGemz0DmlPfkcd6CZfqhYX7zYHn8WpmumWp1/QAg=
+github.com/esrrhs/spp v0.14.2-0.20261022072855-af4e12823319/go.mod h1:mHdv9U6sQIqTeXTBSaljPJTjZh6/wqI1Xu82kreqTWk=
 github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b/go.mod h1:SBH7ygxi8pfUlaOkMMuAQtPIUF8ecWP5IEl/CR7VP2Q=
 github.com/golang/mock v1.1.1/go.mod h1:oTYuIxOrZwtPieC+H1uAHpcLFnEyAGVDL/k47Jfbm0A=
 github.com/golang/protobuf v1.2.0/go.mod h1:6lQm79b+lXiMfvg/cZm0SGofjICqVBUtrP5yJMmIC1U=

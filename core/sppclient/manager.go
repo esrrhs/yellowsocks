@@ -149,6 +149,25 @@ type nodeRuntime struct {
 	consecutiveOks   atomic.Int32
 	consecutiveFails atomic.Int32
 	activeConns      atomic.Int64
+	lastUploadNano   atomic.Int64
+	lastDownloadNano atomic.Int64
+}
+
+func (nr *nodeRuntime) hasRecentTraffic(window time.Duration) bool {
+	if window <= 0 {
+		window = defaultHealthCheckInterval
+	}
+	now := time.Now().UnixNano()
+	winNs := window.Nanoseconds()
+	up := nr.lastUploadNano.Load()
+	down := nr.lastDownloadNano.Load()
+	if up > 0 && down > 0 && (now-up) <= winNs && (now-down) <= winNs {
+		return true
+	}
+	if nr.client != nil && nr.client.HasRecentTraffic(window) {
+		return true
+	}
+	return false
 }
 
 // calcCost computes connection selection cost:
@@ -307,6 +326,8 @@ func newManager(nodes []*Node, localSocks5 string, interval time.Duration) (*Man
 }
 
 // probeAllNodes probes all nodes in parallel and records results in runtimes.
+// If a node is already alive and has recent bidirectional traffic ("有数据在有来有回"),
+// skip synthetic dial probing to avoid false timeouts when a narrow pipe is saturated.
 func (m *Manager) probeAllNodes() {
 	var wg sync.WaitGroup
 	for i := range m.runtimes {
@@ -314,7 +335,17 @@ func (m *Manager) probeAllNodes() {
 		go func(idx int) {
 			defer wg.Done()
 			rt := m.runtimes[idx]
+			if rt.alive.Load() && rt.hasRecentTraffic(m.healthInterval) {
+				rt.consecutiveOks.Add(1)
+				rt.consecutiveFails.Store(0)
+				return
+			}
 			alive, rtt := probeNodeWithRTT(rt.node, nodeProbeTimeout)
+			if !alive && rt.alive.Load() && rt.hasRecentTraffic(m.healthInterval) {
+				rt.consecutiveOks.Add(1)
+				rt.consecutiveFails.Store(0)
+				return
+			}
 			rt.alive.Store(alive)
 			if alive {
 				rt.rttMs.Store(rtt.Milliseconds())
@@ -574,6 +605,31 @@ func (m *Manager) checkNodes() {
 	}
 }
 
+// RecordNodeTraffic records active proxy payload bytes on the given node.
+// When both upload and download bytes are flowing, the node is known to be alive
+// without needing synthetic probe connections.
+func (m *Manager) RecordNodeTraffic(nodeName string, uploadBytes, downloadBytes int64) {
+	if m == nil || m.closed.Load() || nodeName == "" {
+		return
+	}
+	now := time.Now().UnixNano()
+	for _, rt := range m.runtimes {
+		if rt.node.Name == nodeName {
+			if uploadBytes > 0 {
+				rt.lastUploadNano.Store(now)
+			}
+			if downloadBytes > 0 {
+				rt.lastDownloadNano.Store(now)
+			}
+			if uploadBytes > 0 && downloadBytes > 0 {
+				rt.alive.Store(true)
+				rt.consecutiveFails.Store(0)
+			}
+			return
+		}
+	}
+}
+
 // ReportNodeFailure is called when proxying through a specific channel fails.
 func (m *Manager) ReportNodeFailure(nodeName string, err error) {
 	if m.closed.Load() || nodeName == "" {
@@ -581,14 +637,26 @@ func (m *Manager) ReportNodeFailure(nodeName string, err error) {
 	}
 	for i, rt := range m.runtimes {
 		if rt.node.Name == nodeName {
+			if rt.alive.Load() && rt.hasRecentTraffic(m.healthInterval) {
+				return
+			}
 			fails := rt.consecutiveFails.Add(1)
 			rt.consecutiveOks.Store(0)
 			if fails >= 2 {
 				loggo.Warn("[SPP Manager] Channel [%s] encountered %d failures (%v), probing liveness",
 					nodeName, fails, err)
 				go func(idx int) {
+					r := m.runtimes[idx]
+					if r.alive.Load() && r.hasRecentTraffic(m.healthInterval) {
+						r.consecutiveFails.Store(0)
+						return
+					}
 					alive, rtt := probeNodeWithRTT(m.nodes[idx], nodeProbeTimeout)
-					m.runtimes[idx].alive.Store(alive)
+					if !alive && r.alive.Load() && r.hasRecentTraffic(m.healthInterval) {
+						r.consecutiveFails.Store(0)
+						return
+					}
+					r.alive.Store(alive)
 					if !alive {
 						loggo.Warn("[SPP Manager] Channel [%s] probe confirms down, triggering check", m.nodes[idx].Name)
 						select {
@@ -596,8 +664,8 @@ func (m *Manager) ReportNodeFailure(nodeName string, err error) {
 						default:
 						}
 					} else {
-						m.runtimes[idx].rttMs.Store(rtt.Milliseconds())
-						m.runtimes[idx].consecutiveFails.Store(0)
+						r.rttMs.Store(rtt.Milliseconds())
+						r.consecutiveFails.Store(0)
 					}
 				}(i)
 			}
