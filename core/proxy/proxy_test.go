@@ -1709,20 +1709,19 @@ func startMinimalSocks5Tunnel(t *testing.T) string {
 				}
 				defer targetConn.Close()
 
-				// Mimic SPP: when either side hits EOF after draining its stream,
-				// tear down both sides so a premature client FIN would abort the
-				// server's delayed response if YellowSocks half-closed too early.
 				done := make(chan struct{}, 2)
 				go func() {
 					_, _ = io.Copy(targetConn, clientConn)
-					_ = targetConn.Close()
-					_ = clientConn.Close()
+					if cw, ok := targetConn.(interface{ CloseWrite() error }); ok {
+						_ = cw.CloseWrite()
+					}
 					done <- struct{}{}
 				}()
 				go func() {
 					_, _ = io.Copy(clientConn, targetConn)
-					_ = clientConn.Close()
-					_ = targetConn.Close()
+					if cw, ok := clientConn.(interface{ CloseWrite() error }); ok {
+						_ = cw.CloseWrite()
+					}
 					done <- struct{}{}
 				}()
 				<-done
@@ -1933,6 +1932,7 @@ func TestRelayNarrowPipeSlowUploadAndDownload(t *testing.T) {
 			chunk := make([]byte, 64*1024)
 			var sent int64
 			var seq byte
+			start := time.Now()
 			for sent < totalBytes {
 				for i := range chunk {
 					chunk[i] = seq + byte(i*31)
@@ -1943,6 +1943,10 @@ func TestRelayNarrowPipeSlowUploadAndDownload(t *testing.T) {
 					t.Fatalf("upload write at %d/%d: %v", sent, totalBytes, err)
 				}
 				sent += int64(len(chunk))
+				expected := time.Duration(float64(sent) / float64(narrowPipeRateBps) * float64(time.Second))
+				if sleep := expected - time.Since(start); sleep > 0 {
+					time.Sleep(sleep)
+				}
 			}
 
 			// Half-close write side while the server is still slowly digesting the 8 MiB

@@ -4,7 +4,7 @@ go 1.27.1
 
 require (
 	github.com/esrrhs/gohome v0.0.0-20261022114618-48af50246bae
-	github.com/esrrhs/spp v0.14.2-0.20261022115150-133962f0172c
+	github.com/esrrhs/spp v0.14.2-0.20261022162714-789f238a89d1
 	github.com/miekg/dns v1.1.73
 	golang.org/x/net v0.61.0
 	gopkg.in/yaml.v3 v3.0.1
