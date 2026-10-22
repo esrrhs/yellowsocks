@@ -299,3 +299,27 @@ func TestUDPDatagrams(t *testing.T) {
 		t.Fatalf("udp domains = %+v", d)
 	}
 }
+
+func TestSessionInstantaneousRate(t *testing.T) {
+	c := New(Config{HistoryMinutes: 10})
+	s := c.Begin(ProtoSOCKS5, "c", "dl.com", 443, DecisionProxy, "")
+	defer s.End(nil)
+
+	s.AddDownload(10 << 20)
+	t0 := s.start.Add(time.Second)
+	_, down := s.rates(t0, s.Upload(), s.Download())
+	if down != 10<<20 {
+		t.Fatalf("first sample = %d, want %d", down, 10<<20)
+	}
+	// Transfer stalls: the next interval must report ~0, not the lifetime average.
+	_, down = s.rates(t0.Add(time.Second), s.Upload(), s.Download())
+	if down != 0 {
+		t.Fatalf("idle sample = %d, want 0", down)
+	}
+	// Rapid re-sample inside the minimum interval keeps the previous value.
+	s.AddDownload(1 << 20)
+	_, down2 := s.rates(t0.Add(time.Second+10*time.Millisecond), s.Upload(), s.Download())
+	if down2 != 0 {
+		t.Fatalf("rapid sample = %d, want previous 0", down2)
+	}
+}

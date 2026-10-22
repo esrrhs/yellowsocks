@@ -315,6 +315,37 @@ type Session struct {
 	pendingUp   atomic.Int64
 	pendingDown atomic.Int64
 	done        atomic.Bool
+
+	// Instantaneous rate sampling: each view() compares the byte counters
+	// against the previous sample, so the reported speed reflects the recent
+	// interval rather than the average over the connection's lifetime.
+	rateMu     sync.Mutex
+	rateAt     time.Time
+	rateUp     int64
+	rateDown   int64
+	curUpBps   int64
+	curDownBps int64
+}
+
+// minRateSample is the shortest interval over which a new rate is computed;
+// concurrent or rapid API calls inside it reuse the previous sample.
+const minRateSample = 500 * time.Millisecond
+
+// rates returns the current upload/download speed in bytes per second.
+func (s *Session) rates(now time.Time, up, down int64) (int64, int64) {
+	s.rateMu.Lock()
+	defer s.rateMu.Unlock()
+	if s.rateAt.IsZero() {
+		s.rateAt = s.start
+	}
+	dt := now.Sub(s.rateAt)
+	if dt >= minRateSample {
+		ms := dt.Milliseconds()
+		s.curUpBps = (up - s.rateUp) * 1000 / ms
+		s.curDownBps = (down - s.rateDown) * 1000 / ms
+		s.rateAt, s.rateUp, s.rateDown = now, up, down
+	}
+	return s.curUpBps, s.curDownBps
 }
 
 // Begin registers a new relay. It returns nil when c is nil.
@@ -455,11 +486,7 @@ func (s *Session) flush() {
 func (s *Session) view(now time.Time) SessionView {
 	age := now.Sub(s.start)
 	up, down := s.upload.Load(), s.download.Load()
-	secs := int64(age / time.Second)
-	var upBps, downBps int64
-	if secs > 0 {
-		upBps, downBps = up/secs, down/secs
-	}
+	upBps, downBps := s.rates(now, up, down)
 	return SessionView{
 		ID:        s.id,
 		Proto:     string(s.proto),
@@ -860,7 +887,24 @@ func (c *Collector) ActiveSessions(opt ActiveOptions) []SessionView {
 
 	sort.Slice(all, func(i, j int) bool { return all[i].id > all[j].id })
 	if len(all) > opt.Limit {
-		all = all[:opt.Limit]
+		// Truncating by age alone would hide a long-running heavy download
+		// behind newer idle connections: keep the busiest ones instead.
+		type scored struct {
+			s    *Session
+			rate int64
+		}
+		sc := make([]scored, len(all))
+		for i, s := range all {
+			u, d := s.rates(now, s.upload.Load(), s.download.Load())
+			sc[i] = scored{s, u + d}
+		}
+		sort.SliceStable(sc, func(i, j int) bool { return sc[i].rate > sc[j].rate })
+		keep := sc[:opt.Limit]
+		sort.Slice(keep, func(i, j int) bool { return keep[i].s.id > keep[j].s.id })
+		all = all[:0]
+		for _, k := range keep {
+			all = append(all, k.s)
+		}
 	}
 	out := make([]SessionView, 0, len(all))
 	for _, s := range all {

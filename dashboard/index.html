@@ -405,7 +405,7 @@ footer{
       <div class="scroll">
         <table id="tbl-conns"><thead><tr>
           <th>目标</th><th data-k="proto">协议</th><th data-k="decision">路由</th>
-          <th data-k="age">时长</th><th data-k="up">上行</th><th data-k="down">下行</th>
+          <th data-k="age">时长</th><th data-k="uprate">↑ 实时</th><th data-k="downrate">↓ 实时</th><th data-k="up">上行累计</th><th data-k="down">下行累计</th>
         </tr></thead><tbody></tbody></table>
       </div>
     </div>
@@ -518,7 +518,7 @@ footer{
   var S = {
     range: localStorage.getItem('ys_range') || '1h',
     showUp: true, showDown: true,
-    sort: { k: 'age', dir: -1 },
+    sort: { k: 'downrate', dir: -1 },
     filter: '',
     lastAt: 0, timer: null, rangeBtns: null
   };
@@ -826,6 +826,8 @@ footer{
     rows.sort(function (a, b) {
       var av, bv;
       if (k === 'age') { av = a.age_ms; bv = b.age_ms; }
+      else if (k === 'uprate') { av = a.upload_bps || 0; bv = b.upload_bps || 0; }
+      else if (k === 'downrate') { av = a.download_bps || 0; bv = b.download_bps || 0; }
       else if (k === 'up') { av = a.upload_bytes; bv = b.upload_bytes; }
       else if (k === 'down') { av = a.download_bytes; bv = b.download_bytes; }
       else if (k === 'proto') { return dir * String(a.proto).localeCompare(String(b.proto)); }
@@ -838,14 +840,16 @@ footer{
       var tag = c.decision === 'proxy' ? '<span class="tag p">代理</span>'
         : c.decision === 'direct' ? '<span class="tag d">直连</span>' : '<span class="tag">–</span>';
       html += '<tr><td title="' + esc(c.client) + ' → ' + esc(c.host) + ':' + c.port + '">' +
-        esc(c.host) + ':' + c.port + '</td>' +
+        esc(c.host) + ':' + c.port + (c.node ? ' <span class="hint">· ' + esc(c.node) + '</span>' : '') + '</td>' +
         '<td>' + esc(c.proto) + '</td><td>' + tag + '</td>' +
         '<td>' + fmtDur(c.age_ms / 1000) + '</td>' +
+        '<td' + (c.upload_bps > 0 ? ' style="font-weight:600"' : '') + '>' + fmtBps(c.upload_bps || 0) + '</td>' +
+        '<td' + (c.download_bps > 0 ? ' style="font-weight:600"' : '') + '>' + fmtBps(c.download_bps || 0) + '</td>' +
         '<td>' + fmtBytes(c.upload_bytes) + '</td>' +
         '<td>' + fmtBytes(c.download_bytes) + '</td></tr>';
     }
     $('tbl-conns').querySelector('tbody').innerHTML = html ||
-      '<tr><td colspan="6" class="hint">' + (connsCache.length ? '无匹配' : '当前没有连接') + '</td></tr>';
+      '<tr><td colspan="8" class="hint">' + (connsCache.length ? '无匹配' : '当前没有连接') + '</td></tr>';
     $('conn-note').textContent = connsCache.length + ' 条' + (f ? ' · 筛出 ' + rows.length : '');
   }
 
