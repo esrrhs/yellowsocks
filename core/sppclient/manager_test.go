@@ -363,3 +363,57 @@ func TestFastFailoverOnReportFailure(t *testing.T) {
 	})
 }
 
+func TestSmartMultiPathBalancing(t *testing.T) {
+	l1 := listenTCP(t)
+	acceptAndClose(t, l1)
+	l2 := listenTCP(t)
+	acceptAndClose(t, l2)
+	l3 := listenTCP(t)
+	acceptAndClose(t, l3)
+
+	n1 := &Node{Name: "cf-kcp", Server: l1.Addr().String(), ServerProto: "tcp", Priority: 2, Bandwidth: 100, Key: "k"}
+	n2 := &Node{Name: "cf-rudp", Server: l2.Addr().String(), ServerProto: "tcp", Priority: 2, Bandwidth: 100, Key: "k"}
+	n3 := &Node{Name: "cf-quic", Server: l3.Addr().String(), ServerProto: "tcp", Priority: 2, Bandwidth: 100, Key: "k"}
+
+	m, err := newManager([]*Node{n1, n2, n3}, reserveTCPPort(t), 1*time.Second)
+	if err != nil {
+		t.Fatalf("newManager: %v", err)
+	}
+	defer m.Close()
+
+	// In the active tier, all alive nodes must be active
+	statuses := m.NodeStatuses()
+	for _, s := range statuses {
+		if !s.Active {
+			t.Fatalf("Node %s in active priority tier should have Active: true", s.Name)
+		}
+	}
+
+	// Pick nodes for 9 connections
+	chosenCounts := make(map[string]int)
+	var releases []func()
+	for i := 0; i < 9; i++ {
+		_, name, release := m.PickNode()
+		chosenCounts[name]++
+		releases = append(releases, release)
+	}
+
+	// Verify all 3 channels shared the load (each got at least 2 connections)
+	for _, name := range []string{"cf-kcp", "cf-rudp", "cf-quic"} {
+		if chosenCounts[name] < 2 {
+			t.Fatalf("Channel %s was not balanced, got %d connections", name, chosenCounts[name])
+		}
+	}
+
+	// Release connections and check activeConns is decremented
+	for _, rel := range releases {
+		rel()
+	}
+
+	for _, s := range m.NodeStatuses() {
+		if s.ActiveConns != 0 {
+			t.Fatalf("Node %s activeConns=%d, want 0 after release", s.Name, s.ActiveConns)
+		}
+	}
+}
+
