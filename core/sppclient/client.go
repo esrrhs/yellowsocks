@@ -46,6 +46,9 @@ func NewClient(cfg *Config) (*Client, error) {
 	}
 
 	proxyCfg := proxy.DefaultConfig()
+	proxyCfg.ConnBuffer = 256
+	proxyCfg.MainBuffer = 512
+	proxyCfg.MainWriteChannelTimeoutMs = 30000
 	proxyCfg.Key = cfg.Key
 	// "default" 与空值都表示关闭加密，与 spp -encrypt 留空的行为一致。
 	// spp 会拒绝 default/password 这类弱密钥，不能原样传进去。
