@@ -120,20 +120,23 @@ func probeNode(node *Node) bool {
 // Under lossy cross-border WAN conditions:
 // TCP: kernel-level congestion control & SACK (most robust against random drop)
 // KCP: FEC redundancy option (highly robust when configured)
-// QUIC: user-space multi-stream over UDP
-// RUDP: basic stop-and-wait / window UDP
+// RUDP: optimized UDP reliable transfer (high throughput, resilient)
+// QUIC: user-space multi-stream over UDP (susceptible to stream window exhaustion on heavy upload)
+// RHTTP: chunked HTTP request/response fallback
 func protoRobustnessBase(proto string) int {
 	switch strings.ToLower(strings.TrimSpace(proto)) {
 	case "tcp", "":
 		return 100
 	case "kcp":
 		return 95
-	case "quic":
-		return 85
 	case "rudp":
-		return 75
+		return 90
+	case "quic":
+		return 50
+	case "rhttp":
+		return 40
 	default:
-		return 70
+		return 30
 	}
 }
 
