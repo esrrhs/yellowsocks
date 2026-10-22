@@ -614,17 +614,20 @@ footer{
     if (!pts.length) { box.innerHTML = '<div class="empty">暂无数据</div>'; return; }
 
     var w = box.clientWidth || 900, h = box.clientHeight || 210;
-    var padL = 56, padR = 8, padT = 10, padB = 22;
+    var padL = 66, padR = 8, padT = 10, padB = 22;
     var iw = Math.max(40, w - padL - padR), ih = Math.max(30, h - padT - padB);
+
+    var stepSec = Math.max(1, (tr && tr.step_seconds) || 60);
+    var dlRate = function (p) { return (p.download_bytes || 0) / stepSec; };
+    var ulRate = function (p) { return (p.upload_bytes || 0) / stepSec; };
 
     var max = 0;
     for (var i = 0; i < pts.length; i++) {
-      if (S.showDown) max = Math.max(max, pts[i].download_bytes);
-      if (S.showUp) max = Math.max(max, pts[i].upload_bytes);
+      if (S.showDown) max = Math.max(max, dlRate(pts[i]));
+      if (S.showUp) max = Math.max(max, ulRate(pts[i]));
     }
     if (max <= 0) max = 1024;
-    // 刻度要能读：字节用的是 1024 进制，所以步长也取 2 的幂的整数倍，
-    // 否则会写出 14.3 MB / 9.54 MB 这种没法一眼比较的数。
+    // 刻度要能读：速率用的是 1024 进制（B/s、KB/s、MB/s），所以步长也取 2 的幂的整数倍
     var stepY = niceByteStep(max / 4), top = Math.ceil(max / stepY) * stepY;
 
     var x = function (i) { return padL + (pts.length === 1 ? iw / 2 : iw * i / (pts.length - 1)); };
@@ -636,21 +639,22 @@ footer{
       var gy = y(g);
       s += '<line class="grid' + (g === 0 ? ' z' : '') + '" x1="' + padL + '" y1="' + gy.toFixed(1) +
            '" x2="' + (padL + iw) + '" y2="' + gy.toFixed(1) + '"/>';
-      s += '<text x="' + (padL - 8) + '" y="' + (gy + 3).toFixed(1) + '" text-anchor="end">' + fmtBytes(g) + '</text>';
+      s += '<text x="' + (padL - 8) + '" y="' + (gy + 3).toFixed(1) + '" text-anchor="end">' + fmtBps(g) + '</text>';
     }
     // 面积 + 折线
-    function series(key, ac, sc) {
+    function series(fn, ac, sc) {
       var d = '', a = 'M ' + padL + ' ' + (padT + ih);
       for (var i = 0; i < pts.length; i++) {
-        d += (i ? ' L ' : 'M ') + x(i).toFixed(1) + ' ' + y(pts[i][key]).toFixed(1);
-        a += ' L ' + x(i).toFixed(1) + ' ' + y(pts[i][key]).toFixed(1);
+        var v = fn(pts[i]);
+        d += (i ? ' L ' : 'M ') + x(i).toFixed(1) + ' ' + y(v).toFixed(1);
+        a += ' L ' + x(i).toFixed(1) + ' ' + y(v).toFixed(1);
       }
       a += ' L ' + x(pts.length - 1).toFixed(1) + ' ' + (padT + ih) + ' Z';
       return '<path class="' + ac + '" d="' + a + '"/>' +
              '<path class="' + sc + '" d="' + d + '" vector-effect="non-scaling-stroke"/>';
     }
-    if (S.showDown) s += series('download_bytes', 'a-dl', 's-dl');
-    if (S.showUp) s += series('upload_bytes', 'a-ul', 's-ul');
+    if (S.showDown) s += series(dlRate, 'a-dl', 's-dl');
+    if (S.showUp) s += series(ulRate, 'a-ul', 's-ul');
     // 横轴时间
     var ticks = Math.min(6, pts.length);
     for (var t = 0; t < ticks; t++) {
@@ -683,10 +687,12 @@ footer{
       i = Math.min(pts.length - 1, Math.max(0, i));
       var p = pts[i], cx = x(i);
       hl.setAttribute('x1', cx); hl.setAttribute('x2', cx); hl.setAttribute('opacity', '1');
-      if (S.showDown) { hd.setAttribute('cx', cx); hd.setAttribute('cy', y(p.download_bytes)); hd.setAttribute('opacity', '1'); }
-      if (S.showUp) { hu.setAttribute('cx', cx); hu.setAttribute('cy', y(p.upload_bytes)); hu.setAttribute('opacity', '1'); }
-      tip.innerHTML = '<em>' + fmtClock(p.t) + '</em><br>下载 ' + fmtBytes(p.download_bytes) +
-        '<br>上传 ' + fmtBytes(p.upload_bytes) + '<br><em>连接 ' + p.conns + ' · 错误 ' + p.errors + '</em>';
+      if (S.showDown) { hd.setAttribute('cx', cx); hd.setAttribute('cy', y(dlRate(p))); hd.setAttribute('opacity', '1'); }
+      if (S.showUp) { hu.setAttribute('cx', cx); hu.setAttribute('cy', y(ulRate(p))); hu.setAttribute('opacity', '1'); }
+      tip.innerHTML = '<em>' + fmtClock(p.t) + '</em>' +
+        '<br>下载 ' + fmtBps(dlRate(p)) + ' <em>(' + fmtBytes(p.download_bytes) + ')</em>' +
+        '<br>上传 ' + fmtBps(ulRate(p)) + ' <em>(' + fmtBytes(p.upload_bytes) + ')</em>' +
+        '<br><em>连接 ' + p.conns + ' · 错误 ' + p.errors + '</em>';
       tip.classList.add('on');
       var tw = tip.offsetWidth, left = ev.clientX - r.left + 14;
       if (left + tw > r.width) left = ev.clientX - r.left - tw - 12;
@@ -698,7 +704,7 @@ footer{
       hl.setAttribute('opacity', '0'); hd.setAttribute('opacity', '0'); hu.setAttribute('opacity', '0');
     };
 
-    $('chart-note').textContent = '步长 ' + (tr.step_seconds || 0) + ' 秒 · ' + pts.length + ' 点 · 纵轴为每步字节数';
+    $('chart-note').textContent = '步长 ' + stepSec + ' 秒 · ' + pts.length + ' 点 · 纵轴为步长内平均速率';
   }
   // 换主题或改窗口宽度时重画：SVG 里的颜色靠 CSS 变量，尺寸则要按新宽度重算
   function redrawChart() { if (lastTraffic) renderChart(lastTraffic); }

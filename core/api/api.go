@@ -586,7 +586,9 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	cfg := s.deps.Stats.Config()
 	oldest, newest := s.deps.Stats.HistoryWindow()
 
-	// Merge per-node traffic into the node list from the engine.
+	// Merge per-node traffic into the configured node list from the engine.
+	// Deleted/unconfigured historical nodes in stats are intentionally omitted
+	// so they do not appear as phantom offline nodes on the dashboard.
 	traffic := s.deps.Stats.Nodes()
 	byName := make(map[string]stats.NodeStat, len(traffic))
 	for _, n := range traffic {
@@ -597,24 +599,6 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 			info.Nodes[i].Conns = t.Conns
 			info.Nodes[i].Upload = t.Upload
 			info.Nodes[i].Download = t.Download
-		}
-	}
-	// Nodes that carried traffic but are no longer configured still count.
-	for _, t := range traffic {
-		known := false
-		for i := range info.Nodes {
-			if info.Nodes[i].Name == t.Name {
-				known = true
-				break
-			}
-		}
-		if !known {
-			info.Nodes = append(info.Nodes, NodeInfo{
-				Name:     t.Name,
-				Conns:    t.Conns,
-				Upload:   t.Upload,
-				Download: t.Download,
-			})
 		}
 	}
 
