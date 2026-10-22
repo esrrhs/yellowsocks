@@ -41,12 +41,6 @@ type NodeTrafficRecorder interface {
 	RecordNodeTraffic(nodeName string, uploadBytes, downloadBytes int64)
 }
 
-// NodeTrafficChecker reports whether an upstream node is actively exchanging
-// wire traffic (e.g. draining buffered upload frames across a narrow pipe).
-type NodeTrafficChecker interface {
-	HasRecentNodeTraffic(nodeName string, window time.Duration) bool
-}
-
 func recordNodeTraffic(u UpstreamProvider, nodeName string, up, down int64) {
 	if nodeName == "" || u == nil {
 		return
@@ -54,16 +48,6 @@ func recordNodeTraffic(u UpstreamProvider, nodeName string, up, down int64) {
 	if rec, ok := u.(NodeTrafficRecorder); ok {
 		rec.RecordNodeTraffic(nodeName, up, down)
 	}
-}
-
-func hasActiveNodeTraffic(u UpstreamProvider, nodeName string, window time.Duration) bool {
-	if nodeName == "" || u == nil {
-		return false
-	}
-	if chk, ok := u.(NodeTrafficChecker); ok {
-		return chk.HasRecentNodeTraffic(nodeName, window)
-	}
-	return false
 }
 
 // Socks5Config configures the SOCKS5 server
@@ -756,10 +740,6 @@ func relayStreamsWithNode(a, b net.Conn, idle time.Duration, sess *stats.Session
 				return
 			case <-ticker.C:
 				if d := time.Since(time.Unix(0, atomic.LoadInt64(&lastActivity))); d > idle {
-					if hasActiveNodeTraffic(upstream, nodeName, idle) {
-						touch(time.Now().UnixNano())
-						continue
-					}
 					// Closing the sockets unblocks the blocked Read calls.
 					_ = a.Close()
 					_ = b.Close()
@@ -774,7 +754,7 @@ func relayStreamsWithNode(a, b net.Conn, idle time.Duration, sess *stats.Session
 	var openPipes int32 = 2
 	var writeAborted int32
 	wg.Add(2)
-	pipe := func(dst, src net.Conn, dstIsSPP bool, count func(int64)) {
+	pipe := func(dst, src net.Conn, count func(int64)) {
 		defer wg.Done()
 		bufp := relayBufPool.Get().(*[relayCopyBufferSize]byte)
 		defer relayBufPool.Put(bufp)
@@ -803,32 +783,32 @@ func relayStreamsWithNode(a, b net.Conn, idle time.Duration, sess *stats.Session
 				touch(time.Now().UnixNano())
 			}
 			if rerr != nil {
-				if ne, ok := rerr.(net.Error); ok && ne.Timeout() && atomic.LoadInt32(&writeAborted) == 0 && hasActiveNodeTraffic(upstream, nodeName, idle) {
-					now := time.Now()
-					touch(now.UnixNano())
-					_ = src.SetReadDeadline(now.Add(idle))
+				// In a long one-way transfer (e.g. a 1 GiB download where the
+				// client sent a short request and then stays silent), src's read
+				// deadline expires even though the opposite pipe of THIS connection
+				// is actively transferring bytes and updating lastActivity.
+				if ne, ok := rerr.(net.Error); ok && ne.Timeout() &&
+					atomic.LoadInt32(&writeAborted) == 0 &&
+					atomic.LoadInt32(&openPipes) == 2 &&
+					time.Since(time.Unix(0, atomic.LoadInt64(&lastActivity))) < idle {
+					_ = src.SetReadDeadline(time.Now().Add(idle))
 					continue
 				}
 				break
 			}
 		}
-		remaining := atomic.AddInt32(&openPipes, -1)
+		atomic.AddInt32(&openPipes, -1)
 		// Half-close the write side if the peer supports it so the peer sees EOF
 		// without aborting in-flight packets or triggering TCP RST.
-		// When dst is an SPP tunnel socket and the reverse pipe is still open,
-		// avoid sending FIN prematurely so SPP does not tear down the tunnel
-		// while an upload is still draining over a narrow pipe.
-		if !dstIsSPP || remaining <= 0 {
-			if cw, ok := dst.(interface{ CloseWrite() error }); ok {
-				_ = cw.CloseWrite()
-			} else {
-				_ = dst.Close()
-			}
+		if cw, ok := dst.(interface{ CloseWrite() error }); ok {
+			_ = cw.CloseWrite()
+		} else {
+			_ = dst.Close()
 		}
 		// Give the opposite pipe a bounded grace period to complete reading/closing.
 		// Active streams refresh their own SetReadDeadline(now.Add(idle)) on each Read.
 		grace := idle
-		if !dstIsSPP && nodeName == "" && grace > 15*time.Second {
+		if grace > 15*time.Second {
 			grace = 15 * time.Second
 		}
 		_ = src.SetReadDeadline(time.Now().Add(grace))
@@ -836,11 +816,11 @@ func relayStreamsWithNode(a, b net.Conn, idle time.Duration, sess *stats.Session
 	}
 
 	// a is the client side: reading b and writing a is target -> client.
-	go pipe(a, b, false, func(n int64) {
+	go pipe(a, b, func(n int64) {
 		sess.AddDownload(n)
 		recordNodeTraffic(upstream, nodeName, 0, n)
 	})
-	go pipe(b, a, nodeName != "", func(n int64) {
+	go pipe(b, a, func(n int64) {
 		sess.AddUpload(n)
 		recordNodeTraffic(upstream, nodeName, n, 0)
 	})
