@@ -307,7 +307,7 @@ type Session struct {
 	host     string
 	port     int
 	decision Decision
-	node     string
+	node     atomic.Pointer[string]
 	start    time.Time
 
 	upload      atomic.Int64
@@ -330,8 +330,10 @@ func (c *Collector) Begin(p Proto, client, host string, port int, d Decision, no
 		host:     host,
 		port:     port,
 		decision: d,
-		node:     node,
 		start:    time.Now(),
+	}
+	if node != "" {
+		s.node.Store(&node)
 	}
 	c.mu.Lock()
 	c.active[s.id] = s
@@ -386,6 +388,26 @@ func (s *Session) AddDatagram(host string, d Decision, up, down int64) {
 		s.c.addDomain(host, d, up, down, 0, false)
 	}
 	s.flush()
+}
+
+// SetNode sets or updates the SPP upstream node associated with this session.
+func (s *Session) SetNode(name string) {
+	if s == nil || name == "" {
+		return
+	}
+	s.node.Store(&name)
+}
+
+// Node returns the name of the SPP node associated with this session.
+func (s *Session) Node() string {
+	if s == nil {
+		return ""
+	}
+	ptr := s.node.Load()
+	if ptr == nil {
+		return ""
+	}
+	return *ptr
 }
 
 // End closes the session and commits its counters. err, when non-nil, is
@@ -445,7 +467,7 @@ func (s *Session) view(now time.Time) SessionView {
 		Host:      s.host,
 		Port:      s.port,
 		Decision:  string(s.decision),
-		Node:      s.node,
+		Node:      s.Node(),
 		Start:     s.start.Unix(),
 		AgeMs:     age.Milliseconds(),
 		Upload:    up,
@@ -473,11 +495,12 @@ func (c *Collector) finish(s *Session, err error) {
 		pd := s.pendingDown.Swap(0)
 		c.addDomainLocked(s.host, s.decision, pu, pd, 1, err != nil)
 	}
-	if s.decision == DecisionProxy && s.node != "" {
-		n := c.nodes[s.node]
+	nodeName := s.Node()
+	if s.decision == DecisionProxy && nodeName != "" {
+		n := c.nodes[nodeName]
 		if n == nil {
-			n = &NodeStat{Name: s.node}
-			c.nodes[s.node] = n
+			n = &NodeStat{Name: nodeName}
+			c.nodes[nodeName] = n
 		}
 		n.Conns++
 		n.Upload += up

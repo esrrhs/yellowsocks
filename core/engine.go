@@ -343,14 +343,15 @@ func (e *Engine) APIInfo() api.SystemInfo {
 	if e.sppManager != nil {
 		for _, n := range e.sppManager.NodeStatuses() {
 			info.Nodes = append(info.Nodes, api.NodeInfo{
-				Name:      n.Name,
-				Server:    n.Server,
-				Proto:     n.Proto,
-				Priority:  n.Priority,
-				Bandwidth: n.Bandwidth,
-				RTTMs:     n.RTTMs,
-				Alive:     n.Alive,
-				Active:    n.Active,
+				Name:        n.Name,
+				Server:      n.Server,
+				Proto:       n.Proto,
+				Priority:    n.Priority,
+				Bandwidth:   n.Bandwidth,
+				RTTMs:       n.RTTMs,
+				Alive:       n.Alive,
+				Active:      n.Active,
+				ActiveConns: n.ActiveConns,
 			})
 		}
 	}
