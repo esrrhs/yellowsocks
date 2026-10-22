@@ -517,12 +517,13 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 			_, _ = clientConn.Write([]byte(http502))
 			return
 		}
+		recordNodeTraffic(s.cfg.Upstream, nodeName, 1, 1)
 
 		const http200 = "HTTP/1.1 200 Connection Established\r\n\r\n"
 		if _, err := clientConn.Write([]byte(http200)); err != nil {
 			return
 		}
-		relayStreams(tunnelConn, sppConn, s.cfg.IdleTimeout, sess)
+		relayStreamsWithNode(tunnelConn, sppConn, s.cfg.IdleTimeout, sess, s.cfg.Upstream, nodeName)
 	}
 }
 
@@ -571,6 +572,7 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 
 	var targetConn net.Conn
 	var err error
+	var proxyNodeName string
 
 	if decision == router.Direct {
 		targetConn, err = net.DialTimeout("tcp", targetAddr, 10*time.Second)
@@ -599,6 +601,7 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 		}
 		if nodeName != "" {
 			sess.SetNode(nodeName)
+			proxyNodeName = nodeName
 		}
 
 		if sppAddr == "" {
@@ -616,6 +619,7 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 				}
 				if hsErr := network.Sock5Handshake(sppConn, 5000, user, pass); hsErr == nil {
 					if reqErr := network.Sock5SetRequest(sppConn, targetHost, targetPort, 10000); reqErr == nil {
+						recordNodeTraffic(s.cfg.Upstream, nodeName, 1, 1)
 						targetConn = sppConn
 					}
 				}
@@ -647,7 +651,7 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 		br:   br,
 	}
 
-	relayStreams(clientPrefixed, targetConn, s.cfg.IdleTimeout, sess)
+	relayStreamsWithNode(clientPrefixed, targetConn, s.cfg.IdleTimeout, sess, s.cfg.Upstream, proxyNodeName)
 }
 
 type prefixedReaderConn struct {

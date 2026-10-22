@@ -417,3 +417,36 @@ func TestSmartMultiPathBalancing(t *testing.T) {
 	}
 }
 
+func TestSkipProbeWhenBidirectionalTrafficActive(t *testing.T) {
+	l1 := listenTCP(t)
+	acceptAndClose(t, l1)
+	l2 := listenTCP(t)
+	acceptAndClose(t, l2)
+
+	n1 := &Node{Name: "p1-active", Server: l1.Addr().String(), ServerProto: "tcp", Priority: 1, Bandwidth: 200, Key: "k"}
+	n2 := &Node{Name: "p2-backup", Server: l2.Addr().String(), ServerProto: "tcp", Priority: 2, Bandwidth: 100, Key: "k"}
+
+	m, err := newManager([]*Node{n1, n2}, reserveTCPPort(t), 1*time.Second)
+	if err != nil {
+		t.Fatalf("newManager: %v", err)
+	}
+	defer m.Close()
+
+	// Close l1 so a synthetic dial probe would fail, simulating a saturated narrow pipe
+	// where new probe connections time out, while existing connections actively carry bidirectional traffic.
+	_ = l1.Close()
+
+	// Record bidirectional traffic on p1-active
+	m.RecordNodeTraffic("p1-active", 65536, 4096)
+
+	// Run health check: since p1-active has recent bidirectional traffic, it must NOT be marked dead.
+	m.checkNodes()
+	if !m.NodeAlive(0) {
+		t.Fatal("p1-active should remain alive without synthetic probe when bidirectional traffic is flowing")
+	}
+	if m.ActiveNodeIndex() != 0 {
+		t.Fatalf("ActiveNodeIndex = %d, want 0 (p1-active)", m.ActiveNodeIndex())
+	}
+}
+
+

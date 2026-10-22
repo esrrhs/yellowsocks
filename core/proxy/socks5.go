@@ -35,6 +35,21 @@ type NodeFailureReporter interface {
 	ReportNodeFailure(nodeName string, err error)
 }
 
+// NodeTrafficRecorder records bidirectional payload activity for a node so
+// liveness probes know the channel is actively carrying traffic.
+type NodeTrafficRecorder interface {
+	RecordNodeTraffic(nodeName string, uploadBytes, downloadBytes int64)
+}
+
+func recordNodeTraffic(u UpstreamProvider, nodeName string, up, down int64) {
+	if nodeName == "" || u == nil {
+		return
+	}
+	if rec, ok := u.(NodeTrafficRecorder); ok {
+		rec.RecordNodeTraffic(nodeName, up, down)
+	}
+}
+
 // Socks5Config configures the SOCKS5 server
 type Socks5Config struct {
 	ListenAddr string
@@ -379,11 +394,12 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 			_ = network.Sock5SendConnectReply(clientConn, 0x01, "0.0.0.0:0")
 			return
 		}
+		recordNodeTraffic(s.cfg.Upstream, nodeName, 1, 1)
 
 		if err := network.Sock5SendConnectReply(clientConn, 0x00, "0.0.0.0:0"); err != nil {
 			return
 		}
-		relayStreams(clientConn, sppConn, s.cfg.IdleTimeout, sess)
+		relayStreamsWithNode(clientConn, sppConn, s.cfg.IdleTimeout, sess, s.cfg.Upstream, nodeName)
 	}
 }
 
@@ -701,6 +717,10 @@ func statsDecision(d router.RouteDecision) stats.Decision {
 // download (target -> client). sess may be nil, in which case no traffic is
 // accounted.
 func relayStreams(a, b net.Conn, idle time.Duration, sess *stats.Session) {
+	relayStreamsWithNode(a, b, idle, sess, nil, "")
+}
+
+func relayStreamsWithNode(a, b net.Conn, idle time.Duration, sess *stats.Session, upstream UpstreamProvider, nodeName string) {
 	// lastActivity is shared by both directions, so a one-way transfer (e.g. a
 	// long download with no upstream data) keeps the connection alive.
 	lastActivity := time.Now().UnixNano()
@@ -776,8 +796,14 @@ func relayStreams(a, b net.Conn, idle time.Duration, sess *stats.Session) {
 	}
 
 	// a is the client side: reading b and writing a is target -> client.
-	go pipe(a, b, sess.AddDownload)
-	go pipe(b, a, sess.AddUpload)
+	go pipe(a, b, func(n int64) {
+		sess.AddDownload(n)
+		recordNodeTraffic(upstream, nodeName, 0, n)
+	})
+	go pipe(b, a, func(n int64) {
+		sess.AddUpload(n)
+		recordNodeTraffic(upstream, nodeName, n, 0)
+	})
 	wg.Wait()
 	_ = a.Close()
 	_ = b.Close()
