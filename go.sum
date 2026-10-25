@@ -13,8 +13,8 @@ github.com/esrrhs/gohome v0.0.0-20261024072020-1170d06f44ad h1:pVdVBAonRZow4XmUV
 github.com/esrrhs/gohome v0.0.0-20261024072020-1170d06f44ad/go.mod h1:bhp2Q3Ss6WduzSUoSDsQ+owNePeFgp/YXwppsg2YKT4=
 github.com/esrrhs/pingtunnel v0.0.0-20261025135301-34eca49e383f h1:IG8UhPMlXoWDNyalsVaQIQzmZRLgP7YHE1NCOK4+rVY=
 github.com/esrrhs/pingtunnel v0.0.0-20261025135301-34eca49e383f/go.mod h1:t+6DHT2RnHXZq62L2h4h1jDvZmMUCPlTa9fkreqnnj4=
-github.com/esrrhs/spp v0.14.2-0.20261023025502-bd7e609cd9fe h1:rk84G+x2/CGuny7PIVFCNOqTVBSExK05eYUafceQhwQ=
-github.com/esrrhs/spp v0.14.2-0.20261023025502-bd7e609cd9fe/go.mod h1:0jkgpvf6CMhYkDF3evHwFVY0pR7sPyjhKHgvBHUXWVg=
+github.com/esrrhs/spp v0.14.2-0.20261025145204-a37a41aaf073 h1:AecHeDmY3UTjBUca+y4w7Ev9K6l3SVBQE5Cd6lRKOFs=
+github.com/esrrhs/spp v0.14.2-0.20261025145204-a37a41aaf073/go.mod h1:0jkgpvf6CMhYkDF3evHwFVY0pR7sPyjhKHgvBHUXWVg=
 github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b/go.mod h1:SBH7ygxi8pfUlaOkMMuAQtPIUF8ecWP5IEl/CR7VP2Q=
 github.com/golang/mock v1.1.1/go.mod h1:oTYuIxOrZwtPieC+H1uAHpcLFnEyAGVDL/k47Jfbm0A=
 github.com/golang/protobuf v1.2.0/go.mod h1:6lQm79b+lXiMfvg/cZm0SGofjICqVBUtrP5yJMmIC1U=
