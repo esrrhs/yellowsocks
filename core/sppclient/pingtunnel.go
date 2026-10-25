@@ -94,10 +94,9 @@ func newPingTunnelClient(cfg *Config) (*pingTunnelClient, error) {
 	}
 
 	loggo.Info("[PingTunnel] Starting client to %s, local socks5: %s", cfg.Server, cfg.LocalSocks5)
-	// SOCKS5 mode requires pingtunnel's TCP mode; values match the pingtunnel CLI defaults.
+	// SOCKS5 mode runs with udpMode=false, socks5=true.
 	c, err := pingtunnel.NewClient(cfg.LocalSocks5, pingTunnelHost(cfg.Server), "", 60, authCode, "0.0.0.0",
-		1, 1*1024*1024, 20000, 400, 0,
-		0, 1, 0, crypto,
+		false, true, 0, crypto,
 		"", "", "bb")
 	if err != nil {
 		return nil, fmt.Errorf("failed to init pingtunnel client: %w", err)
@@ -143,8 +142,7 @@ func probePingTunnel(node *Node, timeout time.Duration) (bool, time.Duration) {
 	}
 	// UDP mode on an ephemeral loopback port: we only need the ping/pong exchange.
 	c, err := pingtunnel.NewClient("127.0.0.1:0", pingTunnelHost(node.Server), "", 60, authCode, "0.0.0.0",
-		0, 0, 0, 0, 0,
-		0, 0, 0, crypto,
+		true, false, 0, crypto,
 		"", "", "")
 	if err != nil {
 		return false, 0
