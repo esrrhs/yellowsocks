@@ -9,10 +9,10 @@ github.com/creack/pty v1.1.9/go.mod h1:oKZEueFk5CKHvIhNR5MUki03XCEU+Q6VDXinZuGJ3
 github.com/envoyproxy/go-control-plane v0.9.0/go.mod h1:YTl/9mNaCwkRvm6d1a2C3ymFceY/DCBVvsKhRF0iEA4=
 github.com/envoyproxy/go-control-plane v0.9.4/go.mod h1:6rpuAdCZL397s3pYoYcLgu1mIlRU8Am5FuJP05cCM98=
 github.com/envoyproxy/protoc-gen-validate v0.1.0/go.mod h1:iSmxcyjqTsJpI2R4NaDN7+kN2VEUnK/pcBlmesArF7c=
-github.com/esrrhs/gohome v0.0.0-20261025162456-d37105ef8ea3 h1:wHiullAYf3u5N+xgxzWxE75KY0dByaUlOFFWqJpngaU=
-github.com/esrrhs/gohome v0.0.0-20261025162456-d37105ef8ea3/go.mod h1:bhp2Q3Ss6WduzSUoSDsQ+owNePeFgp/YXwppsg2YKT4=
-github.com/esrrhs/pingtunnel v0.0.0-20261025163345-74667ce0f220 h1:nsMzmWwPWm9fgDSHFB6o446xuC7LfwKf8Y2CrbWuCL4=
-github.com/esrrhs/pingtunnel v0.0.0-20261025163345-74667ce0f220/go.mod h1:3Spv+GVNIcbXbk7bJrkcLmy3jrAt+HpK7igq9F9z7QQ=
+github.com/esrrhs/gohome v0.0.0-20261025165400-5397c569b4d0 h1:Mzh0YUXNEJO3pPtESUK1ql3EJ9QkgfHb8u/VXrPoBuk=
+github.com/esrrhs/gohome v0.0.0-20261025165400-5397c569b4d0/go.mod h1:bhp2Q3Ss6WduzSUoSDsQ+owNePeFgp/YXwppsg2YKT4=
+github.com/esrrhs/pingtunnel v0.0.0-20261025165852-5718de02baba h1:DPAKGgxG5qVgeosXAAOK1050uD7TafdkXyWJzZ7o+Fk=
+github.com/esrrhs/pingtunnel v0.0.0-20261025165852-5718de02baba/go.mod h1:Bqt/hkTvqUdbMGmv99MLwgVX3cHlQLkuSYai+RQ9Nz4=
 github.com/esrrhs/spp v0.14.2-0.20261025145204-a37a41aaf073 h1:AecHeDmY3UTjBUca+y4w7Ev9K6l3SVBQE5Cd6lRKOFs=
 github.com/esrrhs/spp v0.14.2-0.20261025145204-a37a41aaf073/go.mod h1:0jkgpvf6CMhYkDF3evHwFVY0pR7sPyjhKHgvBHUXWVg=
 github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b/go.mod h1:SBH7ygxi8pfUlaOkMMuAQtPIUF8ecWP5IEl/CR7VP2Q=
