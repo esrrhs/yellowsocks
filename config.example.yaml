@@ -45,6 +45,17 @@ spp_key: "123456"
 #     bandwidth: 100
 #     kcpfecdata: 10
 #     kcpfecparity: 3
+#   # pingtunnel (ICMP 隧道) 信道：server_proto 填 pingtunnel，对端需运行 pingtunnel server。
+#   # server 只填主机（端口会被忽略）；key 是 pingtunnel 的统一共享密码（最少 8 位）；
+#   # encrypt 可选加密算法覆盖（chacha20 / aes256 / aes128，默认 chacha20，流量始终加密）。
+#   # 需要 root 权限（原始 ICMP 套接字）；同优先级内排在其他协议之后，适合作兜底。
+#   - name: "pt-icmp"
+#     server: "pt.esrrhs.xyz"
+#     server_proto: "pingtunnel"
+#     key: "your-strong-password"
+#     encrypt: "chacha20"
+#     priority: 3             # 第三优先级（兜底）
+#     bandwidth: 20
 
 # 入站 SOCKS5（TCP CONNECT + UDP ASSOCIATE）。
 # 用 ":1080" 同时接受 IPv4 和 IPv6，用 "[::1]:1080" 只听 IPv6。

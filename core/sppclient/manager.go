@@ -17,7 +17,7 @@ import (
 type Node struct {
 	Name         string `json:"name" yaml:"name"`
 	Server       string `json:"server" yaml:"server"`
-	ServerProto  string `json:"server_proto" yaml:"server_proto"` // tcp, udp, rudp, kcp, quic
+	ServerProto  string `json:"server_proto" yaml:"server_proto"` // tcp, udp, rudp, kcp, quic, pingtunnel
 	Key          string `json:"key" yaml:"key"`
 	Encrypt      string `json:"encrypt" yaml:"encrypt"`
 	Compress     int    `json:"compress" yaml:"compress"`
@@ -68,6 +68,9 @@ func dialNetworkForProto(proto string) string {
 // For UDP/RUDP/KCP/QUIC: dials using network.NewConn and performs protocol handshake.
 // Returns (alive, rtt).
 func probeNodeWithRTT(node *Node, timeout time.Duration) (bool, time.Duration) {
+	if isPingTunnelProto(node.ServerProto) {
+		return probePingTunnel(node, timeout)
+	}
 	proto := strings.ToLower(strings.TrimSpace(node.ServerProto))
 	if proto == "" || proto == "tcp" {
 		start := time.Now()
@@ -135,16 +138,25 @@ func protoRobustnessBase(proto string) int {
 		return 50
 	case "rhttp":
 		return 40
+	case ProtoPingTunnel, "icmp":
+		// ICMP is often rate-limited or dropped; keep it as the last resort within a tier.
+		return 20
 	default:
 		return 30
 	}
 }
 
+// upstream is one running client (SPP or pingtunnel) exposing a local SOCKS5.
+type upstream interface {
+	Close() error
+	HasRecentTraffic(window time.Duration) bool
+}
+
 type nodeRuntime struct {
 	node             *Node
 	localSocks5      string
-	client           *Client
-	clientPtr        atomic.Pointer[Client]
+	client           upstream
+	clientPtr        atomic.Pointer[upstream]
 	alive            atomic.Bool
 	rttMs            atomic.Int64
 	consecutiveOks   atomic.Int32
@@ -165,7 +177,7 @@ func (nr *nodeRuntime) hasRecentTraffic(window time.Duration) bool {
 	if up > 0 && down > 0 && (now-up) <= winNs && (now-down) <= winNs {
 		return true
 	}
-	if cl := nr.clientPtr.Load(); cl != nil && cl.HasRecentTraffic(window) {
+	if cl := nr.clientPtr.Load(); cl != nil && (*cl).HasRecentTraffic(window) {
 		return true
 	}
 	return false
@@ -244,7 +256,7 @@ func (a *nodeRuntime) isBetterThan(b *nodeRuntime) bool {
 type Manager struct {
 	nodes          []*Node
 	runtimes       []*nodeRuntime
-	activeClient   *Client
+	activeClient   upstream
 	activeIndex    int32 // -1 while no node is active
 	localSocks5    string
 	checkStopCh    chan struct{}
@@ -464,13 +476,19 @@ func (m *Manager) ensureClientRunningLocked(rt *nodeRuntime) error {
 		KcpFecData:   target.KcpFecData,
 		KcpFecParity: target.KcpFecParity,
 	}
-	cl, err := NewClient(cfg)
+	var cl upstream
+	var err error
+	if isPingTunnelProto(target.ServerProto) {
+		cl, err = newPingTunnelClient(cfg)
+	} else {
+		cl, err = NewClient(cfg)
+	}
 	if err != nil {
 		loggo.Warn("[SPP Manager] Failed to start client for channel [%s] (%s): %v", target.Name, rt.localSocks5, err)
 		return err
 	}
 	rt.client = cl
-	rt.clientPtr.Store(cl)
+	rt.clientPtr.Store(&cl)
 	loggo.Info("[SPP Manager] Channel [%s] client started on %s", target.Name, rt.localSocks5)
 	return nil
 }
