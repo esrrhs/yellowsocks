@@ -52,7 +52,13 @@ jobs:
           cache: true
 
       - name: Run tests
-        run: go test -race -skip 'TestE2E_LargeStream_1GB' ./...
+        run: go test -race -coverprofile=coverage.txt -covermode=atomic -skip 'TestE2E_LargeStream_1GB' ./...
+
+      - name: Upload coverage reports to Codecov
+        uses: codecov/codecov-action@v5
+        with:
+          token: ${{ secrets.CODECOV_TOKEN }}
+          files: ./coverage.txt
 
       - name: Run 1GiB large stream E2E (no race)
         run: go test -v -count=1 -timeout 5m ./core/proxy -run '^TestE2E_LargeStream_1GB_UploadAndDownload$'

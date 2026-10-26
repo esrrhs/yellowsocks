@@ -19,6 +19,7 @@ pack.zip
 
 # Coverage
 *.out
+coverage.txt
 
 # Logs
 *.log
