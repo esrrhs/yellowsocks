@@ -4,6 +4,8 @@
 [<img src="https://img.shields.io/github/languages/top/esrrhs/yellowsocks">](https://github.com/esrrhs/yellowsocks)
 [<img src="https://img.shields.io/github/v/release/esrrhs/yellowsocks">](https://github.com/esrrhs/yellowsocks/releases)
 [<img src="https://img.shields.io/github/downloads/esrrhs/yellowsocks/total">](https://github.com/esrrhs/yellowsocks/releases)
+[<img src="https://img.shields.io/github/actions/workflow/status/esrrhs/yellowsocks/go.yml?branch=master">](https://github.com/esrrhs/yellowsocks/actions)
+[![codecov](https://codecov.io/gh/esrrhs/yellowsocks/graph/badge.svg)](https://codecov.io/gh/esrrhs/yellowsocks)
 
 Linux proxy, version **2.0.0**. It serves DNS, DoT, DoH, SOCKS5, and HTTP on the local machine, and forwards proxied traffic to a remote [SPP](https://github.com/esrrhs/spp) or [pingtunnel](https://github.com/esrrhs/pingtunnel) server.
 
