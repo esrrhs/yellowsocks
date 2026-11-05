@@ -57,10 +57,10 @@ const (
 )
 
 // dialNetworkForProto returns the IP protocol used to reach an SPP server.
-// Only plain "tcp" is TCP; udp/rudp/kcp/quic all ride on UDP.
+// Only plain "tcp" and "rhttp" use TCP; udp/rudp/kcp/quic/rdns all ride on UDP.
 func dialNetworkForProto(proto string) string {
 	switch strings.ToLower(strings.TrimSpace(proto)) {
-	case "", "tcp":
+	case "", "tcp", "rhttp":
 		return "tcp"
 	default:
 		return "udp"

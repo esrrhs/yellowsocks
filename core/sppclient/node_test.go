@@ -42,8 +42,10 @@ func TestNodeJSONSerialization(t *testing.T) {
 }
 
 func TestDialNetworkForProto(t *testing.T) {
-	if dialNetworkForProto("tcp") != "tcp" || dialNetworkForProto("") != "tcp" {
-		t.Fatal("tcp proto should dial tcp")
+	for _, proto := range []string{"tcp", "rhttp", ""} {
+		if dialNetworkForProto(proto) != "tcp" {
+			t.Fatalf("%s should dial tcp", proto)
+		}
 	}
 	for _, proto := range []string{"udp", "kcp", "quic", "rudp", "rdns"} {
 		if dialNetworkForProto(proto) != "udp" {

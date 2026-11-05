@@ -49,6 +49,13 @@ spp_key: "123456"
 #     bandwidth: 100
 #     kcpfecdata: 10
 #     kcpfecparity: 3
+#   # rhttp (HTTP/1.1 或 h2c 隧道) 信道：基于 HTTP 长轮询与连接复用，适合穿透严格的 HTTP 代理/防火墙。
+#   - name: "cf-rhttp"
+#     server: "cf.esrrhs.xyz:80"
+#     server_proto: "rhttp"
+#     key: "your-auth-key"
+#     priority: 2             # 第二优先级（备用）
+#     bandwidth: 80
 #   # pingtunnel (ICMP 隧道) 信道：server_proto 填 pingtunnel，对端需运行 pingtunnel server。
 #   # server 只填主机（端口会被忽略）；key 是 pingtunnel 的统一共享密码（最少 8 位）；
 #   # encrypt 可选加密算法覆盖（chacha20 / aes256 / aes128，默认 chacha20，流量始终加密）。
