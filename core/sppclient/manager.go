@@ -143,29 +143,33 @@ func probeNode(node *Node) bool {
 }
 
 // protoRobustnessBase returns the baseline robustness weight for a transport protocol.
-// Under lossy cross-border WAN conditions:
-// TCP: kernel-level congestion control & SACK (most robust against random drop)
-// KCP: FEC redundancy option (highly robust when configured)
-// RUDP: optimized UDP reliable transfer (high throughput, resilient)
-// QUIC: user-space multi-stream over UDP (susceptible to stream window exhaustion on heavy upload)
-// RHTTP: chunked HTTP request/response fallback
+// Weights are aligned with empirical benchmark throughput:
+// KCP   (19.12 MB/s): 100 - Highest throughput across high-latency, lossy transoceanic paths
+// QUIC  (18.44 MB/s): 95  - Fast 0/1-RTT handshake, high peak burst capacity
+// TCP   (12.64 MB/s): 70  - Standard baseline performance over wide-area internet
+// RICMP (10.83 MB/s): 60  - ICMP ping tunnel; bypasses restrictive TCP/UDP firewalls
+// RUDP  (10.43 MB/s): 55  - Reliable UDP packet delivery with lightweight sliding window
+// PingTunnel / ICMP : 45  - Standalone ICMP ping tunnel
+// RHTTP ( 1.20 MB/s): 25  - HTTP-encapsulated tunnel; traverses strict web proxies
+// RDNS  ( 0.40 MB/s): 15  - DNS tunnel; bypasses captive portals and DNS-only egress
 func protoRobustnessBase(proto string) int {
 	switch strings.ToLower(strings.TrimSpace(proto)) {
-	case "tcp", "":
-		return 100
 	case "kcp":
-		return 95
-	case "rudp":
-		return 90
+		return 100
 	case "quic":
-		return 50
-	case "rhttp":
-		return 40
-	case "rdns":
-		return 30
+		return 95
+	case "tcp", "":
+		return 70
+	case "ricmp":
+		return 60
+	case "rudp":
+		return 55
 	case ProtoPingTunnel, "icmp":
-		// ICMP is often rate-limited or dropped; keep it as the last resort within a tier.
-		return 20
+		return 45
+	case "rhttp":
+		return 25
+	case "rdns":
+		return 15
 	default:
 		return 30
 	}

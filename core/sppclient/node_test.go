@@ -54,11 +54,26 @@ func TestDialNetworkForProto(t *testing.T) {
 	}
 }
 
-func TestRdnsRobustnessBase(t *testing.T) {
-	if protoRobustnessBase("rdns") <= protoRobustnessBase("pingtunnel") {
-		t.Fatal("rdns robustness should rank above pingtunnel")
+func TestProtoRobustnessOrdering(t *testing.T) {
+	if protoRobustnessBase("kcp") <= protoRobustnessBase("quic") {
+		t.Fatal("kcp should rank above quic")
 	}
-	if protoRobustnessBase("rdns") >= protoRobustnessBase("rudp") {
-		t.Fatal("rdns robustness should rank below rudp")
+	if protoRobustnessBase("quic") <= protoRobustnessBase("tcp") {
+		t.Fatal("quic should rank above tcp")
+	}
+	if protoRobustnessBase("tcp") <= protoRobustnessBase("ricmp") {
+		t.Fatal("tcp should rank above ricmp")
+	}
+	if protoRobustnessBase("ricmp") <= protoRobustnessBase("rudp") {
+		t.Fatal("ricmp should rank above rudp")
+	}
+	if protoRobustnessBase("rudp") <= protoRobustnessBase("pingtunnel") {
+		t.Fatal("rudp should rank above pingtunnel")
+	}
+	if protoRobustnessBase("pingtunnel") <= protoRobustnessBase("rhttp") {
+		t.Fatal("pingtunnel should rank above rhttp")
+	}
+	if protoRobustnessBase("rhttp") <= protoRobustnessBase("rdns") {
+		t.Fatal("rhttp should rank above rdns")
 	}
 }
