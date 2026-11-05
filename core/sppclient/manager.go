@@ -143,33 +143,33 @@ func probeNode(node *Node) bool {
 }
 
 // protoRobustnessBase returns the baseline robustness weight for a transport protocol.
-// Weights are aligned with empirical benchmark throughput:
-// KCP   (19.12 MB/s): 100 - Highest throughput across high-latency, lossy transoceanic paths
-// QUIC  (18.44 MB/s): 95  - Fast 0/1-RTT handshake, high peak burst capacity
-// TCP   (12.64 MB/s): 70  - Standard baseline performance over wide-area internet
-// RICMP (10.83 MB/s): 60  - ICMP ping tunnel; bypasses restrictive TCP/UDP firewalls
-// RUDP  (10.43 MB/s): 55  - Reliable UDP packet delivery with lightweight sliding window
-// PingTunnel / ICMP : 45  - Standalone ICMP ping tunnel
-// RHTTP ( 1.20 MB/s): 25  - HTTP-encapsulated tunnel; traverses strict web proxies
-// RDNS  ( 0.40 MB/s): 15  - DNS tunnel; bypasses captive portals and DNS-only egress
+// Weights are aligned with empirical downlink (Server -> Client) benchmark throughput:
+// RICMP (11.08 MB/s Peak / 5.49 MB/s Avg): 100 - Highest downlink throughput via ICMP ping tunnel
+// KCP   (10.12 MB/s Peak / 5.05 MB/s Avg): 95  - High throughput reliable protocol with FEC
+// RUDP  (10.00 MB/s Peak / 3.57 MB/s Avg): 85  - Reliable UDP packet delivery with lightweight sliding window
+// PingTunnel / ICMP                      : 70  - Standalone ICMP ping tunnel
+// TCP   ( 3.77 MB/s Peak / 1.97 MB/s Avg): 50  - Standard TCP baseline over lossy WAN
+// RDNS  ( 0.40 MB/s Peak / 0.06 MB/s Avg): 25  - DNS tunnel; bypasses captive portals and DNS-only egress
+// QUIC  ( 0.13 MB/s Peak / 0.03 MB/s Avg): 15  - User-space UDP stream downlink limited on lossy WAN
+// RHTTP ( 0.10 MB/s Peak / 0.04 MB/s Avg): 10  - HTTP-encapsulated tunnel; client polling overhead
 func protoRobustnessBase(proto string) int {
 	switch strings.ToLower(strings.TrimSpace(proto)) {
-	case "kcp":
-		return 100
-	case "quic":
-		return 95
-	case "tcp", "":
-		return 70
 	case "ricmp":
-		return 60
+		return 100
+	case "kcp":
+		return 95
 	case "rudp":
-		return 55
+		return 85
 	case ProtoPingTunnel, "icmp":
-		return 45
-	case "rhttp":
-		return 25
+		return 70
+	case "tcp", "":
+		return 50
 	case "rdns":
+		return 25
+	case "quic":
 		return 15
+	case "rhttp":
+		return 10
 	default:
 		return 30
 	}
