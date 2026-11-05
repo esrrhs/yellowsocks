@@ -200,3 +200,37 @@ func TestMergeEmptyConfigKeepsBaseline(t *testing.T) {
 		t.Fatalf("empty file config changed baseline:\nbase=%+v\ngot =%+v", base, merged)
 	}
 }
+
+func TestMergeRdnsAndSkipCountry(t *testing.T) {
+	yamlContent := `
+spp_rdnsdomain: "tunnel.example.com"
+spp_rdnsupstream: "1.1.1.1:53"
+spp_rdnspsk: "test-psk"
+spp_rdnsquerytype: "NULL"
+skip_country: "US,CA"
+`
+	cfg, err := ParseConfigContent([]byte(yamlContent))
+	if err != nil {
+		t.Fatalf("Failed to parse config: %v", err)
+	}
+
+	base := core.EngineConfig{
+		SkipCountry: "CN",
+	}
+	merged := cfg.MergeWithEngineConfig(base)
+	if merged.SPPRdnsDomain != "tunnel.example.com" {
+		t.Fatalf("unexpected rdns domain: %s", merged.SPPRdnsDomain)
+	}
+	if merged.SPPRdnsUpstream != "1.1.1.1:53" {
+		t.Fatalf("unexpected rdns upstream: %s", merged.SPPRdnsUpstream)
+	}
+	if merged.SPPRdnsPsk != "test-psk" {
+		t.Fatalf("unexpected rdns psk: %s", merged.SPPRdnsPsk)
+	}
+	if merged.SPPRdnsQueryType != "NULL" {
+		t.Fatalf("unexpected rdns query type: %s", merged.SPPRdnsQueryType)
+	}
+	if merged.SkipCountry != "US,CA" {
+		t.Fatalf("unexpected skip country: %s", merged.SkipCountry)
+	}
+}

@@ -7,13 +7,17 @@ import (
 
 func TestNodeJSONSerialization(t *testing.T) {
 	node := &Node{
-		Name:        "HongKong-01",
-		Server:      "1.2.3.4:8888",
-		ServerProto: "tcp",
-		Key:         "secret",
-		Encrypt:     "",
-		Compress:    128,
-		Alive:       true,
+		Name:          "HongKong-01",
+		Server:        "1.2.3.4:8888",
+		ServerProto:   "rdns",
+		Key:           "secret",
+		Encrypt:       "",
+		Compress:      128,
+		Alive:         true,
+		RdnsDomain:    "tunnel.example.com",
+		RdnsUpstream:  "8.8.8.8:53",
+		RdnsPsk:       "psk-secret",
+		RdnsQueryType: "NULL",
 	}
 
 	data, err := json.Marshal(node)
@@ -32,15 +36,27 @@ func TestNodeJSONSerialization(t *testing.T) {
 	if parsed.Key != node.Key || parsed.Compress != node.Compress {
 		t.Errorf("mismatch spp fields: %+v", parsed)
 	}
+	if parsed.RdnsDomain != node.RdnsDomain || parsed.RdnsUpstream != node.RdnsUpstream || parsed.RdnsPsk != node.RdnsPsk || parsed.RdnsQueryType != node.RdnsQueryType {
+		t.Errorf("mismatch rdns fields: %+v", parsed)
+	}
 }
 
 func TestDialNetworkForProto(t *testing.T) {
 	if dialNetworkForProto("tcp") != "tcp" || dialNetworkForProto("") != "tcp" {
 		t.Fatal("tcp proto should dial tcp")
 	}
-	for _, proto := range []string{"udp", "kcp", "quic", "rudp"} {
+	for _, proto := range []string{"udp", "kcp", "quic", "rudp", "rdns"} {
 		if dialNetworkForProto(proto) != "udp" {
 			t.Fatalf("%s should dial udp", proto)
 		}
+	}
+}
+
+func TestRdnsRobustnessBase(t *testing.T) {
+	if protoRobustnessBase("rdns") <= protoRobustnessBase("pingtunnel") {
+		t.Fatal("rdns robustness should rank above pingtunnel")
+	}
+	if protoRobustnessBase("rdns") >= protoRobustnessBase("rudp") {
+		t.Fatal("rdns robustness should rank below rudp")
 	}
 }

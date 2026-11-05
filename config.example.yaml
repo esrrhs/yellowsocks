@@ -3,10 +3,14 @@
 
 # 远端 SPP 服务器
 spp_server: "1.2.3.4:8888"
-spp_proto: "tcp"          # tcp, udp, kcp, quic
+spp_proto: "tcp"          # tcp, udp, rudp, ricmp, kcp, quic, rhttp, rdns, pingtunnel
 spp_key: "123456"
 # spp_encrypt: ""
 # spp_compress: 128
+# spp_rdnsdomain: "tunnel.example.com"  # 当使用 rdns 协议时必须配置隧道基础域名
+# spp_rdnsupstream: "1.1.1.1:53"        # rdns 非隧道查询的上游 DNS 服务器
+# spp_rdnspsk: "your-psk"               # rdns 底层 AES-GCM 载荷加密密钥
+# spp_rdnsquerytype: "TXT"              # rdns DNS 查询类型: TXT (默认) 或 NULL
 
 # 多信道优先级与故障转移。配置后覆盖上面的单节点。
 # 调度规则：按照 priority 优先级使用（数值越小优先级越高，1 > 2）。
@@ -56,6 +60,17 @@ spp_key: "123456"
 #     encrypt: "chacha20"
 #     priority: 3             # 第三优先级（兜底）
 #     bandwidth: 20
+#   # rdns (DNS 隧道) 信道：server_proto 填 rdns，对端需运行 spp rdns 服务端。
+#   - name: "cf-rdns"
+#     server: "ns1.example.com:53"
+#     server_proto: "rdns"
+#     key: "your-auth-key"
+#     rdnsdomain: "tunnel.example.com"  # 必需：RDNS 隧道基础域名
+#     rdnsupstream: "1.1.1.1:53"        # 可选：非隧道查询的上游 DNS 服务器
+#     rdnspsk: "your-psk"               # 可选：底层 AES-GCM 载荷加密密钥
+#     rdnsquerytype: "TXT"              # 可选：TXT (默认) 或 NULL
+#     priority: 3
+#     bandwidth: 10
 
 # 入站 SOCKS5（TCP CONNECT + UDP ASSOCIATE）。
 # 用 ":1080" 同时接受 IPv4 和 IPv6，用 "[::1]:1080" 只听 IPv6。
@@ -85,6 +100,7 @@ doh_url: "https://1.1.1.1/dns-query"
 
 # 分流：域名与网段直连，其余走 SPP
 # geoip_file: "GeoLite2-Country.mmdb"
+# skip_country: "CN"             # 跳过分流直连的国家 ISO 代码，支持逗号分隔多个（如 CN,HK），或 none 禁用，默认 CN
 # china_domains: "accelerated-domains.china.conf"
 # gfw_domains: "gfw.txt"
 # direct_domains:

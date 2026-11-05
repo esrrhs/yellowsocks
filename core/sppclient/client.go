@@ -12,15 +12,19 @@ import (
 
 // Config SPP 客户端配置
 type Config struct {
-	ServerProto  string // 主通道协议: tcp, udp, kcp, quic, rudp 等
-	Server       string // 远端 SPP 服务器地址: ip:port
-	Key          string // 连接密钥
-	Encrypt      string // 加密密钥
-	Compress     int    // 压缩阈值 (0表示不压缩)
-	LocalSocks5  string // 本地监听的 Socks5 端口，如 127.0.0.1:10808
-	Name         string
-	KcpFecData   int // KCP 前向纠错数据分片 (可选)
-	KcpFecParity int // KCP 前向纠错校验分片 (可选)
+	ServerProto   string // 主通道协议: tcp, udp, kcp, quic, rudp, rdns 等
+	Server        string // 远端 SPP 服务器地址: ip:port
+	Key           string // 连接密钥
+	Encrypt       string // 加密密钥
+	Compress      int    // 压缩阈值 (0表示不压缩)
+	LocalSocks5   string // 本地监听的 Socks5 端口，如 127.0.0.1:10808
+	Name          string
+	KcpFecData    int    // KCP 前向纠错数据分片 (可选)
+	KcpFecParity  int    // KCP 前向纠错校验分片 (可选)
+	RdnsDomain    string // RDNS 隧道基础域名 (例如 tunnel.example.com)
+	RdnsUpstream  string // RDNS 上游 DNS 服务器
+	RdnsPsk       string // RDNS 底层 AES-GCM 载荷加密密钥
+	RdnsQueryType string // RDNS DNS 查询类型 (TXT 或 NULL)
 }
 
 // Client wraps the spp proxy.Client.
@@ -65,6 +69,18 @@ func NewClient(cfg *Config) (*Client, error) {
 	}
 	if cfg.KcpFecParity > 0 {
 		proxyCfg.KcpFecParityShards = cfg.KcpFecParity
+	}
+	if cfg.RdnsDomain != "" {
+		proxyCfg.RdnsDomain = cfg.RdnsDomain
+	}
+	if cfg.RdnsUpstream != "" {
+		proxyCfg.RdnsUpstream = cfg.RdnsUpstream
+	}
+	if cfg.RdnsPsk != "" {
+		proxyCfg.RdnsPsk = cfg.RdnsPsk
+	}
+	if cfg.RdnsQueryType != "" {
+		proxyCfg.RdnsQueryType = cfg.RdnsQueryType
 	}
 
 	// 构造 NewClient 参数

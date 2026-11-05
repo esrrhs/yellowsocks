@@ -12,12 +12,20 @@ import (
 
 // FileConfig is the YAML or JSON configuration.
 type FileConfig struct {
-	SPPServer   string            `json:"spp_server" yaml:"spp_server"`
-	SPPProto    string            `json:"spp_proto" yaml:"spp_proto"`
-	SPPKey      string            `json:"spp_key" yaml:"spp_key"`
-	SPPEncrypt  string            `json:"spp_encrypt" yaml:"spp_encrypt"`
-	SPPCompress *int              `json:"spp_compress" yaml:"spp_compress"`
-	SPPNodes    []*sppclient.Node `json:"nodes" yaml:"nodes"`
+	SPPServer        string            `json:"spp_server" yaml:"spp_server"`
+	SPPProto         string            `json:"spp_proto" yaml:"spp_proto"`
+	SPPKey           string            `json:"spp_key" yaml:"spp_key"`
+	SPPEncrypt       string            `json:"spp_encrypt" yaml:"spp_encrypt"`
+	SPPCompress      *int              `json:"spp_compress" yaml:"spp_compress"`
+	SPPRdnsDomain    string            `json:"spp_rdnsdomain" yaml:"spp_rdnsdomain"`
+	RdnsDomain       string            `json:"rdnsdomain,omitempty" yaml:"rdnsdomain,omitempty"`
+	SPPRdnsUpstream  string            `json:"spp_rdnsupstream" yaml:"spp_rdnsupstream"`
+	RdnsUpstream     string            `json:"rdnsupstream,omitempty" yaml:"rdnsupstream,omitempty"`
+	SPPRdnsPsk       string            `json:"spp_rdnspsk" yaml:"spp_rdnspsk"`
+	RdnsPsk          string            `json:"rdnspsk,omitempty" yaml:"rdnspsk,omitempty"`
+	SPPRdnsQueryType string            `json:"spp_rdnsquerytype" yaml:"spp_rdnsquerytype"`
+	RdnsQueryType    string            `json:"rdnsquerytype,omitempty" yaml:"rdnsquerytype,omitempty"`
+	SPPNodes         []*sppclient.Node `json:"nodes" yaml:"nodes"`
 
 	DNSListen   string `json:"dns_listen" yaml:"dns_listen"`
 	DoHListen   string `json:"doh_listen" yaml:"doh_listen"`
@@ -40,6 +48,7 @@ type FileConfig struct {
 	GeoIPFile        string   `json:"geoip_file" yaml:"geoip_file"`
 	ChinaDomainsFile string   `json:"china_domains" yaml:"china_domains"`
 	GFWDomainsFile   string   `json:"gfw_domains" yaml:"gfw_domains"`
+	SkipCountry      string   `json:"skip_country" yaml:"skip_country"`
 
 	// Statistics HTTP API
 	APIListen string `json:"api_listen" yaml:"api_listen"`
@@ -108,6 +117,26 @@ func (f *FileConfig) MergeWithEngineConfig(base core.EngineConfig) core.EngineCo
 	if f.SPPCompress != nil {
 		res.SPPCompress = *f.SPPCompress
 	}
+	if f.SPPRdnsDomain != "" {
+		res.SPPRdnsDomain = f.SPPRdnsDomain
+	} else if f.RdnsDomain != "" {
+		res.SPPRdnsDomain = f.RdnsDomain
+	}
+	if f.SPPRdnsUpstream != "" {
+		res.SPPRdnsUpstream = f.SPPRdnsUpstream
+	} else if f.RdnsUpstream != "" {
+		res.SPPRdnsUpstream = f.RdnsUpstream
+	}
+	if f.SPPRdnsPsk != "" {
+		res.SPPRdnsPsk = f.SPPRdnsPsk
+	} else if f.RdnsPsk != "" {
+		res.SPPRdnsPsk = f.RdnsPsk
+	}
+	if f.SPPRdnsQueryType != "" {
+		res.SPPRdnsQueryType = f.SPPRdnsQueryType
+	} else if f.RdnsQueryType != "" {
+		res.SPPRdnsQueryType = f.RdnsQueryType
+	}
 	if len(f.SPPNodes) > 0 {
 		res.SPPNodes = f.SPPNodes
 	}
@@ -165,6 +194,9 @@ func (f *FileConfig) MergeWithEngineConfig(base core.EngineConfig) core.EngineCo
 	}
 	if f.GFWDomainsFile != "" {
 		res.GFWDomainsFile = f.GFWDomainsFile
+	}
+	if f.SkipCountry != "" {
+		res.SkipCountry = f.SkipCountry
 	}
 
 	if f.APIListen != "" {

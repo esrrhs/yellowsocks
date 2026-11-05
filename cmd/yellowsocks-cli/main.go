@@ -30,8 +30,12 @@ func run(args []string, stdout io.Writer) int {
 
 	configPath := fs.String("config", "", "Path to json/yaml configuration file")
 	sppServer := fs.String("spp-server", "", "SPP remote server address (e.g. 1.2.3.4:8888)")
-	sppProto := fs.String("spp-proto", "tcp", "SPP protocol (tcp, udp, kcp, quic)")
+	sppProto := fs.String("spp-proto", "tcp", "SPP protocol (tcp, udp, rudp, ricmp, kcp, quic, rhttp, rdns, pingtunnel)")
 	sppKey := fs.String("spp-key", "123456", "SPP password / key")
+	sppRdnsDomain := fs.String("spp-rdnsdomain", "", "RDNS base tunnel domain (e.g. tunnel.example.com); required when spp-proto is rdns")
+	sppRdnsUpstream := fs.String("spp-rdnsupstream", "", "RDNS upstream DNS server for non-tunnel queries")
+	sppRdnsPsk := fs.String("spp-rdnspsk", "", "RDNS underlay AES-GCM PSK payload encryption key")
+	sppRdnsQueryType := fs.String("spp-rdnsquerytype", "", "RDNS query type: TXT (default) or NULL")
 	socks5Addr := fs.String("socks5", "127.0.0.1:1080", "Inbound SOCKS5 proxy listen address (TCP+UDP)")
 	httpAddr := fs.String("http", "127.0.0.1:8080", "Inbound HTTP/HTTPS proxy listen address")
 	dnsAddr := fs.String("dns", "127.0.0.1:53", "Inbound DNS UDP listen address")
@@ -42,6 +46,7 @@ func run(args []string, stdout io.Writer) int {
 	chinaDomains := fs.String("china-domains", "", "Path to china domain list file")
 	gfwDomains := fs.String("gfw-domains", "", "Path to gfw domain list file")
 	geoipFile := fs.String("geoip", "", "Path to GeoLite2-Country.mmdb")
+	skipCountry := fs.String("skip-country", "CN", "Skip country ISO code(s) for direct routing bypass, comma-separated (e.g. CN, US, or none)")
 	apiAddr := fs.String("api", "", "Statistics HTTP API listen address (e.g. 127.0.0.1:9090, empty disables)")
 	apiToken := fs.String("api-token", "", "Statistics API token (random one is generated and logged when empty)")
 	statsFile := fs.String("stats-file", "", "Path persisting statistics history (default stats.json when the API is on)")
@@ -87,6 +92,10 @@ func run(args []string, stdout io.Writer) int {
 		SPPKey:           *sppKey,
 		SPPEncrypt:       "default",
 		SPPCompress:      128,
+		SPPRdnsDomain:    *sppRdnsDomain,
+		SPPRdnsUpstream:  *sppRdnsUpstream,
+		SPPRdnsPsk:       *sppRdnsPsk,
+		SPPRdnsQueryType: *sppRdnsQueryType,
 		DNSListen:        *dnsAddr,
 		DoHListen:        *dohAddr,
 		DoTListen:        *dotAddr,
@@ -99,6 +108,7 @@ func run(args []string, stdout io.Writer) int {
 		ChinaDomainsFile: *chinaDomains,
 		GFWDomainsFile:   *gfwDomains,
 		GeoIPFile:        *geoipFile,
+		SkipCountry:      *skipCountry,
 		APIListen:        *apiAddr,
 		APIToken:         *apiToken,
 		APIDashboard:     true,

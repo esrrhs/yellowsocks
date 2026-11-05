@@ -16,7 +16,7 @@ Linux proxy, version **2.0.0**. It serves DNS, DoT, DoH, SOCKS5, and HTTP on the
 - **DoT**: optional DNS-over-TLS (RFC 7858)
 - **SOCKS5**: TCP CONNECT and UDP ASSOCIATE
 - **HTTP proxy**: plain HTTP requests and HTTPS CONNECT
-- **Upstream protocols**: forwards to [SPP](https://github.com/esrrhs/spp) (`tcp`, `udp`, `rudp`, `ricmp`, `kcp`, `quic`) or [pingtunnel](https://github.com/esrrhs/pingtunnel) (ICMP tunnel), with multi-node priority, robustness evaluation, and automatic failover
+- **Upstream protocols**: forwards to [SPP](https://github.com/esrrhs/spp) (`tcp`, `udp`, `rudp`, `ricmp`, `kcp`, `quic`, `rhttp`, `rdns`) or [pingtunnel](https://github.com/esrrhs/pingtunnel) (ICMP tunnel), with multi-node priority, robustness evaluation, and automatic failover
 - **Routing**: domain, CIDR, and GeoIP rules choose a direct connection or upstream proxy
 - **Statistics API**: live and historical traffic, connections, routing, DNS and errors over HTTP
 
@@ -54,8 +54,12 @@ Listening on port `53` and opening raw ICMP sockets require root privileges. Pre
 | :--- | :--- | :--- |
 | `-config` | YAML or JSON config file | none |
 | `-spp-server` | Remote SPP address or pingtunnel server host | none |
-| `-spp-proto` | Upstream protocol: `tcp`, `udp`, `rudp`, `ricmp`, `kcp`, `quic`, or `pingtunnel` | `tcp` |
+| `-spp-proto` | Upstream protocol: `tcp`, `udp`, `rudp`, `ricmp`, `kcp`, `quic`, `rhttp`, `rdns`, or `pingtunnel` | `tcp` |
 | `-spp-key` | SPP key or pingtunnel password (min 8 chars) | `123456` |
+| `-spp-rdnsdomain` | RDNS base tunnel domain (e.g. `tunnel.example.com`; required when spp-proto is rdns) | none |
+| `-spp-rdnsupstream` | RDNS upstream DNS server for non-tunnel queries | empty |
+| `-spp-rdnspsk` | RDNS underlay AES-GCM PSK payload encryption key | empty |
+| `-spp-rdnsquerytype` | RDNS query type: `TXT` or `NULL` | `TXT` |
 | `-socks5` | Inbound SOCKS5 | `127.0.0.1:1080` |
 | `-http` | Inbound HTTP proxy | `127.0.0.1:8080` |
 | `-dns` | DNS UDP | `127.0.0.1:53` |
@@ -66,6 +70,7 @@ Listening on port `53` and opening raw ICMP sockets require root privileges. Pre
 | `-china-domains` | Domestic domain list | none |
 | `-gfw-domains` | Proxied domain list | none |
 | `-geoip` | `GeoLite2-Country.mmdb` | none |
+| `-skip-country` | Skip country ISO code(s) for direct routing bypass, comma-separated (e.g. `CN`, `CN,HK`, or `none`) | `CN` |
 | `-loglevel` | `debug`, `info`, `warn`, `error` | `info` |
 | `-api` | Statistics HTTP API listen address | empty, disabled |
 | `-api-token` | Statistics API token | random, printed at startup |

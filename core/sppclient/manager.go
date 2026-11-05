@@ -15,16 +15,20 @@ import (
 
 // Node is one upstream SPP channel/server configuration.
 type Node struct {
-	Name         string `json:"name" yaml:"name"`
-	Server       string `json:"server" yaml:"server"`
-	ServerProto  string `json:"server_proto" yaml:"server_proto"` // tcp, udp, rudp, kcp, quic, pingtunnel
-	Key          string `json:"key" yaml:"key"`
-	Encrypt      string `json:"encrypt" yaml:"encrypt"`
-	Compress     int    `json:"compress" yaml:"compress"`
-	Priority     int    `json:"priority" yaml:"priority"`         // 优先级: 1 级 > 2 级 (数值越小优先级越高，默认 10)
-	Bandwidth    int    `json:"bandwidth" yaml:"bandwidth"`       // 标称带宽权重 (Mbps)，同优先级下越大越优先，默认 100
-	KcpFecData   int    `json:"kcpfecdata" yaml:"kcpfecdata"`     // KCP FEC 数据分片 (如 10)
-	KcpFecParity int    `json:"kcpfecparity" yaml:"kcpfecparity"` // KCP FEC 校验分片 (如 3)
+	Name          string `json:"name" yaml:"name"`
+	Server        string `json:"server" yaml:"server"`
+	ServerProto   string `json:"server_proto" yaml:"server_proto"` // tcp, udp, rudp, kcp, quic, pingtunnel, rdns
+	Key           string `json:"key" yaml:"key"`
+	Encrypt       string `json:"encrypt" yaml:"encrypt"`
+	Compress      int    `json:"compress" yaml:"compress"`
+	Priority      int    `json:"priority" yaml:"priority"`         // 优先级: 1 级 > 2 级 (数值越小优先级越高，默认 10)
+	Bandwidth     int    `json:"bandwidth" yaml:"bandwidth"`       // 标称带宽权重 (Mbps)，同优先级下越大越优先，默认 100
+	KcpFecData    int    `json:"kcpfecdata" yaml:"kcpfecdata"`     // KCP FEC 数据分片 (如 10)
+	KcpFecParity  int    `json:"kcpfecparity" yaml:"kcpfecparity"` // KCP FEC 校验分片 (如 3)
+	RdnsDomain    string `json:"rdnsdomain,omitempty" yaml:"rdnsdomain,omitempty"`
+	RdnsUpstream  string `json:"rdnsupstream,omitempty" yaml:"rdnsupstream,omitempty"`
+	RdnsPsk       string `json:"rdnspsk,omitempty" yaml:"rdnspsk,omitempty"`
+	RdnsQueryType string `json:"rdnsquerytype,omitempty" yaml:"rdnsquerytype,omitempty"`
 	// Alive is a configuration/status hint carried in JSON. Runtime liveness
 	// is tracked atomically inside Manager (see Manager.NodeAlive); this field
 	// is never read by failover logic.
@@ -88,6 +92,25 @@ func probeNodeWithRTT(node *Node, timeout time.Duration) (bool, time.Duration) {
 	}
 	defer dialer.Close()
 
+	if proto == "rdns" {
+		if rc, ok := dialer.(*network.RdnsConn); ok {
+			cf := rc.GetConfig()
+			if node.RdnsDomain != "" {
+				cf.Domain = node.RdnsDomain
+			}
+			if node.RdnsUpstream != "" {
+				cf.Upstream = node.RdnsUpstream
+			}
+			if node.RdnsPsk != "" {
+				cf.PSK = node.RdnsPsk
+			}
+			if node.RdnsQueryType != "" {
+				cf.QueryType = node.RdnsQueryType
+			}
+			rc.SetConfig(cf)
+		}
+	}
+
 	type dialResult struct {
 		conn network.Conn
 		err  error
@@ -138,6 +161,8 @@ func protoRobustnessBase(proto string) int {
 		return 50
 	case "rhttp":
 		return 40
+	case "rdns":
+		return 30
 	case ProtoPingTunnel, "icmp":
 		// ICMP is often rate-limited or dropped; keep it as the last resort within a tier.
 		return 20
@@ -466,15 +491,19 @@ func (m *Manager) ensureClientRunningLocked(rt *nodeRuntime) error {
 	}
 	target := rt.node
 	cfg := &Config{
-		ServerProto:  target.ServerProto,
-		Server:       target.Server,
-		Key:          target.Key,
-		Encrypt:      target.Encrypt,
-		Compress:     target.Compress,
-		LocalSocks5:  rt.localSocks5,
-		Name:         target.Name,
-		KcpFecData:   target.KcpFecData,
-		KcpFecParity: target.KcpFecParity,
+		ServerProto:   target.ServerProto,
+		Server:        target.Server,
+		Key:           target.Key,
+		Encrypt:       target.Encrypt,
+		Compress:      target.Compress,
+		LocalSocks5:   rt.localSocks5,
+		Name:          target.Name,
+		KcpFecData:    target.KcpFecData,
+		KcpFecParity:  target.KcpFecParity,
+		RdnsDomain:    target.RdnsDomain,
+		RdnsUpstream:  target.RdnsUpstream,
+		RdnsPsk:       target.RdnsPsk,
+		RdnsQueryType: target.RdnsQueryType,
 	}
 	var cl upstream
 	var err error

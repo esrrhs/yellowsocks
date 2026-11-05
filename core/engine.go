@@ -18,12 +18,16 @@ import (
 
 // EngineConfig is the Linux proxy engine configuration.
 type EngineConfig struct {
-	SPPServer   string // remote SPP server ip:port (single node)
-	SPPProto    string // tcp, udp, kcp, quic
-	SPPKey      string
-	SPPEncrypt  string
-	SPPCompress int
-	SPPNodes    []*sppclient.Node
+	SPPServer        string // remote SPP server ip:port (single node)
+	SPPProto         string // tcp, udp, kcp, quic, rudp, rdns, pingtunnel
+	SPPKey           string
+	SPPEncrypt       string
+	SPPCompress      int
+	SPPRdnsDomain    string
+	SPPRdnsUpstream  string
+	SPPRdnsPsk       string
+	SPPRdnsQueryType string
+	SPPNodes         []*sppclient.Node
 
 	LocalSocks5 string // local SOCKS5 published by the SPP client
 
@@ -49,6 +53,7 @@ type EngineConfig struct {
 	GeoIPFile        string
 	ChinaDomainsFile string
 	GFWDomainsFile   string
+	SkipCountry      string
 
 	// APIListen serves the statistics HTTP API. Empty disables it.
 	APIListen string
@@ -140,18 +145,23 @@ func (e *Engine) Start() error {
 		GeoIPFile:        e.cfg.GeoIPFile,
 		ChinaDomainFiles: chinaFiles,
 		GFWDomainFiles:   gfwFiles,
+		SkipCountry:      e.cfg.SkipCountry,
 	})
 
 	nodes := e.cfg.SPPNodes
 	if len(nodes) == 0 && e.cfg.SPPServer != "" {
 		nodes = []*sppclient.Node{
 			{
-				Name:        "default_node",
-				Server:      e.cfg.SPPServer,
-				ServerProto: e.cfg.SPPProto,
-				Key:         e.cfg.SPPKey,
-				Encrypt:     e.cfg.SPPEncrypt,
-				Compress:    e.cfg.SPPCompress,
+				Name:          "default_node",
+				Server:        e.cfg.SPPServer,
+				ServerProto:   e.cfg.SPPProto,
+				Key:           e.cfg.SPPKey,
+				Encrypt:       e.cfg.SPPEncrypt,
+				Compress:      e.cfg.SPPCompress,
+				RdnsDomain:    e.cfg.SPPRdnsDomain,
+				RdnsUpstream:  e.cfg.SPPRdnsUpstream,
+				RdnsPsk:       e.cfg.SPPRdnsPsk,
+				RdnsQueryType: e.cfg.SPPRdnsQueryType,
 			},
 		}
 	}

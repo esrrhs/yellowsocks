@@ -304,3 +304,34 @@ func TestRouterDecideIPv6(t *testing.T) {
 		}
 	}
 }
+
+func TestRouterSkipCountryOptions(t *testing.T) {
+	// Default
+	r1 := NewRouterWithOptions(Options{})
+	defer r1.Close()
+	if r1.Info().SkipCountry != "CN" {
+		t.Fatalf("expected default skipCountry CN, got %s", r1.Info().SkipCountry)
+	}
+	if _, ok := r1.skipCountries["CN"]; !ok {
+		t.Fatal("expected CN in skipCountries")
+	}
+
+	// Custom multiple countries with mixed case
+	r2 := NewRouterWithOptions(Options{SkipCountry: "cn, us, hk"})
+	defer r2.Close()
+	if r2.Info().SkipCountry != "cn, us, hk" {
+		t.Fatalf("expected raw skipCountry string preserved, got %s", r2.Info().SkipCountry)
+	}
+	for _, c := range []string{"CN", "US", "HK"} {
+		if _, ok := r2.skipCountries[c]; !ok {
+			t.Fatalf("expected %s in skipCountries", c)
+		}
+	}
+
+	// None / disable
+	r3 := NewRouterWithOptions(Options{SkipCountry: "none"})
+	defer r3.Close()
+	if len(r3.skipCountries) != 0 {
+		t.Fatalf("expected empty skipCountries for none, got %v", r3.skipCountries)
+	}
+}

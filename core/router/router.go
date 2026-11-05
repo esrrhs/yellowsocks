@@ -117,8 +117,9 @@ type Router struct {
 	directHosts *hostSet     // direct host whitelist
 	proxyHosts  *hostSet     // proxy host list
 	geoDB       *matcher.GeoDB
-	geoipLoaded bool // GeoIP database successfully opened
-	skipCountry string
+	geoipLoaded   bool // GeoIP database successfully opened
+	skipCountry   string
+	skipCountries map[string]struct{}
 }
 
 // Options router configuration options
@@ -130,21 +131,31 @@ type Options struct {
 	GeoIPFile        string   // GeoLite2 mmdb file path
 	ChinaDomainFiles []string // custom direct domain files (e.g. accelerated-domains.china.conf)
 	GFWDomainFiles   []string // custom proxy domain files
-	SkipCountry      string   // skip country ISO code (default "CN")
+	SkipCountry      string   // skip country ISO code(s), comma-separated (default "CN", "none" disables)
 }
 
 // NewRouterWithOptions creates a router with custom domains, CIDRs and GeoIP.
 func NewRouterWithOptions(opt Options) *Router {
-	skipCountry := opt.SkipCountry
+	skipCountry := strings.TrimSpace(opt.SkipCountry)
 	if skipCountry == "" {
 		skipCountry = "CN"
 	}
+	skipCountries := make(map[string]struct{})
+	if !strings.EqualFold(skipCountry, "none") && skipCountry != "" {
+		for _, part := range strings.Split(skipCountry, ",") {
+			code := strings.ToUpper(strings.TrimSpace(part))
+			if code != "" {
+				skipCountries[code] = struct{}{}
+			}
+		}
+	}
 
 	r := &Router{
-		skipCountry: skipCountry,
-		geoDB:       matcher.NewGeoDB(),
-		directHosts: newHostSet(),
-		proxyHosts:  newHostSet(),
+		skipCountry:   skipCountry,
+		skipCountries: skipCountries,
+		geoDB:         matcher.NewGeoDB(),
+		directHosts:   newHostSet(),
+		proxyHosts:    newHostSet(),
 	}
 
 	if opt.GeoIPFile != "" {
@@ -401,9 +412,12 @@ func (r *Router) Decide(destHost string, destIP net.IP) RouteDecision {
 		if r.ShouldDirectIP(destIP) {
 			return Direct
 		}
-		if r.geoDB != nil && r.skipCountry != "" {
-			if r.geoDB.IsCountry(destIP, r.skipCountry) {
-				return Direct
+		if r.geoDB != nil && len(r.skipCountries) > 0 {
+			code, err := r.geoDB.GetCountryCode(destIP)
+			if err == nil && code != "" {
+				if _, ok := r.skipCountries[code]; ok {
+					return Direct
+				}
 			}
 		}
 	}
