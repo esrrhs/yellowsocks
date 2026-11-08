@@ -144,31 +144,31 @@ func probeNode(node *Node) bool {
 
 // protoRobustnessBase returns the baseline robustness weight for a transport protocol.
 // Weights are aligned with empirical downlink (Server -> Client) benchmark throughput:
-// RICMP (11.08 MB/s Peak / 5.49 MB/s Avg): 100 - Highest downlink throughput via ICMP ping tunnel
-// KCP   (10.12 MB/s Peak / 5.05 MB/s Avg): 95  - High throughput reliable protocol with FEC
-// RUDP  (10.00 MB/s Peak / 3.57 MB/s Avg): 85  - Reliable UDP packet delivery with lightweight sliding window
-// PingTunnel / ICMP                      : 70  - Standalone ICMP ping tunnel
-// TCP   ( 3.77 MB/s Peak / 1.97 MB/s Avg): 50  - Standard TCP baseline over lossy WAN
-// RDNS  ( 0.40 MB/s Peak / 0.06 MB/s Avg): 25  - DNS tunnel; bypasses captive portals and DNS-only egress
-// QUIC  ( 0.13 MB/s Peak / 0.03 MB/s Avg): 15  - User-space UDP stream downlink limited on lossy WAN
-// RHTTP ( 0.10 MB/s Peak / 0.04 MB/s Avg): 10  - HTTP-encapsulated tunnel; client polling overhead
+// RUDP  (3.33 MB/s Peak / 2.25 MB/s Avg): 100 - Highest downlink throughput with batch UDP I/O & 4MB buffer
+// RICMP (1.03 MB/s Peak / 0.29 MB/s Avg): 95  - High downlink throughput via ICMP ping tunnel
+// KCP   (0.35 MB/s Peak / 0.11 MB/s Avg): 85  - Reliable UDP protocol with FEC
+// PingTunnel / ICMP                     : 70  - Standalone ICMP ping tunnel
+// TCP   (0.17 MB/s Peak / 0.09 MB/s Avg): 50  - Standard TCP baseline over lossy WAN
+// RHTTP (0.10 MB/s Peak / 0.05 MB/s Avg): 25  - HTTP-encapsulated tunnel; client polling overhead
+// RDNS  (0.01 MB/s Peak / 0.00 MB/s Avg): 15  - DNS tunnel; bypasses captive portals and DNS-only egress
+// QUIC  (0.01 MB/s Peak / 0.00 MB/s Avg): 10  - User-space UDP stream downlink limited on lossy WAN
 func protoRobustnessBase(proto string) int {
 	switch strings.ToLower(strings.TrimSpace(proto)) {
-	case "ricmp":
-		return 100
-	case "kcp":
-		return 95
 	case "rudp":
+		return 100
+	case "ricmp":
+		return 95
+	case "kcp":
 		return 85
 	case ProtoPingTunnel, "icmp":
 		return 70
 	case "tcp", "":
 		return 50
-	case "rdns":
-		return 25
-	case "quic":
-		return 15
 	case "rhttp":
+		return 25
+	case "rdns":
+		return 15
+	case "quic":
 		return 10
 	default:
 		return 30
