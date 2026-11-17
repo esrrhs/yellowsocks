@@ -3,18 +3,19 @@ module github.com/esrrhs/yellowsocks
 go 1.27.3
 
 require (
-	github.com/esrrhs/gohome v0.0.0-20261107121532-ef8d2ce0b924
-	github.com/esrrhs/pingtunnel v0.0.0-20261107103949-79d1aa239ac0
-	github.com/esrrhs/spp v0.15.1-0.20261106032448-832617acf599
+	github.com/esrrhs/gohome v0.0.0-20261117155140-cf447bd6fcc9
+	github.com/esrrhs/pingtunnel v0.0.0-20261117231218-4fb64394b121
+	github.com/esrrhs/spp v0.15.1-0.20261117155630-5d79f1649035
 	github.com/miekg/dns v1.1.73
-	golang.org/x/net v0.62.0
+	golang.org/x/net v0.63.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
 require (
 	github.com/OneOfOne/xxhash v1.2.8 // indirect
+	github.com/coder/websocket v1.8.15 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/klauspost/compress v1.20.3 // indirect
+	github.com/klauspost/compress v1.20.4 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.2 // indirect
 	github.com/klauspost/reedsolomon v1.14.2 // indirect
 	github.com/kr/pretty v0.3.1 // indirect
@@ -27,10 +28,10 @@ require (
 	github.com/templexxx/xor v0.0.0-20191217153810-f85b25db303b // indirect
 	github.com/tjfoc/gmsm v1.4.1 // indirect
 	github.com/xtaci/kcp-go v5.4.20+incompatible // indirect
-	golang.org/x/crypto v0.58.0 // indirect
-	golang.org/x/sync v0.24.0 // indirect
-	golang.org/x/sys v0.49.0 // indirect
-	golang.org/x/text v0.43.0 // indirect
+	golang.org/x/crypto v0.59.0 // indirect
+	golang.org/x/sync v0.25.0 // indirect
+	golang.org/x/sys v0.50.0 // indirect
+	golang.org/x/text v0.44.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect
 )
