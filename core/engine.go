@@ -59,6 +59,7 @@ type EngineConfig struct {
 	APIListen string
 	// APIToken is the admin secret: read and reset. Keep it on the reverse
 	// proxy, not in a page. When empty a random one is generated and logged.
+	// The sentinel "none" disables auth entirely, for trusted networks only.
 	APIToken string
 	// APIReadonlyToken grants GET access only.
 	APIReadonlyToken string

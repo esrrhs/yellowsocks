@@ -335,6 +335,22 @@ func TestTokenGeneratedWhenEmpty(t *testing.T) {
 	}
 }
 
+// Token "none" opens every endpoint, including mutating ones, with no token.
+func TestOpenModeNoneToken(t *testing.T) {
+	_, base := startServerOn(t, Config{Token: "none"})
+	for _, tc := range []struct{ method, path string }{
+		{"GET", "/api/v1/overview"},
+		{"GET", "/api/v1/connections"},
+		{"POST", "/api/v1/reset"},
+	} {
+		resp := doRequest(t, tc.method, base+tc.path, nil)
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Errorf("%s %s without token: got %d, want 200", tc.method, tc.path, resp.StatusCode)
+		}
+	}
+}
+
 // request is a small helper for requests with arbitrary headers.
 func doRequest(t *testing.T, method, url string, headers map[string]string) *http.Response {
 	t.Helper()

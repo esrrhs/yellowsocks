@@ -4,7 +4,8 @@
 //
 // Every endpoint except / and /api/v1/health requires the configured token,
 // sent as "Authorization: Bearer <token>", as "X-API-Token: <token>" or as a
-// "token" query parameter.
+// "token" query parameter. Setting the token to "none" disables auth
+// entirely, for trusted networks where every endpoint is public.
 package api
 
 import (
@@ -49,7 +50,9 @@ type Config struct {
 	ListenAddr string
 	// Token is the admin secret: it may read and reset. Your reverse proxy
 	// holds it, never the browser page. When empty a random token is
-	// generated and logged at startup.
+	// generated and logged at startup. The sentinel value "none" (any case)
+	// disables auth entirely: every endpoint becomes public, which is only
+	// for networks where nothing hostile can reach the listen address.
 	Token string
 	// ReadonlyToken grants GET access only. Give it to anything that only
 	// needs to read (a page that talks to the API directly, a monitoring
@@ -109,6 +112,7 @@ type Server struct {
 	ln           net.Listener
 	mu           sync.Mutex
 	closed       bool
+	authOpen     bool
 	allowedNets  []*net.IPNet
 	clientNets   []*net.IPNet
 	trustedNets  []*net.IPNet
@@ -133,7 +137,11 @@ func New(cfg Config, deps Deps) (*Server, error) {
 		cfg.AllowedOrigins = []string{"*"}
 	}
 	generated := false
-	if cfg.Token == "" {
+	if strings.EqualFold(strings.TrimSpace(cfg.Token), "none") {
+		// Explicit opt-out for trusted networks: no token, every route public.
+		cfg.Token = ""
+		cfg.ReadonlyToken = ""
+	} else if cfg.Token == "" {
 		cfg.Token = randomToken()
 		generated = true
 	}
@@ -165,6 +173,7 @@ func New(cfg Config, deps Deps) (*Server, error) {
 		cfg:          cfg,
 		deps:         deps,
 		start:        time.Now(),
+		authOpen:     cfg.Token == "",
 		allowedNets:  allowedNets,
 		clientNets:   clientNets,
 		trustedNets:  trustedNets,
@@ -210,7 +219,11 @@ func (s *Server) Start() error {
 	s.ln = ln
 	s.closed = false
 	s.start = time.Now()
-	loggo.Info("[API] Statistics API listening on %s (token auth required)", ln.Addr())
+	authNote := "token auth required"
+	if s.authOpen {
+		authNote = "no auth (open mode)"
+	}
+	loggo.Info("[API] Statistics API listening on %s (%s)", ln.Addr(), authNote)
 	go func() {
 		if err := s.srv.Serve(ln); err != nil && !strings.Contains(err.Error(), "use of closed") {
 			loggo.Info("[API] Server stopped: %v", err)
@@ -354,8 +367,11 @@ func (s *Server) route(need int, next http.HandlerFunc, methods ...string) http.
 }
 
 // accessLevel reports what the presented token may do: admin (the main
-// token), read-only, or nothing.
+// token), read-only, or nothing. In open mode every request is admin.
 func (s *Server) accessLevel(r *http.Request) int {
+	if s.authOpen {
+		return accessAdmin
+	}
 	tok := requestToken(r)
 	if tok == "" {
 		return accessNone

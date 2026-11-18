@@ -53,7 +53,8 @@ type FileConfig struct {
 	// Statistics HTTP API
 	APIListen string `json:"api_listen" yaml:"api_listen"`
 	// APIToken is the admin token. Keep it on the reverse proxy or on the
-	// operator's machine, never in a page.
+	// operator's machine, never in a page. The sentinel value "none"
+	// disables auth entirely, for trusted networks only.
 	APIToken string `json:"api_token" yaml:"api_token"`
 	// APIReadonlyToken grants GET access only.
 	APIReadonlyToken string   `json:"api_readonly_token" yaml:"api_readonly_token"`
