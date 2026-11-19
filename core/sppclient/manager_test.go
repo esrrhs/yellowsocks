@@ -151,8 +151,7 @@ func TestNewManagerFallsBackAtStartup(t *testing.T) {
 	}
 }
 
-// With every node down the manager still starts (spp keeps reconnecting in the
-// background) and Close releases it.
+// With every node down the manager must not keep a resident reconnecting client.
 func TestNewManagerAllNodesUnreachable(t *testing.T) {
 	m, err := NewManager([]*Node{
 		tcpNode("a", "127.0.0.1:1"),
@@ -161,11 +160,19 @@ func TestNewManagerAllNodesUnreachable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
 	}
-	if idx := m.ActiveNodeIndex(); idx != 0 {
-		t.Fatalf("ActiveNodeIndex=%d, want forced primary 0", idx)
+	if idx := m.ActiveNodeIndex(); idx != -1 {
+		t.Fatalf("ActiveNodeIndex=%d, want -1 when all nodes are down", idx)
+	}
+	for _, rt := range m.runtimes {
+		if rt.client != nil {
+			t.Fatalf("channel %s still has a resident client while unreachable", rt.node.Name)
+		}
+	}
+	addr, name, release := m.PickNode()
+	if addr != "" || name != "" || release != nil {
+		t.Fatalf("PickNode=%q,%q,release_set=%t, want empty when all nodes are down", addr, name, release != nil)
 	}
 	m.Close()
-	// Idempotent: a second Close must not panic.
 	m.Close()
 }
 
@@ -246,8 +253,13 @@ func TestCloseSuppressesFailover(t *testing.T) {
 	if client := m.activeClient; client != nil {
 		t.Fatal("Close left/rebuilt an active SPP client")
 	}
-	if idx := m.ActiveNodeIndex(); idx != 0 {
-		t.Fatalf("ActiveNodeIndex changed to %d after Close", idx)
+	for _, rt := range m.runtimes {
+		if rt.client != nil {
+			t.Fatalf("Close left/rebuilt client on channel %s", rt.node.Name)
+		}
+	}
+	if idx := m.ActiveNodeIndex(); idx != -1 {
+		t.Fatalf("ActiveNodeIndex changed to %d after Close, want -1", idx)
 	}
 }
 
@@ -268,6 +280,32 @@ func TestProbeNode(t *testing.T) {
 	defer udpConn.Close()
 	if !probeNode(&Node{Name: "udp-alive", Server: udpConn.LocalAddr().String(), ServerProto: "udp"}) {
 		t.Fatal("UDP probe against a local address must succeed")
+	}
+}
+
+// Regression: rudp health probes must stay cheap. The old path called
+// gohome RudpConn.Dial (multi-MB FrameMgr) and leaked on timeout.
+func TestProbeRudpIsLightweightAndFast(t *testing.T) {
+	start := time.Now()
+	alive, _ := probeNodeWithRTT(&Node{
+		Name:        "rudp",
+		Server:      "127.0.0.1:1",
+		ServerProto: "rudp",
+	}, 200*time.Millisecond)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("rudp probe took %v, want cheap UDP dial", elapsed)
+	}
+	// UDP dial to a closed port usually still "succeeds"; the important
+	// property is that we returned quickly without allocating FrameMgr.
+	_ = alive
+
+	udpConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	defer udpConn.Close()
+	if !probeNode(&Node{Name: "rudp-alive", Server: udpConn.LocalAddr().String(), ServerProto: "rudp"}) {
+		t.Fatal("rudp lightweight probe against a local UDP address must succeed")
 	}
 }
 
@@ -341,7 +379,9 @@ func TestSamePriorityRobustnessAndBandwidthSelection(t *testing.T) {
 }
 
 func TestFastFailoverOnReportFailure(t *testing.T) {
-	pri1Addr := reserveTCPPort(t)
+	pri1L := listenTCP(t)
+	acceptAndClose(t, pri1L)
+	pri1Addr := pri1L.Addr().String()
 	pri2L := listenTCP(t)
 	acceptAndClose(t, pri2L)
 
@@ -353,14 +393,64 @@ func TestFastFailoverOnReportFailure(t *testing.T) {
 		t.Fatalf("newManager: %v", err)
 	}
 	defer m.Close()
+	if idx := m.ActiveNodeIndex(); idx != 0 {
+		t.Fatalf("initial ActiveNodeIndex=%d, want 0", idx)
+	}
 
-	// Initial node 1 was selected but will fail in-flight
+	_ = pri1L.Close()
 	m.ReportFailure(net.ErrClosed)
 	m.ReportFailure(net.ErrClosed)
 
 	waitFor(t, "fast failover after report failures", func() bool {
 		return m.ActiveNodeIndex() == 1
 	})
+	if m.runtimes[0].client != nil {
+		t.Fatal("dead primary must stop its resident client")
+	}
+}
+
+func TestReportFailureMarksUDPFamilyDownWithoutProbeStorm(t *testing.T) {
+	udpConn, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen udp: %v", err)
+	}
+	defer udpConn.Close()
+	addr := udpConn.LocalAddr().String()
+
+	m, err := newManager([]*Node{
+		{Name: "rudp1", Server: addr, ServerProto: "rudp", Priority: 1, Key: "k"},
+	}, reserveTCPPort(t), time.Hour) // disable periodic sweep
+	if err != nil {
+		t.Fatalf("newManager: %v", err)
+	}
+	defer m.Close()
+	if !m.NodeAlive(0) {
+		t.Fatal("rudp node should start alive via lightweight probe")
+	}
+
+	// Drop the resident client first so HasRecentTraffic cannot suppress failure reports.
+	m.mu.Lock()
+	m.stopClientLocked(m.runtimes[0])
+	m.mu.Unlock()
+
+	for i := 0; i < 20; i++ {
+		m.ReportNodeFailure("rudp1", net.ErrClosed)
+	}
+	if m.NodeAlive(0) {
+		t.Fatal("ReportNodeFailure must mark rudp node down without waiting for probe")
+	}
+	// triggerCheckCh is size 1: a failure storm must not block or spawn probes.
+	select {
+	case <-m.triggerCheckCh:
+		// expected: one scheduled sweep
+	default:
+		t.Fatal("expected a scheduled health-check trigger after failures")
+	}
+	select {
+	case <-m.triggerCheckCh:
+		t.Fatal("failure storm must not enqueue more than one health-check trigger")
+	default:
+	}
 }
 
 func TestSmartMultiPathBalancing(t *testing.T) {

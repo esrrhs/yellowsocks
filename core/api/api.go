@@ -494,11 +494,7 @@ func parseCIDRs(list []string) ([]*net.IPNet, error) {
 }
 
 func (s *Server) authorized(r *http.Request) bool {
-	given := requestToken(r)
-	if given == "" {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(given), []byte(s.cfg.Token)) == 1
+	return s.accessLevel(r) >= accessAdmin
 }
 
 // requestToken extracts the token from Authorization, X-API-Token or the

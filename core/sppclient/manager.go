@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/esrrhs/gohome/loggo"
-	"github.com/esrrhs/gohome/network"
 )
 
 // Node is one upstream SPP channel/server configuration.
@@ -67,72 +66,63 @@ func dialNetworkForProto(proto string) string {
 	}
 }
 
-// probeNodeWithRTT performs a protocol-level handshake probe against the node.
-// For TCP: performs TCP 3-way handshake.
-// For UDP/RUDP/KCP/QUIC: dials using network.NewConn and performs protocol handshake.
-// Returns (alive, rtt).
+// probeTCP checks reachability with a TCP connect.
+func probeTCP(addr string, timeout time.Duration) (bool, time.Duration) {
+	start := time.Now()
+	conn, err := net.DialTimeout("tcp", addr, timeout)
+	if err != nil {
+		return false, 0
+	}
+	_ = conn.Close()
+	return true, time.Since(start)
+}
+
+// probeUDPAddr performs a cheap UDP dial/write. It must NEVER call gohome's
+// RudpConn/Kcp/QUIC Dial: those allocate multi-MB FrameMgr buffers, and the
+// previous timed-out probe path leaked them (pprof: ~95% inuse via
+// probeNodeWithRTT -> RudpConn.Dial -> NewFrameMgr -> NewRBuffergo).
+//
+// A successful UDP write does not prove the SPP handshake works; proxy
+// failures (ReportNodeFailure) remain the primary down signal for UDP-family
+// nodes. This probe mainly catches DNS/resolve failures and invalid addresses.
+func probeUDPAddr(addr string, timeout time.Duration) (bool, time.Duration) {
+	if timeout <= 0 {
+		timeout = nodeProbeTimeout
+	}
+	start := time.Now()
+	d := net.Dialer{Timeout: timeout}
+	conn, err := d.Dial("udp", addr)
+	if err != nil {
+		return false, 0
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(timeout))
+	if _, err := conn.Write([]byte{0}); err != nil {
+		return false, 0
+	}
+	return true, time.Since(start)
+}
+
+// probeNodeWithRTT checks whether a node looks reachable.
+// TCP/rhttp: real TCP connect. PingTunnel: dedicated ICMP probe.
+// udp/rudp/kcp/quic/rdns: lightweight UDP only (see probeUDPAddr).
 func probeNodeWithRTT(node *Node, timeout time.Duration) (bool, time.Duration) {
 	if isPingTunnelProto(node.ServerProto) {
 		return probePingTunnel(node, timeout)
 	}
 	proto := strings.ToLower(strings.TrimSpace(node.ServerProto))
-	if proto == "" || proto == "tcp" {
-		start := time.Now()
-		conn, err := net.DialTimeout("tcp", node.Server, timeout)
-		if err != nil {
-			return false, 0
+	switch proto {
+	case "", "tcp", "rhttp":
+		return probeTCP(node.Server, timeout)
+	case "rdns":
+		addr := node.Server
+		if strings.TrimSpace(node.RdnsUpstream) != "" {
+			addr = node.RdnsUpstream
 		}
-		_ = conn.Close()
-		return true, time.Since(start)
-	}
-
-	dialer, err := network.NewConn(proto)
-	if err != nil || dialer == nil {
-		return false, 0
-	}
-	defer dialer.Close()
-
-	if proto == "rdns" {
-		if rc, ok := dialer.(*network.RdnsConn); ok {
-			cf := rc.GetConfig()
-			if node.RdnsDomain != "" {
-				cf.Domain = node.RdnsDomain
-			}
-			if node.RdnsUpstream != "" {
-				cf.Upstream = node.RdnsUpstream
-			}
-			if node.RdnsPsk != "" {
-				cf.PSK = node.RdnsPsk
-			}
-			if node.RdnsQueryType != "" {
-				cf.QueryType = node.RdnsQueryType
-			}
-			rc.SetConfig(cf)
-		}
-	}
-
-	type dialResult struct {
-		conn network.Conn
-		err  error
-		rtt  time.Duration
-	}
-	ch := make(chan dialResult, 1)
-	start := time.Now()
-
-	go func() {
-		c, err := dialer.Dial(node.Server)
-		ch <- dialResult{conn: c, err: err, rtt: time.Since(start)}
-	}()
-
-	select {
-	case res := <-ch:
-		if res.err != nil || res.conn == nil {
-			return false, 0
-		}
-		_ = res.conn.Close()
-		return true, res.rtt
-	case <-time.After(timeout):
-		return false, 0
+		return probeUDPAddr(addr, timeout)
+	default:
+		// udp, rudp, kcp, quic, ricmp, ...
+		return probeUDPAddr(node.Server, timeout)
 	}
 }
 
@@ -342,23 +332,28 @@ func newManager(nodes []*Node, localSocks5 string, interval time.Duration) (*Man
 	// Initial synchronous probe
 	m.probeAllNodes()
 
-	// Ensure clients are started for all alive candidates in the active tier
-	candidates := m.getActiveTierCandidatesLocked()
-	if len(candidates) == 0 {
-		loggo.Error("[SPP Manager] All %d SPP nodes are unreachable at startup; starting node 0 anyway", len(nodes))
-		if len(m.runtimes) > 0 {
-			_ = m.ensureClientRunningLocked(m.runtimes[0])
-			atomic.StoreInt32(&m.activeIndex, 0)
-		}
+	// Only start clients for nodes that probed alive. Do not keep a reconnecting
+	// client when every upstream is down.
+	aliveCands := m.getAliveCandidatesLocked()
+	if len(aliveCands) == 0 {
+		loggo.Error("[SPP Manager] All %d SPP nodes are unreachable at startup; waiting for health checks", len(nodes))
+		atomic.StoreInt32(&m.activeIndex, -1)
 	} else {
-		for _, rt := range candidates {
-			_ = m.ensureClientRunningLocked(rt)
+		for _, rt := range aliveCands {
+			if err := m.ensureClientRunningLocked(rt); err != nil {
+				rt.alive.Store(false)
+			}
 		}
-		best := m.pickCandidateLocked(candidates)
-		for i, rt := range m.runtimes {
-			if rt == best {
-				atomic.StoreInt32(&m.activeIndex, int32(i))
-				break
+		aliveCands = m.getAliveCandidatesLocked()
+		best := m.pickCandidateLocked(aliveCands)
+		if best == nil {
+			atomic.StoreInt32(&m.activeIndex, -1)
+		} else {
+			for i, rt := range m.runtimes {
+				if rt == best {
+					atomic.StoreInt32(&m.activeIndex, int32(i))
+					break
+				}
 			}
 		}
 	}
@@ -366,6 +361,12 @@ func newManager(nodes []*Node, localSocks5 string, interval time.Duration) (*Man
 	go m.healthLoop()
 	return m, nil
 }
+
+// udpFamilyProbeNeedsConfirm is how many consecutive cheap UDP/pingtunnel probe
+// successes are required before reviving a node that was marked down by proxy
+// failures. Cheap probes cannot see SPP handshake failure, so a single success
+// must not undo ReportNodeFailure immediately.
+const udpFamilyProbeNeedsConfirm = int32(2)
 
 // probeAllNodes probes all nodes in parallel and records results in runtimes.
 // If a node is already alive and has recent bidirectional traffic ("有数据在有来有回"),
@@ -388,15 +389,31 @@ func (m *Manager) probeAllNodes() {
 				rt.consecutiveFails.Store(0)
 				return
 			}
-			rt.alive.Store(alive)
-			if alive {
-				rt.rttMs.Store(rtt.Milliseconds())
-				rt.consecutiveOks.Add(1)
-				rt.consecutiveFails.Store(0)
-			} else {
+			if !alive {
+				rt.alive.Store(false)
 				rt.consecutiveFails.Add(1)
 				rt.consecutiveOks.Store(0)
+				return
 			}
+
+			rt.rttMs.Store(rtt.Milliseconds())
+			proto := strings.ToLower(strings.TrimSpace(rt.node.ServerProto))
+			cheapProbe := dialNetworkForProto(proto) == "udp" || isPingTunnelProto(proto)
+			if cheapProbe && rt.consecutiveFails.Load() >= 2 {
+				// Node was marked down by proxy failures; require sustained cheap
+				// probe success before treating it as alive again.
+				oks := rt.consecutiveOks.Add(1)
+				if oks < udpFamilyProbeNeedsConfirm {
+					rt.alive.Store(false)
+					return
+				}
+				rt.alive.Store(true)
+				rt.consecutiveFails.Store(0)
+				return
+			}
+			rt.alive.Store(true)
+			rt.consecutiveOks.Add(1)
+			rt.consecutiveFails.Store(0)
 		}(i)
 	}
 	wg.Wait()
@@ -485,6 +502,31 @@ func (m *Manager) pickCandidateLocked(candidates []*nodeRuntime) *nodeRuntime {
 	return best
 }
 
+// stopClientLocked closes a node's local SPP/pingtunnel client so reconnect
+// buffers can be reclaimed. Caller holds m.mu.
+func (m *Manager) stopClientLocked(rt *nodeRuntime) {
+	if rt == nil || rt.client == nil {
+		return
+	}
+	rt.clientPtr.Store(nil)
+	_ = rt.client.Close()
+	rt.client = nil
+	loggo.Info("[SPP Manager] Channel [%s] client stopped", rt.node.Name)
+}
+
+// getAliveCandidatesLocked returns only currently-alive candidates for
+// starting or picking a local upstream client.
+func (m *Manager) getAliveCandidatesLocked() []*nodeRuntime {
+	cands := m.getActiveTierCandidatesLocked()
+	out := make([]*nodeRuntime, 0, len(cands))
+	for _, rt := range cands {
+		if rt.alive.Load() {
+			out = append(out, rt)
+		}
+	}
+	return out
+}
+
 // ensureClientRunningLocked starts the SPP client for a node if not already running.
 func (m *Manager) ensureClientRunningLocked(rt *nodeRuntime) error {
 	if m.closed.Load() {
@@ -527,17 +569,18 @@ func (m *Manager) ensureClientRunningLocked(rt *nodeRuntime) error {
 }
 
 // PickNode dynamically and intelligently selects an upstream node from the active priority tier.
-// Returns (localSocks5Addr, nodeName, releaseFunc).
+// Returns (localSocks5Addr, nodeName, releaseFunc). When no node is alive it returns
+// empty strings so the proxy fails fast instead of dialing a dead local client.
 func (m *Manager) PickNode() (string, string, func()) {
 	if m.closed.Load() {
 		return "", "", nil
 	}
 
 	m.mu.Lock()
-	candidates := m.getActiveTierCandidatesLocked()
+	candidates := m.getAliveCandidatesLocked()
 	if len(candidates) == 0 {
 		m.mu.Unlock()
-		return m.localSocks5, "", nil
+		return "", "", nil
 	}
 
 	chosen := m.pickCandidateLocked(candidates)
@@ -545,7 +588,10 @@ func (m *Manager) PickNode() (string, string, func()) {
 		chosen = candidates[0]
 	}
 
-	_ = m.ensureClientRunningLocked(chosen)
+	if err := m.ensureClientRunningLocked(chosen); err != nil {
+		m.mu.Unlock()
+		return "", "", nil
+	}
 	m.mu.Unlock()
 
 	chosen.activeConns.Add(1)
@@ -625,7 +671,8 @@ func (m *Manager) healthLoop() {
 	}
 }
 
-// checkNodes executes a full health sweep, ensures multi-active clients in the active tier are running.
+// checkNodes executes a full health sweep, stops clients for dead nodes, and
+// starts clients only for alive nodes in the active tier.
 func (m *Manager) checkNodes() {
 	m.probeAllNodes()
 
@@ -640,12 +687,20 @@ func (m *Manager) checkNodes() {
 		return
 	}
 
-	candidates := m.getActiveTierCandidatesLocked()
-	for _, rt := range candidates {
-		if rt.alive.Load() {
-			_ = m.ensureClientRunningLocked(rt)
+	for _, rt := range m.runtimes {
+		if !rt.alive.Load() {
+			m.stopClientLocked(rt)
 		}
 	}
+
+	candidates := m.getAliveCandidatesLocked()
+	for _, rt := range candidates {
+		if err := m.ensureClientRunningLocked(rt); err != nil {
+			rt.alive.Store(false)
+			m.stopClientLocked(rt)
+		}
+	}
+	candidates = m.getAliveCandidatesLocked()
 
 	best := m.pickCandidateLocked(candidates)
 	if best != nil {
@@ -655,6 +710,8 @@ func (m *Manager) checkNodes() {
 				break
 			}
 		}
+	} else {
+		atomic.StoreInt32(&m.activeIndex, -1)
 	}
 }
 
@@ -698,46 +755,34 @@ func (m *Manager) HasRecentNodeTraffic(nodeName string, window time.Duration) bo
 }
 
 // ReportNodeFailure is called when proxying through a specific channel fails.
+// After a few consecutive failures the node is marked down immediately (UDP-family
+// light probes cannot see SPP handshake failure) and a single shared health sweep
+// is scheduled via triggerCheckCh — never one probe goroutine per failure.
 func (m *Manager) ReportNodeFailure(nodeName string, err error) {
 	if m.closed.Load() || nodeName == "" {
 		return
 	}
-	for i, rt := range m.runtimes {
-		if rt.node.Name == nodeName {
-			if rt.alive.Load() && rt.hasRecentTraffic(m.healthInterval) {
-				return
-			}
-			fails := rt.consecutiveFails.Add(1)
-			rt.consecutiveOks.Store(0)
-			if fails >= 2 {
-				loggo.Warn("[SPP Manager] Channel [%s] encountered %d failures (%v), probing liveness",
-					nodeName, fails, err)
-				go func(idx int) {
-					r := m.runtimes[idx]
-					if r.alive.Load() && r.hasRecentTraffic(m.healthInterval) {
-						r.consecutiveFails.Store(0)
-						return
-					}
-					alive, rtt := probeNodeWithRTT(m.nodes[idx], nodeProbeTimeout)
-					if !alive && r.alive.Load() && r.hasRecentTraffic(m.healthInterval) {
-						r.consecutiveFails.Store(0)
-						return
-					}
-					r.alive.Store(alive)
-					if !alive {
-						loggo.Warn("[SPP Manager] Channel [%s] probe confirms down, triggering check", m.nodes[idx].Name)
-						select {
-						case m.triggerCheckCh <- struct{}{}:
-						default:
-						}
-					} else {
-						r.rttMs.Store(rtt.Milliseconds())
-						r.consecutiveFails.Store(0)
-					}
-				}(i)
-			}
+	for _, rt := range m.runtimes {
+		if rt.node.Name != nodeName {
+			continue
+		}
+		if rt.alive.Load() && rt.hasRecentTraffic(m.healthInterval) {
 			return
 		}
+		fails := rt.consecutiveFails.Add(1)
+		rt.consecutiveOks.Store(0)
+		if fails >= 2 {
+			wasAlive := rt.alive.Swap(false)
+			if wasAlive {
+				loggo.Warn("[SPP Manager] Channel [%s] marked down after %d failures (%v), scheduling health check",
+					nodeName, fails, err)
+			}
+			select {
+			case m.triggerCheckCh <- struct{}{}:
+			default:
+			}
+		}
+		return
 	}
 }
 
@@ -845,11 +890,7 @@ func (m *Manager) Close() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, rt := range m.runtimes {
-		if rt.client != nil {
-			rt.clientPtr.Store(nil)
-			_ = rt.client.Close()
-			rt.client = nil
-		}
+		m.stopClientLocked(rt)
 	}
 	if m.activeClient != nil {
 		_ = m.activeClient.Close()

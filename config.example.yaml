@@ -120,7 +120,7 @@ doh_url: "https://1.1.1.1/dns-query"
 # 统计 API：对外提供实时与历史数据，供网页看板查看。
 # 开启后需要 token 访问；留空时会自动生成并打印在日志里。
 # api_listen: "127.0.0.1:9090"   # 只有本机能访问；用 "0.0.0.0:9090" 对外开放
-# api_token: "change-me"         # 建议显式设置
+# api_token: "change-me"         # 建议显式设置；设为 "none" 关闭鉴权（仅建议内网）
 # api_origins: ["*"]             # 浏览器跨域白名单；["none"] 关闭 CORS（反代同源时用）
 # api_dashboard: true            # 在 http://<api_listen>/ 提供内置看板
 # api_pprof: false               # 抓热点时才开：/debug/pprof/ 需要管理 token，会暴露域名与堆栈
