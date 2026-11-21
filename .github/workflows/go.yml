@@ -102,6 +102,7 @@ jobs:
   gui:
     name: GUI (${{ matrix.platform }})
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: windows-latest
