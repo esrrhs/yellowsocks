@@ -1,0 +1,23 @@
+{
+  "name": "frontend",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vue-tsc --noEmit && vite build && node scripts/keep-dist.js",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@types/js-yaml": "^4.0.9",
+    "js-yaml": "^5.5.0",
+    "vue": "^3.5.0"
+  },
+  "devDependencies": {
+    "@babel/types": "^7.26.0",
+    "@vitejs/plugin-vue": "^6.0.0",
+    "typescript": "^5.6.3",
+    "vite": "^7.0.0",
+    "vue-tsc": "^2.1.0"
+  }
+}

@@ -14,13 +14,14 @@
 pack/
 pack.zip
 
-# GUI (wails)
-gui/frontend/node_modules/
+# GUI shells (wails)
+*/frontend/node_modules/
 # dist is a build output; keep .gitkeep because go:embed requires the
 # directory to exist on a fresh checkout
-gui/frontend/dist/*
-!gui/frontend/dist/.gitkeep
-gui/build/bin/
+*/frontend/dist/*
+!*/frontend/dist/.gitkeep
+windows/build/bin/
+macos/build/bin/
 
 # Test binary, built with `go test -c`
 *.test

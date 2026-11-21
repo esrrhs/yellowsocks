@@ -107,8 +107,10 @@ jobs:
         include:
           - os: windows-latest
             platform: windows_amd64
+            shell-dir: windows
           - os: macos-latest
             platform: darwin_arm64
+            shell-dir: macos
     runs-on: ${{ matrix.os }}
     steps:
       - name: Checkout repository
@@ -128,25 +130,25 @@ jobs:
       - name: Install Wails CLI
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.1
 
-      - name: Run GUI tests
-        working-directory: gui
+      - name: Run shared GUI tests
+        working-directory: guiapp
         run: go test -count=1 ./...
 
       - name: Build GUI
-        working-directory: gui
+        working-directory: ${{ matrix.shell-dir }}
         shell: bash
         run: wails build -webview2 embed
 
       - name: Package (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
-        run: Compress-Archive -Path gui/build/bin/yellowsocks-gui.exe, config.example.yaml -DestinationPath yellowsocks-gui_${{ matrix.platform }}.zip
+        run: Compress-Archive -Path windows/build/bin/yellowsocks-gui.exe, config.example.yaml -DestinationPath yellowsocks-gui_${{ matrix.platform }}.zip
 
       - name: Package (macOS)
         if: matrix.os == 'macos-latest'
         shell: bash
         run: |
-          cd gui/build/bin
+          cd ${{ matrix.shell-dir }}/build/bin
           zip -ry ../../../yellowsocks-gui_${{ matrix.platform }}.zip yellowsocks-gui.app
 
       - name: Upload GUI artifact
