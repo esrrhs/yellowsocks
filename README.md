@@ -308,6 +308,13 @@ Archives are written to `pack/`:
 
 Each archive contains `yellowsocks-cli` and `config.example.yaml`.
 
+## Repository Layout
+
+- `cli/` — CLI entry point (`yellowsocks-cli`)
+- `gui/` — Windows / macOS desktop GUI client, similar to Clash Verge (work in progress)
+- `core/` — shared engine: proxy, DNS, router, SPP client, stats, API, config
+- `dashboard/` — embedded web dashboard
+
 ## License
 
 MIT

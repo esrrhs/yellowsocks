@@ -69,7 +69,7 @@ jobs:
           GIT_COMMIT=$(git rev-parse --short HEAD)
           BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
           LDFLAGS="-s -w -X github.com/esrrhs/yellowsocks/core/version.Version=${VERSION} -X github.com/esrrhs/yellowsocks/core/version.GitCommit=${GIT_COMMIT} -X \"github.com/esrrhs/yellowsocks/core/version.BuildTime=${BUILD_TIME}\""
-          go build -ldflags="$LDFLAGS" -o yellowsocks-cli ./cmd/yellowsocks-cli
+          go build -ldflags="$LDFLAGS" -o yellowsocks-cli ./cli
           ./yellowsocks-cli -v
 
   package:

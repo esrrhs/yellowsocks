@@ -29,7 +29,7 @@ for target in "${targets[@]}"; do
     extra_env="GOARM=7"
   fi
 
-  env CGO_ENABLED=0 GOOS=$os GOARCH=$arch $extra_env go build -ldflags="$LDFLAGS" -o yellowsocks-cli ./cmd/yellowsocks-cli
+  env CGO_ENABLED=0 GOOS=$os GOARCH=$arch $extra_env go build -ldflags="$LDFLAGS" -o yellowsocks-cli ./cli
   if [ $? -ne 0 ]; then
     echo "Build failed for $os/$arch"
     exit 1
