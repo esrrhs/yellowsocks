@@ -99,9 +99,64 @@ jobs:
           name: yellowsocks-linux
           path: pack/*.zip
 
+  gui:
+    name: GUI (${{ matrix.platform }})
+    strategy:
+      matrix:
+        include:
+          - os: windows-latest
+            platform: windows_amd64
+          - os: macos-latest
+            platform: darwin_arm64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: true
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.17.1
+
+      - name: Run GUI tests
+        working-directory: gui
+        run: go test -count=1 ./...
+
+      - name: Build GUI
+        working-directory: gui
+        shell: bash
+        run: wails build -webview2 embed
+
+      - name: Package (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        run: Compress-Archive -Path gui/build/bin/yellowsocks-gui.exe, config.example.yaml -DestinationPath yellowsocks-gui_${{ matrix.platform }}.zip
+
+      - name: Package (macOS)
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          cd gui/build/bin
+          zip -ry ../../../yellowsocks-gui_${{ matrix.platform }}.zip yellowsocks-gui.app
+
+      - name: Upload GUI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: yellowsocks-gui-${{ matrix.platform }}
+          path: yellowsocks-gui_${{ matrix.platform }}.zip
+
   release:
     name: Publish GitHub Release
-    needs: [check-version, test, package]
+    needs: [check-version, test, package, gui]
     if: github.ref == 'refs/heads/master' && needs.check-version.outputs.release_needed == 'true'
     runs-on: ubuntu-latest
     steps:

@@ -14,6 +14,11 @@
 pack/
 pack.zip
 
+# GUI (wails)
+gui/frontend/node_modules/
+gui/frontend/dist/
+gui/build/bin/
+
 # Test binary, built with `go test -c`
 *.test
 

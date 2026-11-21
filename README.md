@@ -311,7 +311,7 @@ Each archive contains `yellowsocks-cli` and `config.example.yaml`.
 ## Repository Layout
 
 - `cli/` — CLI entry point (`yellowsocks-cli`)
-- `gui/` — Windows / macOS desktop GUI client, similar to Clash Verge (work in progress)
+- `gui/` — Windows / macOS desktop GUI client built with Wails v2 + Vue 3, similar to Clash Verge (system tray, embedded engine, single binary)
 - `core/` — shared engine: proxy, DNS, router, SPP client, stats, API, config
 - `dashboard/` — embedded web dashboard
 
