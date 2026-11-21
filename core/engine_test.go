@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/esrrhs/gohome/network"
 	"github.com/esrrhs/yellowsocks/core/sppclient"
 )
 
@@ -232,5 +234,178 @@ func TestEngineStatisticsAPI(t *testing.T) {
 	}
 	if e.apiServer != nil || e.collector != nil {
 		t.Fatal("API server or collector retained after Stop")
+	}
+}
+
+// startFakeSocks5Upstream runs a minimal RFC 1928 server that requires
+// username/password auth and relays CONNECT to the real target. It emulates
+// any generic SOCKS5 proxy (e.g. a remote clash/v2ray inbound). dialOverride
+// lets the test map a fake domain onto a local listener; upstreamTarget is
+// fed the host:port of every CONNECT that reached the upstream.
+func startFakeSocks5Upstream(t *testing.T, user, pass string, dialOverride func(hostport string) string) (addr string, stop func(), upstreamTarget <-chan string) {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("fake socks5 upstream listen: %v", err)
+	}
+	targets := make(chan string, 16)
+	go func() {
+		for {
+			c, err := l.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				if err := network.Sock5HandshakeBy(c, user, pass); err != nil {
+					return
+				}
+				cmd, _, hostport, err := network.Sock5GetRequest(c)
+				if err != nil || cmd != network.Socks5CmdConnect {
+					return
+				}
+				select {
+				case targets <- hostport:
+				default:
+				}
+				if dialOverride != nil {
+					if mapped := dialOverride(hostport); mapped != "" {
+						hostport = mapped
+					}
+				}
+				dst, err := net.DialTimeout("tcp", hostport, 5*time.Second)
+				if err != nil {
+					_ = network.Sock5SendConnectReply(c, 0x05, "0.0.0.0:0")
+					return
+				}
+				defer dst.Close()
+				_ = network.Sock5SendConnectReply(c, 0x00, "0.0.0.0:0")
+				done := make(chan struct{}, 2)
+				go func() { _, _ = io.Copy(dst, c); done <- struct{}{} }()
+				go func() { _, _ = io.Copy(c, dst); done <- struct{}{} }()
+				<-done
+			}(c)
+		}
+	}()
+	return l.Addr().String(), func() { _ = l.Close() }, targets
+}
+
+// TestEngineSocks5UpstreamEndToEnd drives a full relay chain through an
+// engine configured with spp_proto "socks5": inbound SOCKS5 -> static
+// upstream (auth) -> fake upstream -> echo target. It proves the engine
+// forwards proxied traffic to a plain SOCKS5 server without the SPP stack.
+func TestEngineSocks5UpstreamEndToEnd(t *testing.T) {
+	const upUser, upPass = "upuser", "uppass"
+
+	echoL, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("echo listen: %v", err)
+	}
+	defer echoL.Close()
+	go func() {
+		for {
+			c, err := echoL.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				_, _ = io.Copy(c, c)
+				_ = c.Close()
+			}(c)
+		}
+	}()
+
+	upAddr, stopUp, upstreamTarget := startFakeSocks5Upstream(t, upUser, upPass, func(hostport string) string {
+		if strings.HasPrefix(hostport, "upstream.test:") {
+			return echoL.Addr().String()
+		}
+		return ""
+	})
+	defer stopUp()
+
+	s5L, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve socks5 port: %v", err)
+	}
+	s5Addr := s5L.Addr().String()
+	_ = s5L.Close()
+
+	e := NewEngine(EngineConfig{
+		SPPProto:     "socks5",
+		SPPServer:    upAddr,
+		SPPUsername:  upUser,
+		SPPPassword:  upPass,
+		DNSListen:    "127.0.0.1:0",
+		Socks5Listen: s5Addr,
+		HTTPListen:   "",
+		DirectDNS:    "127.0.0.1:1",
+		RemoteDoH:    "http://127.0.0.1:1/dns-query",
+	})
+	if err := e.Start(); err != nil {
+		t.Fatalf("engine start with socks5 upstream: %v", err)
+	}
+	defer func() { _ = e.Stop() }()
+
+	client, err := net.Dial("tcp", s5Addr)
+	if err != nil {
+		t.Fatalf("dial engine inbound: %v", err)
+	}
+	defer client.Close()
+	tcpClient := client.(*net.TCPConn)
+	if err := network.Sock5Handshake(tcpClient, 5000, "", ""); err != nil {
+		t.Fatalf("engine inbound handshake: %v", err)
+	}
+	// A domain target: unknown domains route to Proxy, so the traffic must
+	// reach the fake upstream (loopback IPs would go direct by built-in
+	// reserved-range rules).
+	if err := network.Sock5SetRequest(tcpClient, "upstream.test", 443, 5000); err != nil {
+		t.Fatalf("connect via engine: %v", err)
+	}
+	select {
+	case got := <-upstreamTarget:
+		if got != "upstream.test:443" {
+			t.Fatalf("upstream saw target %q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("traffic never reached the socks5 upstream")
+	}
+
+	msg := []byte("hello through socks5 upstream")
+	if _, err := client.Write(msg); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	got := make([]byte, len(msg))
+	if _, err := io.ReadFull(client, got); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(got) != string(msg) {
+		t.Fatalf("echo mismatch: %q", got)
+	}
+
+	// The engine must not have created an SPP manager for this config.
+	if e.sppManager != nil {
+		t.Fatal("spp manager created for socks5 upstream")
+	}
+}
+
+// TestEngineSocks5UpstreamRequiresServer checks the config validation.
+func TestEngineSocks5UpstreamRequiresServer(t *testing.T) {
+	e := NewEngine(EngineConfig{
+		SPPProto:     "socks5",
+		SPPServer:    "",
+		DNSListen:    "127.0.0.1:0",
+		Socks5Listen: "127.0.0.1:0",
+		HTTPListen:   "",
+	})
+	err := e.Start()
+	if err == nil {
+		_ = e.Stop()
+		t.Fatal("start with socks5 upstream and no server must fail")
+	}
+	if !strings.Contains(err.Error(), "socks5 upstream requires spp_server") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if e.running {
+		t.Fatal("engine must not be running after failed start")
 	}
 }

@@ -6,6 +6,10 @@ export function EngineStatus() {
   return window['go']['main']['App']['EngineStatus']();
 }
 
+export function GetAutoStartCore() {
+  return window['go']['main']['App']['GetAutoStartCore']();
+}
+
 export function GetConfig() {
   return window['go']['main']['App']['GetConfig']();
 }
@@ -30,12 +34,24 @@ export function GetSessions() {
   return window['go']['main']['App']['GetSessions']();
 }
 
+export function GetSystemProxy() {
+  return window['go']['main']['App']['GetSystemProxy']();
+}
+
 export function GetVersion() {
   return window['go']['main']['App']['GetVersion']();
 }
 
 export function SaveConfig(arg1) {
   return window['go']['main']['App']['SaveConfig'](arg1);
+}
+
+export function SetAutoStartCore(arg1) {
+  return window['go']['main']['App']['SetAutoStartCore'](arg1);
+}
+
+export function SetSystemProxy(arg1) {
+  return window['go']['main']['App']['SetSystemProxy'](arg1);
 }
 
 export function StartEngine() {

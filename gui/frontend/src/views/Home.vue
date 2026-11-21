@@ -2,8 +2,12 @@
 import { computed, onMounted, onUnmounted, ref } from "vue";
 import {
   EngineStatus,
+  GetAutoStartCore,
   GetOverview,
   GetSeries,
+  GetSystemProxy,
+  SetAutoStartCore,
+  SetSystemProxy,
   StartEngine,
   StopEngine,
 } from "../../wailsjs/go/main/App";
@@ -15,6 +19,7 @@ const overview = ref<stats.Overview | null>(null);
 const series = ref<stats.SeriesPoint[]>([]);
 const actionError = ref("");
 const busy = ref(false);
+const autoStart = ref(false);
 
 let timer: number | undefined;
 
@@ -42,6 +47,26 @@ async function toggle() {
   } finally {
     busy.value = false;
     await refresh();
+  }
+}
+
+async function toggleSystemProxy() {
+  actionError.value = "";
+  try {
+    await SetSystemProxy(!status.value.system_proxy);
+    status.value.system_proxy = !status.value.system_proxy;
+  } catch (e: any) {
+    actionError.value = String(e?.message ?? e);
+  }
+}
+
+async function toggleAutoStart() {
+  actionError.value = "";
+  try {
+    await SetAutoStartCore(!autoStart.value);
+    autoStart.value = !autoStart.value;
+  } catch (e: any) {
+    actionError.value = String(e?.message ?? e);
   }
 }
 
@@ -82,6 +107,12 @@ onMounted(async () => {
     }
   });
   status.value = new main.EngineStatus(await EngineStatus());
+  try {
+    status.value.system_proxy = await GetSystemProxy();
+    autoStart.value = await GetAutoStartCore();
+  } catch {
+    // binding unavailable; keep default
+  }
   await refresh();
   timer = window.setInterval(refresh, 1000);
 });
@@ -142,6 +173,27 @@ const chart = computed(() => {
         @click="toggle"
       >
         {{ busy ? "处理中..." : status.running ? "停止代理" : "启动代理" }}
+      </button>
+    </div>
+
+    <div class="options-row">
+      <button
+        class="card option-chip"
+        :class="{ on: status.system_proxy }"
+        @click="toggleSystemProxy"
+      >
+        <span class="dot" :class="status.system_proxy ? 'on' : 'off'"></span>
+        <span class="chip-title">系统透明代理</span>
+        <span class="chip-state">{{ status.system_proxy ? "已开启" : "已关闭" }}</span>
+      </button>
+      <button
+        class="card option-chip"
+        :class="{ on: autoStart }"
+        @click="toggleAutoStart"
+      >
+        <span class="dot" :class="autoStart ? 'on' : 'off'"></span>
+        <span class="chip-title">自动连接</span>
+        <span class="chip-state">{{ autoStart ? "启动时连接" : "手动连接" }}</span>
       </button>
     </div>
 

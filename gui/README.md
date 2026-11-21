@@ -3,6 +3,18 @@
 Windows / macOS 桌面可视化客户端(类 Clash Verge),基于 [Wails v2](https://wails.io) 构建,
 直接内嵌根目录的 `core/` 代理引擎(单进程、单二进制,无 sidecar)。
 
+## 功能
+
+- **引擎管理**:启动/停止(Home 页按钮、托盘菜单、自动连接选项)
+- **上游协议**:SPP 全协议(tcp/udp/rudp/ricmp/kcp/quic/rhttp/rdns)、pingtunnel,以及
+  `spp_proto: "socks5"` 直连任意 SOCKS5 服务器(core 引擎新增能力,CLI 同步支持)
+- **系统透明代理**:一键把系统流量指向本地代理(Windows 注册表 + WinINET 刷新,
+  macOS networksetup);引擎停止/退出自动还原;强杀残留下次启动自动清理
+- **设置页**:覆盖 CLI 全部配置项的表单(上游/监听/DNS/路由分流/认证/API/统计)+
+  YAML 源码模式,与 CLI 的 config.yaml 完全互通
+- **实时统计**:活动连接、上下行速率与总量、30 分钟流量曲线(1s 轮询)
+- **系统托盘**:显示主界面/启停/系统代理开关/退出;关闭窗口即最小化到托盘
+
 ## 技术栈
 
 - **桌面壳**: Wails v2.17.1(Windows 用 WebView2,macOS 用 WKWebView)

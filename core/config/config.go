@@ -15,6 +15,8 @@ type FileConfig struct {
 	SPPServer        string            `json:"spp_server" yaml:"spp_server"`
 	SPPProto         string            `json:"spp_proto" yaml:"spp_proto"`
 	SPPKey           string            `json:"spp_key" yaml:"spp_key"`
+	SPPUsername      string            `json:"spp_username" yaml:"spp_username"`
+	SPPPassword      string            `json:"spp_password" yaml:"spp_password"`
 	SPPEncrypt       string            `json:"spp_encrypt" yaml:"spp_encrypt"`
 	SPPCompress      *int              `json:"spp_compress" yaml:"spp_compress"`
 	SPPRdnsDomain    string            `json:"spp_rdnsdomain" yaml:"spp_rdnsdomain"`
@@ -114,6 +116,12 @@ func (f *FileConfig) MergeWithEngineConfig(base core.EngineConfig) core.EngineCo
 	}
 	if f.SPPEncrypt != "" {
 		res.SPPEncrypt = f.SPPEncrypt
+	}
+	if f.SPPUsername != "" {
+		res.SPPUsername = f.SPPUsername
+	}
+	if f.SPPPassword != "" {
+		res.SPPPassword = f.SPPPassword
 	}
 	if f.SPPCompress != nil {
 		res.SPPCompress = *f.SPPCompress

@@ -234,3 +234,22 @@ skip_country: "US,CA"
 		t.Fatalf("unexpected skip country: %s", merged.SkipCountry)
 	}
 }
+
+func TestMergeSPPUsernamePassword(t *testing.T) {
+	fc, err := ParseConfigContent([]byte(`
+spp_proto: "socks5"
+spp_server: "192.168.0.105:1080"
+spp_username: "alice"
+spp_password: "secret"
+`))
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	merged := fc.MergeWithEngineConfig(EngineConfig{})
+	if merged.SPPUsername != "alice" {
+		t.Fatalf("username not merged: %q", merged.SPPUsername)
+	}
+	if merged.SPPPassword != "secret" {
+		t.Fatalf("password not merged: %q", merged.SPPPassword)
+	}
+}

@@ -26,8 +26,14 @@ func runTray(a *App) {
 		mStart := systray.AddMenuItem("启动代理", "Start the proxy engine")
 		mStop := systray.AddMenuItem("停止代理", "Stop the proxy engine")
 		mStop.Disable()
+		mSysProxy := systray.AddMenuItem("系统代理: 关", "Toggle the OS-wide system proxy")
 		systray.AddSeparator()
 		mQuit := systray.AddMenuItem("退出", "Quit YellowSocks")
+
+		// Reflect the current intent on startup.
+		if a.GetSystemProxy() {
+			mSysProxy.SetTitle("系统代理: 开")
+		}
 
 		mShow.Click(func() {
 			wailsruntime.WindowShow(a.ctx)
@@ -42,6 +48,16 @@ func runTray(a *App) {
 			if err := a.StopEngine(); err == nil {
 				mStop.Disable()
 				mStart.Enable()
+			}
+		})
+		mSysProxy.Click(func() {
+			next := !a.GetSystemProxy()
+			if err := a.SetSystemProxy(next); err == nil {
+				if next {
+					mSysProxy.SetTitle("系统代理: 开")
+				} else {
+					mSysProxy.SetTitle("系统代理: 关")
+				}
 			}
 		})
 		mQuit.Click(a.quitApp)
@@ -63,8 +79,8 @@ func trayIcon() []byte {
 func icoFromPNG(png []byte) []byte {
 	const headerSize = 6 + 16 // ICONDIR + one ICONDIRENTRY
 	buf := make([]byte, headerSize+len(png))
-	buf[2] = 1 // ICONDIR.type: 1 = icon
-	buf[4] = 1 // ICONDIR.count: 1 image
+	buf[2] = 1                                  // ICONDIR.type: 1 = icon
+	buf[4] = 1                                  // ICONDIR.count: 1 image
 	binary.LittleEndian.PutUint16(buf[10:], 1)  // planes
 	binary.LittleEndian.PutUint16(buf[12:], 32) // bits per pixel
 	binary.LittleEndian.PutUint32(buf[14:], uint32(len(png)))

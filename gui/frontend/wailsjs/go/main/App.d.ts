@@ -6,6 +6,8 @@ import {version} from '../models';
 
 export function EngineStatus():Promise<main.EngineStatus>;
 
+export function GetAutoStartCore():Promise<boolean>;
+
 export function GetConfig():Promise<string>;
 
 export function GetErrors():Promise<Array<stats.ErrorEntry>>;
@@ -18,9 +20,15 @@ export function GetSeries(arg1:number):Promise<Array<stats.SeriesPoint>>;
 
 export function GetSessions():Promise<Array<stats.SessionView>>;
 
+export function GetSystemProxy():Promise<boolean>;
+
 export function GetVersion():Promise<version.Info>;
 
 export function SaveConfig(arg1:string):Promise<void>;
+
+export function SetAutoStartCore(arg1:boolean):Promise<void>;
+
+export function SetSystemProxy(arg1:boolean):Promise<void>;
 
 export function StartEngine():Promise<void>;
 

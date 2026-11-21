@@ -30,8 +30,10 @@ func run(args []string, stdout io.Writer) int {
 
 	configPath := fs.String("config", "", "Path to json/yaml configuration file")
 	sppServer := fs.String("spp-server", "", "SPP remote server address (e.g. 1.2.3.4:8888)")
-	sppProto := fs.String("spp-proto", "tcp", "SPP protocol (tcp, udp, rudp, ricmp, kcp, quic, rhttp, rdns, pingtunnel)")
+	sppProto := fs.String("spp-proto", "tcp", "SPP protocol (tcp, udp, rudp, ricmp, kcp, quic, rhttp, rdns, pingtunnel, socks5)")
 	sppKey := fs.String("spp-key", "123456", "SPP password / key")
+	sppUsername := fs.String("spp-username", "", "SOCKS5 upstream username (only used when spp-proto is socks5)")
+	sppPassword := fs.String("spp-password", "", "SOCKS5 upstream password (only used when spp-proto is socks5)")
 	sppRdnsDomain := fs.String("spp-rdnsdomain", "", "RDNS base tunnel domain (e.g. tunnel.example.com); required when spp-proto is rdns")
 	sppRdnsUpstream := fs.String("spp-rdnsupstream", "", "RDNS upstream DNS server for non-tunnel queries")
 	sppRdnsPsk := fs.String("spp-rdnspsk", "", "RDNS underlay AES-GCM PSK payload encryption key")
@@ -90,6 +92,8 @@ func run(args []string, stdout io.Writer) int {
 		SPPServer:        *sppServer,
 		SPPProto:         *sppProto,
 		SPPKey:           *sppKey,
+		SPPUsername:      *sppUsername,
+		SPPPassword:      *sppPassword,
 		SPPEncrypt:       "default",
 		SPPCompress:      128,
 		SPPRdnsDomain:    *sppRdnsDomain,

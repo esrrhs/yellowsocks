@@ -23,6 +23,12 @@ func main() {
 		NoLogFile: !launch.EnsureWritableWorkDir(),
 	})
 
+	// A previous instance may have been hard-killed while the system proxy
+	// was registered; clear that stale registration before WebView2 starts,
+	// because a proxy pointing at a dead port would block the WebView2
+	// subprocess itself from launching.
+	cleanupStaleSystemProxy()
+
 	app := NewApp()
 
 	err := wails.Run(&options.App{

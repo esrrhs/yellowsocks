@@ -18,11 +18,15 @@ import (
 
 // EngineConfig is the Linux proxy engine configuration.
 type EngineConfig struct {
-	SPPServer        string // remote SPP server ip:port (single node)
-	SPPProto         string // tcp, udp, kcp, quic, rudp, rdns, pingtunnel
-	SPPKey           string
+	SPPServer string // remote SPP server ip:port (single node); also the SOCKS5 upstream address when SPPProto is "socks5"
+	SPPProto  string // tcp, udp, kcp, quic, rudp, rdns, pingtunnel, socks5
+	SPPKey    string
 	SPPEncrypt       string
 	SPPCompress      int
+	// SPPUsername/SPPPassword authenticate against the upstream when
+	// SPPProto is "socks5"; ignored for the other protocols.
+	SPPUsername      string
+	SPPPassword      string
 	SPPRdnsDomain    string
 	SPPRdnsUpstream  string
 	SPPRdnsPsk       string
@@ -97,6 +101,7 @@ type Engine struct {
 	socks5Server *proxy.Socks5Server
 	httpServer   *proxy.HTTPServer
 	sppManager   *sppclient.Manager
+	upstream     proxy.UpstreamProvider
 	collector    *stats.Collector
 	apiServer    *api.Server
 	mu           sync.Mutex
@@ -149,26 +154,37 @@ func (e *Engine) Start() error {
 		SkipCountry:      e.cfg.SkipCountry,
 	})
 
-	nodes := e.cfg.SPPNodes
-	if len(nodes) == 0 && e.cfg.SPPServer != "" {
-		nodes = []*sppclient.Node{
-			{
-				Name:          "default_node",
-				Server:        e.cfg.SPPServer,
-				ServerProto:   e.cfg.SPPProto,
-				Key:           e.cfg.SPPKey,
-				Encrypt:       e.cfg.SPPEncrypt,
-				Compress:      e.cfg.SPPCompress,
-				RdnsDomain:    e.cfg.SPPRdnsDomain,
-				RdnsUpstream:  e.cfg.SPPRdnsUpstream,
-				RdnsPsk:       e.cfg.SPPRdnsPsk,
-				RdnsQueryType: e.cfg.SPPRdnsQueryType,
-			},
-		}
-	}
-	if len(nodes) == 0 {
+	// A SOCKS5 upstream (spp_proto: "socks5") bypasses the SPP manager
+	// entirely: proxied traffic is forwarded to a plain RFC 1928 SOCKS5
+	// server (TCP CONNECT + UDP ASSOCIATE).
+	useSocks5Upstream := strings.EqualFold(strings.TrimSpace(e.cfg.SPPProto), "socks5")
+	if useSocks5Upstream && strings.TrimSpace(e.cfg.SPPServer) == "" {
 		e.cleanupServices()
-		return fmt.Errorf("no SPP servers or nodes specified")
+		return fmt.Errorf("socks5 upstream requires spp_server")
+	}
+
+	nodes := e.cfg.SPPNodes
+	if !useSocks5Upstream {
+		if len(nodes) == 0 && e.cfg.SPPServer != "" {
+			nodes = []*sppclient.Node{
+				{
+					Name:          "default_node",
+					Server:        e.cfg.SPPServer,
+					ServerProto:   e.cfg.SPPProto,
+					Key:           e.cfg.SPPKey,
+					Encrypt:       e.cfg.SPPEncrypt,
+					Compress:      e.cfg.SPPCompress,
+					RdnsDomain:    e.cfg.SPPRdnsDomain,
+					RdnsUpstream:  e.cfg.SPPRdnsUpstream,
+					RdnsPsk:       e.cfg.SPPRdnsPsk,
+					RdnsQueryType: e.cfg.SPPRdnsQueryType,
+				},
+			}
+		}
+		if len(nodes) == 0 {
+			e.cleanupServices()
+			return fmt.Errorf("no SPP servers or nodes specified")
+		}
 	}
 
 	// Statistics precede every service so DNS and the proxies can record
@@ -179,13 +195,21 @@ func (e *Engine) Start() error {
 		SaveInterval:   stats.DefaultSaveInterval,
 	})
 
-	loggo.Info("[Engine] Initializing SPP manager with %d nodes...", len(nodes))
-	mgr, err := sppclient.NewManager(nodes, e.cfg.LocalSocks5)
-	if err != nil {
-		e.cleanupServices()
-		return fmt.Errorf("failed to init SPP manager: %w", err)
+	var upstream proxy.UpstreamProvider
+	if useSocks5Upstream {
+		upstream = proxy.NewStaticUpstream(strings.TrimSpace(e.cfg.SPPServer), e.cfg.SPPUsername, e.cfg.SPPPassword)
+		loggo.Info("[Engine] Using SOCKS5 upstream %s", e.cfg.SPPServer)
+	} else {
+		loggo.Info("[Engine] Initializing SPP manager with %d nodes...", len(nodes))
+		mgr, err := sppclient.NewManager(nodes, e.cfg.LocalSocks5)
+		if err != nil {
+			e.cleanupServices()
+			return fmt.Errorf("failed to init SPP manager: %w", err)
+		}
+		e.sppManager = mgr
+		upstream = mgr
 	}
-	e.sppManager = mgr
+	e.upstream = upstream
 
 	loggo.Info("[Engine] Starting DNS (UDP: %s, DoH: %s, DoT: %s)...",
 		e.cfg.DNSListen, e.cfg.DoHListen, e.cfg.DoTListen)
@@ -197,7 +221,7 @@ func (e *Engine) Start() error {
 		TLSKeyFile:    e.cfg.TLSKeyFile,
 		DoHURL:        e.cfg.RemoteDoH,
 		DirectDNS:     e.cfg.DirectDNS,
-		Socks5Addr:    e.sppManager.Socks5Addr(),
+		Socks5Addr:    e.upstream.Socks5Addr(),
 		Router:        e.router,
 		EnableIPv6:    e.cfg.EnableIPv6,
 		Stats:         e.collector,
@@ -234,7 +258,7 @@ func (e *Engine) Start() error {
 			Password:   e.cfg.ProxyPassword,
 			Router:     e.router,
 			DNS:        e.dnsServer,
-			Upstream:   e.sppManager,
+			Upstream:   e.upstream,
 			Stats:      e.collector,
 			ActiveNode: e.activeNodeName,
 			EnableIPv6: e.cfg.EnableIPv6,
@@ -254,7 +278,7 @@ func (e *Engine) Start() error {
 			Password:   e.cfg.ProxyPassword,
 			Router:     e.router,
 			DNS:        e.dnsServer,
-			Upstream:   e.sppManager,
+			Upstream:   e.upstream,
 			Stats:      e.collector,
 			ActiveNode: e.activeNodeName,
 			EnableIPv6: e.cfg.EnableIPv6,
@@ -365,6 +389,14 @@ func (e *Engine) APIInfo() api.SystemInfo {
 				ActiveConns: n.ActiveConns,
 			})
 		}
+	} else if su, ok := e.upstream.(*proxy.StaticUpstream); ok {
+		info.Nodes = append(info.Nodes, api.NodeInfo{
+			Name:   "socks5",
+			Server: su.Addr(),
+			Proto:  "socks5",
+			Alive:  true,
+			Active: true,
+		})
 	}
 	return info
 }
@@ -408,6 +440,7 @@ func (e *Engine) cleanupServices() {
 		e.sppManager.Close()
 		e.sppManager = nil
 	}
+	e.upstream = nil
 	if e.router != nil {
 		e.router.Close()
 		e.router = nil

@@ -2,6 +2,7 @@ export namespace main {
 	
 	export class EngineStatus {
 	    running: boolean;
+	    system_proxy: boolean;
 	    socks5: string;
 	    http: string;
 	    dns: string;
@@ -16,6 +17,7 @@ export namespace main {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.running = source["running"];
+	        this.system_proxy = source["system_proxy"];
 	        this.socks5 = source["socks5"];
 	        this.http = source["http"];
 	        this.dns = source["dns"];

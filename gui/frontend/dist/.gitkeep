@@ -1,2 +1,0 @@
-Kept so that //go:embed all:frontend/dist in main.go resolves on a fresh
-checkout; vite build replaces the content of this directory.
