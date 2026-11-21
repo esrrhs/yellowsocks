@@ -245,7 +245,7 @@ spp_password: "secret"
 	if err != nil {
 		t.Fatalf("parse: %v", err)
 	}
-	merged := fc.MergeWithEngineConfig(EngineConfig{})
+	merged := fc.MergeWithEngineConfig(core.EngineConfig{})
 	if merged.SPPUsername != "alice" {
 		t.Fatalf("username not merged: %q", merged.SPPUsername)
 	}
