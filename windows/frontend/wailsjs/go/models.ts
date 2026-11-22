@@ -3,6 +3,8 @@ export namespace guiapp {
 	export class EngineStatus {
 	    running: boolean;
 	    system_proxy: boolean;
+	    tun: boolean;
+	    tun_error: string;
 	    socks5: string;
 	    http: string;
 	    dns: string;
@@ -18,6 +20,8 @@ export namespace guiapp {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.running = source["running"];
 	        this.system_proxy = source["system_proxy"];
+	        this.tun = source["tun"];
+	        this.tun_error = source["tun_error"];
 	        this.socks5 = source["socks5"];
 	        this.http = source["http"];
 	        this.dns = source["dns"];
@@ -140,6 +144,40 @@ export namespace stats {
 	        this.message = source["message"];
 	    }
 	}
+	export class LifetimeStats {
+	    totals: Counters;
+	    direct: Counters;
+	    proxy: Counters;
+	
+	    static createFrom(source: any = {}) {
+	        return new LifetimeStats(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.totals = this.convertValues(source["totals"], Counters);
+	        this.direct = this.convertValues(source["direct"], Counters);
+	        this.proxy = this.convertValues(source["proxy"], Counters);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
+	}
 	export class NodeStat {
 	    name: string;
 	    upload_bytes: number;
@@ -182,6 +220,9 @@ export namespace stats {
 	    totals: Counters;
 	    direct: Counters;
 	    proxy: Counters;
+	    lifetime: Counters;
+	    lifetime_direct: Counters;
+	    lifetime_proxy: Counters;
 	    rate: Rate;
 	    rate_1m: Rate;
 	    peak: Rate;
@@ -201,6 +242,9 @@ export namespace stats {
 	        this.totals = this.convertValues(source["totals"], Counters);
 	        this.direct = this.convertValues(source["direct"], Counters);
 	        this.proxy = this.convertValues(source["proxy"], Counters);
+	        this.lifetime = this.convertValues(source["lifetime"], Counters);
+	        this.lifetime_direct = this.convertValues(source["lifetime_direct"], Counters);
+	        this.lifetime_proxy = this.convertValues(source["lifetime_proxy"], Counters);
 	        this.rate = this.convertValues(source["rate"], Rate);
 	        this.rate_1m = this.convertValues(source["rate_1m"], Rate);
 	        this.peak = this.convertValues(source["peak"], Rate);

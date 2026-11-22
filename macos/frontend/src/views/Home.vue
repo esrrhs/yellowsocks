@@ -3,11 +3,17 @@ import { computed, onMounted, onUnmounted, ref } from "vue";
 import {
   EngineStatus,
   GetAutoStartCore,
+  GetLaunchAtLogin,
+  GetLifetimeStats,
   GetOverview,
   GetSeries,
   GetSystemProxy,
+  GetTunMode,
+  ResetLifetimeStats,
   SetAutoStartCore,
+  SetLaunchAtLogin,
   SetSystemProxy,
+  SetTunMode,
   StartEngine,
   StopEngine,
 } from "../../wailsjs/go/guiapp/App";
@@ -20,6 +26,9 @@ const series = ref<stats.SeriesPoint[]>([]);
 const actionError = ref("");
 const busy = ref(false);
 const autoStart = ref(false);
+const launchAtLogin = ref(false);
+const tunMode = ref(false);
+const lifetime = ref<stats.LifetimeStats | null>(null);
 
 let timer: number | undefined;
 
@@ -31,6 +40,9 @@ async function refresh() {
     // Engine stopped: bindings return null and the next engine:status event
     // refreshes the UI state.
   }
+  // The lifetime record is served from a cache on the Go side, so it stays
+  // readable even while the engine is stopped.
+  lifetime.value = await GetLifetimeStats();
 }
 
 async function toggle() {
@@ -70,6 +82,37 @@ async function toggleAutoStart() {
   }
 }
 
+async function toggleLaunchAtLogin() {
+  actionError.value = "";
+  try {
+    await SetLaunchAtLogin(!launchAtLogin.value);
+    launchAtLogin.value = !launchAtLogin.value;
+  } catch (e: any) {
+    actionError.value = String(e?.message ?? e);
+  }
+}
+
+async function toggleTunMode() {
+  actionError.value = "";
+  try {
+    const next = !tunMode.value;
+    await SetTunMode(next);
+    tunMode.value = next;
+  } catch (e: any) {
+    actionError.value = String(e?.message ?? e);
+  }
+}
+
+async function resetLifetime() {
+  actionError.value = "";
+  try {
+    await ResetLifetimeStats();
+    lifetime.value = await GetLifetimeStats();
+  } catch (e: any) {
+    actionError.value = String(e?.message ?? e);
+  }
+}
+
 function fmtBytes(n?: number | null): string {
   if (!n || n <= 0) return "0 B";
   const units = ["B", "KB", "MB", "GB", "TB", "PB"];
@@ -80,6 +123,11 @@ function fmtBytes(n?: number | null): string {
     i++;
   }
   return `${v.toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
+}
+
+function lifetimeTotal(c?: stats.Counters | null): number {
+  if (!c) return 0;
+  return (c.upload_bytes ?? 0) + (c.download_bytes ?? 0);
 }
 
 function fmtBps(n?: number | null): string {
@@ -101,6 +149,7 @@ function fmtUptime(seconds?: number | null): string {
 onMounted(async () => {
   EventsOn("engine:status", (st: guiapp.EngineStatus) => {
     status.value = new guiapp.EngineStatus(st);
+    tunMode.value = !!st.tun;
     if (!st.running) {
       overview.value = null;
       series.value = [];
@@ -110,6 +159,8 @@ onMounted(async () => {
   try {
     status.value.system_proxy = await GetSystemProxy();
     autoStart.value = await GetAutoStartCore();
+    launchAtLogin.value = await GetLaunchAtLogin();
+    tunMode.value = await GetTunMode();
   } catch {
     // binding unavailable; keep default
   }
@@ -195,6 +246,34 @@ const chart = computed(() => {
         <span class="chip-title">自动连接</span>
         <span class="chip-state">{{ autoStart ? "启动时连接" : "手动连接" }}</span>
       </button>
+      <button
+        class="card option-chip"
+        :class="{ on: launchAtLogin }"
+        @click="toggleLaunchAtLogin"
+      >
+        <span class="dot" :class="launchAtLogin ? 'on' : 'off'"></span>
+        <span class="chip-title">开机启动</span>
+        <span class="chip-state">{{
+          launchAtLogin ? "登录后自动运行" : "未启用"
+        }}</span>
+      </button>
+      <button
+        class="card option-chip"
+        :class="{ on: status.tun }"
+        @click="toggleTunMode"
+      >
+        <span class="dot" :class="status.tun ? 'on' : 'off'"></span>
+        <span class="chip-title">TUN 模式</span>
+        <span class="chip-state">{{
+          status.tun
+            ? "全局接管中"
+            : status.tun_error
+              ? "失败,点重试"
+              : tunMode
+                ? "授权后生效"
+                : "零配置全局代理"
+        }}</span>
+      </button>
     </div>
 
     <div v-if="actionError" class="error-banner">{{ actionError }}</div>
@@ -228,6 +307,39 @@ const chart = computed(() => {
         <div class="stat-label">运行时长</div>
         <div class="stat-value small">
           {{ fmtUptime(overview?.uptime_seconds) }}
+        </div>
+      </div>
+    </div>
+
+    <div class="card chart-card">
+      <div class="chart-head">
+        <span>累计流量(永久记录,重启与重置后仍保留)</span>
+        <button class="btn small" @click="resetLifetime">清零</button>
+      </div>
+      <div class="lifetime-grid">
+        <div class="lt-item">
+          <div class="lt-label lt-cn">国内</div>
+          <div class="lt-value">{{ fmtBytes(lifetimeTotal(lifetime?.direct)) }}</div>
+          <div class="lt-sub">
+            ↑ {{ fmtBytes(lifetime?.direct?.upload_bytes) }} · ↓
+            {{ fmtBytes(lifetime?.direct?.download_bytes) }}
+          </div>
+        </div>
+        <div class="lt-item">
+          <div class="lt-label lt-foreign">国外</div>
+          <div class="lt-value">{{ fmtBytes(lifetimeTotal(lifetime?.proxy)) }}</div>
+          <div class="lt-sub">
+            ↑ {{ fmtBytes(lifetime?.proxy?.upload_bytes) }} · ↓
+            {{ fmtBytes(lifetime?.proxy?.download_bytes) }}
+          </div>
+        </div>
+        <div class="lt-item">
+          <div class="lt-label">合计</div>
+          <div class="lt-value">{{ fmtBytes(lifetimeTotal(lifetime?.totals)) }}</div>
+          <div class="lt-sub">
+            ↑ {{ fmtBytes(lifetime?.totals?.upload_bytes) }} · ↓
+            {{ fmtBytes(lifetime?.totals?.download_bytes) }}
+          </div>
         </div>
       </div>
     </div>

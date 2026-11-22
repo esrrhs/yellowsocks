@@ -280,6 +280,93 @@ func TestReset(t *testing.T) {
 	}
 }
 
+func TestLifetimeSurvivesResetAndRestarts(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "stats.json")
+
+	c := New(Config{HistoryMinutes: 10, BucketInterval: time.Second, File: file, SaveInterval: 0})
+	direct := c.Begin(ProtoHTTP, "", "china.com", 80, DecisionDirect, "")
+	direct.AddDownload(100)
+	direct.End(nil)
+	proxy := c.Begin(ProtoHTTP, "", "foreign.com", 443, DecisionProxy, "")
+	proxy.AddDownload(300)
+	proxy.End(nil)
+	if err := c.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	// Reset clears the session counters but never the lifetime ones.
+	c.Reset()
+	all, lcDirect, lcProxy := c.Lifetime()
+	if lcDirect.Download != 100 || lcProxy.Download != 300 || all.Total() != 400 {
+		t.Fatalf("lifetime after reset = %+v %+v %+v", all, lcDirect, lcProxy)
+	}
+
+	// A restart restores the lifetime counters from the snapshot.
+	restarted := New(Config{HistoryMinutes: 10, BucketInterval: time.Second, File: file, SaveInterval: 0})
+	ov := restarted.Overview()
+	if ov.Lifetime.Total() != 400 || ov.LifetimeDirect.Download != 100 || ov.LifetimeProxy.Download != 300 {
+		t.Fatalf("restored lifetime = %+v %+v %+v", ov.Lifetime, ov.LifetimeDirect, ov.LifetimeProxy)
+	}
+	restarted.Close()
+}
+
+func TestLifetimeSeedsFromLegacySnapshot(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "stats.json")
+
+	// A snapshot written before lifetime counters existed: only the classic
+	// totals are present.
+	legacy := `{"version":1,"saved_at":"2026-01-01T00:00:00Z",
+		"totals":{"upload_bytes":10,"download_bytes":90,"conns":2},
+		"direct":{"download_bytes":90},"proxy":{"upload_bytes":10}}`
+	if err := writeFile(file, legacy); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	c := New(Config{HistoryMinutes: 5, BucketInterval: time.Second, File: file, SaveInterval: 0})
+	ov := c.Overview()
+	if ov.Lifetime.Total() != 100 || ov.LifetimeDirect.Download != 90 || ov.LifetimeProxy.Upload != 10 {
+		t.Fatalf("seeded lifetime = %+v %+v %+v", ov.Lifetime, ov.LifetimeDirect, ov.LifetimeProxy)
+	}
+	c.Close()
+
+	// The standalone reader used by the GUI agrees.
+	all, direct, proxy := LifetimeTotals(file)
+	if all.Total() != 100 || direct.Download != 90 || proxy.Upload != 10 {
+		t.Fatalf("LifetimeTotals = %+v %+v %+v", all, direct, proxy)
+	}
+}
+
+func TestLifetimeResetStaysResetInV2Snapshot(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "stats.json")
+
+	// A version 2 snapshot where the session totals survived but the
+	// lifetime counters were deliberately cleared: the old totals must NOT
+	// be resurrected as lifetime.
+	reset := `{"version":2,"saved_at":"2026-01-01T00:00:00Z",
+		"totals":{"upload_bytes":10,"download_bytes":90,"conns":2},
+		"lifetime":{"upload_bytes":0,"download_bytes":0},
+		"lifetime_direct":{"download_bytes":0},
+		"lifetime_proxy":{"upload_bytes":0}}`
+	if err := writeFile(file, reset); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	c := New(Config{HistoryMinutes: 5, BucketInterval: time.Second, File: file, SaveInterval: 0})
+	ov := c.Overview()
+	if ov.Lifetime.Total() != 0 {
+		t.Fatalf("v2 lifetime = %+v, want zero", ov.Lifetime)
+	}
+	c.Close()
+
+	all, _, _ := LifetimeTotals(file)
+	if all.Total() != 0 {
+		t.Fatalf("LifetimeTotals after reset = %+v, want zero", all)
+	}
+}
+
 func TestUDPDatagrams(t *testing.T) {
 	c := newTestCollector()
 	s := c.Begin(ProtoUDP, "127.0.0.1:1", "", 0, DecisionNone, "")

@@ -14,6 +14,7 @@ import (
 	"github.com/esrrhs/gohome/loggo"
 	"github.com/esrrhs/gohome/network"
 	"github.com/esrrhs/yellowsocks/core/dns"
+	"github.com/esrrhs/yellowsocks/core/netdial"
 	"github.com/esrrhs/yellowsocks/core/router"
 	"github.com/esrrhs/yellowsocks/core/stats"
 )
@@ -304,7 +305,7 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 	defer sess.End(nil)
 
 	if decision == router.Direct {
-		outConn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
+		outConn, err := netdial.DialTimeout("tcp", targetAddr, 10*time.Second)
 		if err != nil {
 			loggo.Warn("[SOCKS5] Direct dial %s failed: %v", targetAddr, err)
 			sess.Fail(fmt.Errorf("direct dial %s: %w", targetAddr, err))
@@ -358,7 +359,7 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 			return
 		}
 
-		sppConn, err := net.DialTCP("tcp", nil, sppTCPAddr)
+		sppConn, err := netdial.DialTCP(nil, sppTCPAddr, 10*time.Second)
 		if err != nil {
 			loggo.Error("[SOCKS5] Dial SPP upstream %s (%s) failed: %v", sppAddr, nodeName, err)
 			if rep, ok := s.cfg.Upstream.(NodeFailureReporter); ok && nodeName != "" {
@@ -495,7 +496,7 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 			}
 			return nil, nil, err
 		}
-		tcpUp, err := net.DialTCP("tcp", nil, tcpUpAddr)
+		tcpUp, err := netdial.DialTCP(nil, tcpUpAddr, 10*time.Second)
 		if err != nil {
 			if release != nil {
 				release()
@@ -546,6 +547,12 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 				release()
 			}
 			return nil, nil, err
+		}
+		// The upstream relay socket sends to a real address (often the SPP
+		// server on the LAN); without the TUN-mode interface pin those sends
+		// would follow the routing table back into the virtual adapter.
+		if err := netdial.BindUDPConn(uConn); err != nil {
+			loggo.Warn("[SOCKS5] bind upstream UDP socket: %v", err)
 		}
 
 		sppTCPConn = tcpUp

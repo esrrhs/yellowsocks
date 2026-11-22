@@ -18,6 +18,14 @@ export function GetErrors() {
   return window['go']['guiapp']['App']['GetErrors']();
 }
 
+export function GetLaunchAtLogin() {
+  return window['go']['guiapp']['App']['GetLaunchAtLogin']();
+}
+
+export function GetLifetimeStats() {
+  return window['go']['guiapp']['App']['GetLifetimeStats']();
+}
+
 export function GetNodes() {
   return window['go']['guiapp']['App']['GetNodes']();
 }
@@ -38,8 +46,16 @@ export function GetSystemProxy() {
   return window['go']['guiapp']['App']['GetSystemProxy']();
 }
 
+export function GetTunMode() {
+  return window['go']['guiapp']['App']['GetTunMode']();
+}
+
 export function GetVersion() {
   return window['go']['guiapp']['App']['GetVersion']();
+}
+
+export function ResetLifetimeStats() {
+  return window['go']['guiapp']['App']['ResetLifetimeStats']();
 }
 
 export function SaveConfig(arg1) {
@@ -50,8 +66,16 @@ export function SetAutoStartCore(arg1) {
   return window['go']['guiapp']['App']['SetAutoStartCore'](arg1);
 }
 
+export function SetLaunchAtLogin(arg1) {
+  return window['go']['guiapp']['App']['SetLaunchAtLogin'](arg1);
+}
+
 export function SetSystemProxy(arg1) {
   return window['go']['guiapp']['App']['SetSystemProxy'](arg1);
+}
+
+export function SetTunMode(arg1) {
+  return window['go']['guiapp']['App']['SetTunMode'](arg1);
 }
 
 export function StartEngine() {

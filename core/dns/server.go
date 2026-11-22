@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/esrrhs/gohome/loggo"
+	"github.com/esrrhs/yellowsocks/core/netdial"
 	"github.com/esrrhs/yellowsocks/core/router"
 	"github.com/esrrhs/yellowsocks/core/stats"
 	"github.com/miekg/dns"
@@ -136,7 +137,10 @@ func (s *Server) setupDoHClient() {
 	}
 
 	if s.socks5Addr != "" {
-		dialer, err := proxy.SOCKS5("tcp", s.socks5Addr, nil, proxy.Direct)
+		// The forward dial may reach a remote SOCKS5 upstream directly; the
+		// TUN-mode interface pin keeps it on the physical adapter.
+		boundDialer := netdial.Dialer(5 * time.Second)
+		dialer, err := proxy.SOCKS5("tcp", s.socks5Addr, nil, &boundDialer)
 		if err != nil {
 			loggo.Error("[DNS] Failed to create socks5 dialer for DoH: %v", err)
 		} else if cd, ok := dialer.(proxy.ContextDialer); ok {
@@ -148,6 +152,10 @@ func (s *Server) setupDoHClient() {
 				return dialer.Dial(network, addr)
 			}
 		}
+	} else {
+		// Direct DoH dials: same TUN-mode pin, no-op otherwise.
+		boundDialer := netdial.Dialer(5 * time.Second)
+		transport.DialContext = boundDialer.DialContext
 	}
 
 	s.httpClientDoH = &http.Client{
@@ -619,7 +627,8 @@ func responseMatchesQuery(req, resp *dns.Msg) bool {
 }
 
 func (s *Server) resolveDirect(r *dns.Msg, viaTCP bool) (*dns.Msg, error) {
-	c := &dns.Client{Net: "udp", Timeout: 2 * time.Second}
+	dialer := netdial.Dialer(2 * time.Second)
+	c := &dns.Client{Net: "udp", Timeout: 2 * time.Second, Dialer: &dialer}
 	in, _, err := c.Exchange(r, s.directDNS)
 	if err != nil {
 		return in, err
@@ -633,7 +642,8 @@ func (s *Server) resolveDirect(r *dns.Msg, viaTCP bool) (*dns.Msg, error) {
 	// caching resolver must retry the same question over TCP (RFC 2181 9,
 	// RFC 7766) instead of returning a truncated, unusable answer.
 	if in.Truncated {
-		tcpClient := &dns.Client{Net: "tcp", Timeout: 2 * time.Second}
+		tcpDialer := netdial.Dialer(2 * time.Second)
+		tcpClient := &dns.Client{Net: "tcp", Timeout: 2 * time.Second, Dialer: &tcpDialer}
 		inTCP, _, tcpErr := tcpClient.Exchange(r, s.directDNS)
 		if tcpErr == nil && inTCP != nil && responseMatchesQuery(r, inTCP) {
 			return inTCP, nil

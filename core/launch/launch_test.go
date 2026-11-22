@@ -3,12 +3,16 @@ package launch
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
 func TestEnsureWritableWorkDirFromReadOnly(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("skipping read-only directory test under root (root bypasses mode 0555)")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("windows ignores the read-only attribute on directories, so the 0555 chmod is a no-op")
 	}
 	cwd, err := os.Getwd()
 	if err != nil {

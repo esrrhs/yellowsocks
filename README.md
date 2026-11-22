@@ -311,7 +311,7 @@ Each archive contains `yellowsocks-cli` and `config.example.yaml`.
 ## Repository Layout
 
 - `cli/` — CLI entry point (`yellowsocks-cli`)
-- `windows/` — Windows GUI client built with Wails v2 + Vue 3 (system tray, system proxy, single binary)
+- `windows/` — Windows GUI client built with Wails v2 + Vue 3 (system tray, system proxy, Clash-style TUN transparent proxy, single portable binary, launch-at-login, per-country lifetime traffic stats)
 - `macos/` — macOS GUI client, same shell layout as `windows/` (built on macOS, unsigned)
 - `guiapp/` — shared GUI binding layer and frontend used by both shells (see `guiapp/README.md`)
 - `core/` — shared engine: proxy, DNS, router, SPP client, stats, API, config

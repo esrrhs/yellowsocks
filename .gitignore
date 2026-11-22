@@ -38,3 +38,7 @@ coverage.txt
 # WorkBuddy 工作空间记忆（本地）
 .workbuddy/
 .zcode/plans/
+
+# IDE
+.idea/
+.vscode/

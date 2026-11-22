@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/esrrhs/gohome/loggo"
+	"github.com/esrrhs/yellowsocks/core/netdial"
 )
 
 // Node is one upstream SPP channel/server configuration.
@@ -69,7 +70,7 @@ func dialNetworkForProto(proto string) string {
 // probeTCP checks reachability with a TCP connect.
 func probeTCP(addr string, timeout time.Duration) (bool, time.Duration) {
 	start := time.Now()
-	conn, err := net.DialTimeout("tcp", addr, timeout)
+	conn, err := netdial.DialTimeout("tcp", addr, timeout)
 	if err != nil {
 		return false, 0
 	}
@@ -90,7 +91,7 @@ func probeUDPAddr(addr string, timeout time.Duration) (bool, time.Duration) {
 		timeout = nodeProbeTimeout
 	}
 	start := time.Now()
-	d := net.Dialer{Timeout: timeout}
+	d := netdial.Dialer(timeout)
 	conn, err := d.Dial("udp", addr)
 	if err != nil {
 		return false, 0

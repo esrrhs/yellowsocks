@@ -16,6 +16,7 @@ import (
 	"github.com/esrrhs/gohome/loggo"
 	"github.com/esrrhs/gohome/network"
 	"github.com/esrrhs/yellowsocks/core/dns"
+	"github.com/esrrhs/yellowsocks/core/netdial"
 	"github.com/esrrhs/yellowsocks/core/router"
 	"github.com/esrrhs/yellowsocks/core/stats"
 )
@@ -421,7 +422,7 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 	defer sess.End(nil)
 
 	if decision == router.Direct {
-		targetConn, err := net.DialTimeout("tcp", targetAddr, 10*time.Second)
+		targetConn, err := netdial.DialTimeout("tcp", targetAddr, 10*time.Second)
 		if err != nil {
 			loggo.Warn("[HTTP Proxy] Direct dial %s failed: %v", targetAddr, err)
 			sess.Fail(fmt.Errorf("direct dial %s: %w", targetAddr, err))
@@ -478,7 +479,7 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 			return
 		}
 
-		sppConn, err := net.DialTCP("tcp", nil, sppTCPAddr)
+		sppConn, err := netdial.DialTCP(nil, sppTCPAddr, 10*time.Second)
 		if err != nil {
 			loggo.Error("[HTTP Proxy] Dial SPP upstream %s (%s) failed: %v", sppAddr, nodeName, err)
 			if rep, ok := s.cfg.Upstream.(NodeFailureReporter); ok && nodeName != "" {
@@ -575,7 +576,7 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 	var proxyNodeName string
 
 	if decision == router.Direct {
-		targetConn, err = net.DialTimeout("tcp", targetAddr, 10*time.Second)
+		targetConn, err = netdial.DialTimeout("tcp", targetAddr, 10*time.Second)
 		if err != nil {
 			sess.Fail(fmt.Errorf("direct dial %s: %w", targetAddr, err))
 		}
@@ -611,7 +612,7 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 		}
 		sppTCPAddr, rErr := net.ResolveTCPAddr("tcp", sppAddr)
 		if rErr == nil {
-			sppConn, dialErr := net.DialTCP("tcp", nil, sppTCPAddr)
+			sppConn, dialErr := netdial.DialTCP(nil, sppTCPAddr, 10*time.Second)
 			if dialErr == nil {
 				user, pass := "", ""
 				if s.cfg.Upstream != nil {

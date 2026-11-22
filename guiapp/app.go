@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -21,12 +22,15 @@ import (
 
 const configName = "config.yaml"
 const settingsName = "settings.json"
+const statsName = "stats.json"
 
 // guiSettings is the GUI-only state that does not belong in the CLI config
 // file, persisted next to it.
 type guiSettings struct {
 	SystemProxy   bool   `json:"system_proxy"`
 	AutoStartCore bool   `json:"auto_start_core"`
+	LaunchAtLogin bool   `json:"launch_at_login"`
+	TunMode       bool   `json:"tun_mode"`
 	AppliedPorts  string `json:"sysproxy_applied_ports,omitempty"`
 }
 
@@ -54,6 +58,8 @@ loglevel: "info"
 type EngineStatus struct {
 	Running     bool   `json:"running"`
 	SystemProxy bool   `json:"system_proxy"`
+	Tun         bool   `json:"tun"`
+	TunError    string `json:"tun_error"`
 	Socks5      string `json:"socks5"`
 	HTTP        string `json:"http"`
 	DNS         string `json:"dns"`
@@ -75,7 +81,23 @@ type App struct {
 	sysProxyWanted bool   // user intent, persisted in settings.json
 	sysProxyActive bool   // we registered the OS proxy and must undo it
 	autoStartCore  bool   // start the engine when the app launches
+	launchAtLogin  bool   // register the app to start with the OS login
+	tunWanted      bool   // TUN mode intent, persisted in settings.json
+	tunActive      bool   // the virtual adapter is up and capturing traffic
+	tunErr         string // last TUN failure, surfaced in the UI
 	appliedPorts   string // ports registered with the OS, for stale cleanup
+
+	// frontendEvents enables Wails runtime calls (EventsEmit). The Wails
+	// shells turn it on; the test driver leaves it off — the runtime exits
+	// the process on any call with a non-lifecycle context.
+	frontendEvents bool
+
+	// Last known permanent traffic totals. Refreshed from the live
+	// collector while the engine runs; seeded from the stats file at
+	// startup so the record is visible before the engine starts.
+	lifetimeAll    stats.Counters
+	lifetimeDirect stats.Counters
+	lifetimeProxy  stats.Counters
 }
 
 // NewApp creates the App application struct that is bound to the frontend.
@@ -94,12 +116,34 @@ func (a *App) Startup(ctx context.Context) {
 		st = s
 		a.sysProxyWanted = st.SystemProxy
 		a.autoStartCore = st.AutoStartCore
+		a.launchAtLogin = st.LaunchAtLogin
+		a.tunWanted = st.TunMode
 	}
 	a.mu.Unlock()
+	// Keep the OS launch-at-login entry pointing at the current exe (the
+	// binary may have been moved since it was registered).
+	syncLaunchAtLogin(st)
+	a.loadLifetimeStats()
 	go runTray(a)
-	if st.AutoStartCore {
-		go func() { _ = a.StartEngine() }()
+	// TUN mode needs the engine running; the boot flag alone is not enough.
+	wantEngine := st.AutoStartCore || st.TunMode
+	if wantEngine {
+		go a.startEngineAndTun()
 	}
+}
+
+// startEngineAndTun starts the engine; TUN mode rides on StartEngine's
+// tail (the engine autostarts whenever AutoStartCore or TunMode wants it).
+func (a *App) startEngineAndTun() {
+	if ElevatedRequested() {
+		// The unelevated instance is still tearing down while this copy
+		// boots; give its listen ports time to close.
+		if cfg, err := a.loadEngineConfig(); err == nil {
+			WaitForPortFree(cfg.Socks5Listen, 10*time.Second)
+			WaitForPortFree(cfg.HTTPListen, 5*time.Second)
+		}
+	}
+	_ = a.StartEngine()
 }
 
 // beforeClose intercepts the window close event. Instead of quitting, the
@@ -115,14 +159,16 @@ func (a *App) BeforeClose(ctx context.Context) bool {
 	return true
 }
 
-// shutdown is called on real application exit. It stops the engine, removes
-// the tray icon and undoes the system proxy registration.
+// shutdown is called on real application exit. It tears the TUN adapter
+// down first (its routes capture traffic even without the engine), stops
+// the engine, removes the tray icon and undoes the system proxy.
 func (a *App) Shutdown(ctx context.Context) {
 	a.mu.Lock()
 	a.quitting = true
 	running := a.running
 	active := a.sysProxyActive
 	a.mu.Unlock()
+	_ = tunDisable()
 	if running {
 		_ = a.StopEngine()
 	}
@@ -161,12 +207,23 @@ func (a *App) StartEngine() error {
 			loggo.Warn("[GUI] enable system proxy: %v", err.Error())
 		}
 	}
+
+	// TUN mode rides on a running engine: bring the adapter up whenever the
+	// engine starts with the intent on (boot autostart, manual restart, or
+	// the elevated relaunch). applyTun is a no-op if it is already up.
+	if a.tunWanted {
+		go func() { _ = a.applyTun() }()
+	}
 	return nil
 }
 
 // StopEngine stops the proxy engine. Safe to call when it is not running.
 func (a *App) StopEngine() error {
+	// The TUN stack forwards into the engine inbound and holds references
+	// to its addresses: always bring it down before the engine.
+	_ = tunDisable()
 	a.mu.Lock()
+	a.tunActive = false
 	defer a.mu.Unlock()
 	if !a.running {
 		return nil
@@ -207,6 +264,186 @@ func (a *App) SetSystemProxy(on bool) error {
 	return nil
 }
 
+// GetTunMode reports the TUN intent (the adapter may still be coming up).
+func (a *App) GetTunMode() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.tunWanted
+}
+
+// TunSessionStats returns live TUN packet counters (diagnostics).
+func (a *App) TunSessionStats() string { return tunSessionStatsLive() }
+
+// SetTunMode toggles TUN mode. Enabling needs the engine running and
+// administrator rights: from an unelevated session the app persists the
+// intent and relaunches itself elevated (one UAC prompt); a declined UAC
+// keeps the intent off and reports the failure. Disabling tears the adapter
+// down immediately. Enabling turns the redundant system proxy off; disabling
+// restores it from its saved intent.
+func (a *App) SetTunMode(on bool) error {
+	a.mu.Lock()
+	a.tunWanted = on
+	persistErr := a.persistSettingsLocked()
+	a.mu.Unlock()
+	if persistErr != nil {
+		loggo.Warn("[GUI] persist settings: %s", persistErr.Error())
+	}
+
+	if !on {
+		err := tunDisable()
+		a.mu.Lock()
+		a.tunActive = false
+		a.tunErr = ""
+		a.mu.Unlock()
+		// Restore the system proxy from its saved intent.
+		a.mu.Lock()
+		wanted, running := a.sysProxyWanted, a.running
+		a.mu.Unlock()
+		if wanted && running {
+			if err := a.SetSystemProxy(true); err != nil {
+				loggo.Warn("[GUI] restore system proxy after TUN off: %s", err.Error())
+			}
+		}
+		a.emitStatus()
+		return err
+	}
+	return a.applyTun()
+}
+
+// applyTun brings the virtual adapter up. Must not hold a.mu: the elevated
+// relaunch quits the process and tunEnable has its own lock.
+func (a *App) applyTun() error {
+	if tunIsActive() {
+		return nil
+	}
+	a.mu.Lock()
+	running, cfg := a.running, a.lastCfg
+	a.mu.Unlock()
+	if !running {
+		return errors.New("TUN 模式需要引擎处于运行状态,请先启动代理")
+	}
+
+	if !isElevated() {
+		// Persisted already; hand over to an elevated copy of ourselves and
+		// wait for it to prove it started (the user might decline the UAC
+		// prompt — this instance must stay alive in that case).
+		ClearElevatedHandshake()
+		if err := relaunchElevated(); err != nil {
+			a.mu.Lock()
+			a.tunWanted = false
+			_ = a.persistSettingsLocked()
+			a.tunErr = err.Error()
+			a.mu.Unlock()
+			a.emitStatus()
+			return err
+		}
+		if WaitElevatedHandshake(30 * time.Second) {
+			a.mu.Lock()
+			a.tunErr = ""
+			a.mu.Unlock()
+			loggo.Info("[GUI] elevated instance confirmed; handing over")
+			// Give the graceful shutdown a moment, then force it: the
+			// elevated successor re-binds the same ports and keeps the
+			// system proxy (or TUN) state, so nothing is left dangling.
+			go func() {
+				time.Sleep(3 * time.Second)
+				loggo.Info("[GUI] graceful shutdown timed out during handover; exiting")
+				os.Exit(0)
+			}()
+			runtime.Quit(a.ctx)
+			return nil
+		}
+		handoverErr := errors.New("管理员授权未完成,TUN 模式未开启")
+		a.mu.Lock()
+		a.tunWanted = false
+		_ = a.persistSettingsLocked()
+		a.tunErr = handoverErr.Error()
+		a.mu.Unlock()
+		a.emitStatus()
+		return handoverErr
+	}
+
+	params := a.tunParamsFrom(cfg)
+	params.Soak = tunWatchdogSoak
+	if err := tunEnable(params); err != nil {
+		a.mu.Lock()
+		a.tunActive = false
+		a.tunErr = err.Error()
+		a.mu.Unlock()
+		a.emitStatus()
+		return err
+	}
+	a.mu.Lock()
+	a.tunActive = true
+	a.tunErr = ""
+	// The TUN captures everything; the WinINET proxy would only double-apply.
+	sysProxyOn := a.sysProxyWanted
+	a.mu.Unlock()
+	if sysProxyOn {
+		_ = a.SetSystemProxy(false)
+	}
+	a.emitStatus()
+	loggo.Info("[GUI] TUN mode enabled")
+	return nil
+}
+
+// tunParamsFrom collects the engine endpoints the TUN stack forwards into
+// plus the upstream IPs that need physical-gateway escape routes.
+func (a *App) tunParamsFrom(cfg core.EngineConfig) TunParams {
+	params := TunParams{
+		Socks5Addr: cfg.Socks5Listen,
+		DNSAddr:    cfg.DNSListen,
+	}
+	if params.Socks5Addr == "" {
+		params.Socks5Addr = "127.0.0.1:10808"
+	}
+
+	hosts := map[string]struct{}{}
+	addHost := func(server string) {
+		host, _, err := net.SplitHostPort(server)
+		if err != nil || host == "" {
+			host = server
+		}
+		if host != "" {
+			hosts[host] = struct{}{}
+		}
+	}
+	addHost(cfg.SPPServer)
+	for _, node := range cfg.SPPNodes {
+		addHost(node.Server)
+	}
+	for host := range hosts {
+		if ip := net.ParseIP(host); ip != nil {
+			if !ip.IsLoopback() {
+				params.UpstreamIPs = append(params.UpstreamIPs, ip.String())
+			}
+			continue
+		}
+		// A hostname upstream resolves now, while the physical adapter is
+		// still the default route.
+		ips, err := net.LookupHost(host)
+		if err != nil {
+			loggo.Warn("[GUI] resolve upstream %s for TUN routes: %v", host, err)
+			continue
+		}
+		for _, ipStr := range ips {
+			if ip := net.ParseIP(ipStr); ip != nil && !ip.IsLoopback() {
+				params.UpstreamIPs = append(params.UpstreamIPs, ipStr)
+			}
+		}
+	}
+	// The TUN watchdog auto-rolls-back a dead pipeline so the user's network
+	// recovers on its own; surface the reason in the UI.
+	params.OnRollback = func(reason string) {
+		a.mu.Lock()
+		a.tunActive = false
+		a.tunErr = "TUN 管线自检失败,已自动回滚: " + reason
+		a.mu.Unlock()
+		a.emitStatus()
+	}
+	return params
+}
+
 // GetAutoStartCore reports whether the engine auto-starts with the app.
 func (a *App) GetAutoStartCore() bool {
 	a.mu.Lock()
@@ -222,12 +459,38 @@ func (a *App) SetAutoStartCore(on bool) error {
 	return a.persistSettingsLocked()
 }
 
+// GetLaunchAtLogin reports whether the app is registered to start with the
+// OS login. The OS registry is the source of truth.
+func (a *App) GetLaunchAtLogin() bool {
+	return launchAtLoginEnabled()
+}
+
+// SetLaunchAtLogin registers or removes the launch-at-login entry. On Windows
+// it is a per-user Run-key entry that starts the app hidden in the tray;
+// together with 自动连接 and 系统代理 this gives the full boot-time transparent
+// proxy. The intent is persisted so a moved exe can be re-registered.
+func (a *App) SetLaunchAtLogin(on bool) error {
+	if on {
+		if err := enableLaunchAtLogin(); err != nil {
+			return err
+		}
+	} else if err := disableLaunchAtLogin(); err != nil {
+		return err
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.launchAtLogin = on
+	return a.persistSettingsLocked()
+}
+
 // persistSettingsLocked writes the current GUI settings to disk. Callers
 // must hold a.mu.
 func (a *App) persistSettingsLocked() error {
 	return saveSettings(guiSettings{
 		SystemProxy:   a.sysProxyWanted,
 		AutoStartCore: a.autoStartCore,
+		LaunchAtLogin: a.launchAtLogin,
+		TunMode:       a.tunWanted,
 		AppliedPorts:  a.appliedPorts,
 	})
 }
@@ -283,7 +546,7 @@ func (a *App) quitApp() {
 }
 
 // GetOverview returns live traffic totals and rates, or nil when the engine
-// is stopped.
+// is stopped. It also refreshes the cached lifetime totals.
 func (a *App) GetOverview() *stats.Overview {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -291,7 +554,55 @@ func (a *App) GetOverview() *stats.Overview {
 		return nil
 	}
 	o := a.engine.Stats().Overview()
+	a.lifetimeAll = o.Lifetime
+	a.lifetimeDirect = o.LifetimeDirect
+	a.lifetimeProxy = o.LifetimeProxy
 	return &o
+}
+
+// loadLifetimeStats seeds the lifetime cache from the persisted stats file so
+// the permanent record is visible before the engine starts.
+func (a *App) loadLifetimeStats() {
+	all, direct, proxy := stats.LifetimeTotals(statsPath())
+	a.mu.Lock()
+	a.lifetimeAll, a.lifetimeDirect, a.lifetimeProxy = all, direct, proxy
+	a.mu.Unlock()
+}
+
+// GetLifetimeStats returns the permanent traffic record with its domestic
+// (direct) and foreign (proxy) shares. The counters survive restarts and
+// are never cleared except by ResetLifetimeStats.
+func (a *App) GetLifetimeStats() stats.LifetimeStats {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return stats.LifetimeStats{
+		Totals: a.lifetimeAll,
+		Direct: a.lifetimeDirect,
+		Proxy:  a.lifetimeProxy,
+	}
+}
+
+// ResetLifetimeStats clears the permanent traffic record. While the engine is
+// stopped the stats file is rewritten directly, so the cleared totals are
+// not resurrected by the next launch.
+func (a *App) ResetLifetimeStats() error {
+	a.mu.Lock()
+	if a.running && a.engine != nil {
+		a.engine.Stats().LifetimeReset()
+		a.lifetimeAll, a.lifetimeDirect, a.lifetimeProxy = stats.Counters{}, stats.Counters{}, stats.Counters{}
+		a.mu.Unlock()
+		return nil
+	}
+	a.mu.Unlock()
+
+	c := stats.New(stats.Config{File: statsPath(), SaveInterval: 0})
+	c.LifetimeReset()
+	err := c.Save()
+	c.Close()
+	a.mu.Lock()
+	a.lifetimeAll, a.lifetimeDirect, a.lifetimeProxy = stats.Counters{}, stats.Counters{}, stats.Counters{}
+	a.mu.Unlock()
+	return err
 }
 
 // GetSeries returns the traffic time series for the last spanSeconds, sampled
@@ -385,14 +696,10 @@ func (a *App) GetVersion() version.Info {
 	return version.GetInfo()
 }
 
-// configPath is the per-user config file location, shared in style with the
-// CLI's EnsureWritableWorkDir fallback (e.g. %APPDATA%/YellowSocks).
+// configPath is the config file location: next to the exe in portable mode,
+// otherwise the per-user directory (e.g. %APPDATA%/YellowSocks).
 func configPath() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "YellowSocks", configName), nil
+	return filepath.Join(DataDir(), configName), nil
 }
 
 func writeDefaultConfig(path string) error {
@@ -404,11 +711,14 @@ func writeDefaultConfig(path string) error {
 
 // settingsPath lives next to config.yaml so users can find both together.
 func settingsPath() (string, error) {
-	dir, err := os.UserConfigDir()
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, "YellowSocks", settingsName), nil
+	return filepath.Join(DataDir(), settingsName), nil
+}
+
+// statsPath is where the engine's traffic statistics are persisted. It lives
+// with the other data files so the totals survive restarts and move with a
+// portable exe.
+func statsPath() string {
+	return filepath.Join(DataDir(), statsName)
 }
 
 func loadSettings() (guiSettings, error) {
@@ -463,14 +773,24 @@ func (a *App) loadEngineConfig() (core.EngineConfig, error) {
 	}
 	// The engine always starts DNS, so default to a non-privileged port:
 	// 53 needs admin on macOS. Values in the config file override this.
+	// Stats persist by default (next to the other data files) so the
+	// lifetime traffic totals are kept forever; a stats_file in the config
+	// file overrides this location.
 	base := core.EngineConfig{
 		DNSListen: "127.0.0.1:1053",
+		StatsFile: statsPath(),
 	}
 	return fileCfg.MergeWithEngineConfig(base), nil
 }
 
 func (a *App) statusLocked() EngineStatus {
-	st := EngineStatus{Running: a.running, SystemProxy: a.sysProxyActive || a.sysProxyWanted, Error: ""}
+	st := EngineStatus{
+		Running:     a.running,
+		SystemProxy: a.sysProxyActive || a.sysProxyWanted,
+		Tun:         a.tunActive,
+		TunError:    a.tunErr,
+		Error:       "",
+	}
 	if a.running {
 		st.Socks5 = a.lastCfg.Socks5Listen
 		st.HTTP = a.lastCfg.HTTPListen
@@ -481,6 +801,23 @@ func (a *App) statusLocked() EngineStatus {
 	return st
 }
 
+// emitStatus pushes the current state to the frontend without an error to
+// attach. For callers that do not hold a.mu.
+func (a *App) emitStatus() {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.emitStatusLocked(nil)
+}
+
+// EnableFrontendEvents turns on the Wails event plumbing. The GUI shells
+// call it once at startup; tests and the driver must not: the Wails runtime
+// hard-exits the process on any call without its lifecycle context.
+func (a *App) EnableFrontendEvents() {
+	a.mu.Lock()
+	a.frontendEvents = true
+	a.mu.Unlock()
+}
+
 // emitStatusLocked pushes the current state to the frontend. Callers must
 // hold a.mu since it reads engine state.
 func (a *App) emitStatusLocked(err error) {
@@ -488,7 +825,8 @@ func (a *App) emitStatusLocked(err error) {
 	if err != nil {
 		st.Error = err.Error()
 	}
-	if a.ctx != nil {
-		runtime.EventsEmit(a.ctx, "engine:status", st)
+	if !a.frontendEvents {
+		return
 	}
+	runtime.EventsEmit(a.ctx, "engine:status", st)
 }

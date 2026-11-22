@@ -8,10 +8,12 @@ import (
 	"time"
 )
 
-// snapshotVersion bumps whenever the on-disk layout changes incompatibly. An
-// unreadable or outdated file is ignored: statistics are never important
-// enough to stop the proxy from starting.
-const snapshotVersion = 1
+// snapshotVersion is the version written by this build. Version 1 predates
+// the lifetime counters; version 2 adds them (and distinguishes a deliberate
+// lifetime reset from a legacy file, which is seeded from the totals).
+// Files up to the current version are readable; anything newer is ignored:
+// statistics are never important enough to stop the proxy from starting.
+const snapshotVersion = 2
 
 // persistedDNS is the on-disk form of DNSStat (without derived fields).
 type persistedDNS struct {
@@ -27,18 +29,21 @@ type persistedDNS struct {
 
 // snapshot is the persisted collector state.
 type snapshot struct {
-	Version  int          `json:"version"`
-	SavedAt  time.Time    `json:"saved_at"`
-	Totals   Counters     `json:"totals"`
-	Direct   Counters     `json:"direct"`
-	Proxy    Counters     `json:"proxy"`
-	DNS      persistedDNS `json:"dns"`
-	Buckets  []Bucket     `json:"buckets"`
-	Domains  []DomainStat `json:"domains"`
-	Nodes    []NodeStat   `json:"nodes"`
-	Errors   []ErrorEntry `json:"errors"`
-	PeakUp   int64        `json:"peak_upload_bps"`
-	PeakDown int64        `json:"peak_download_bps"`
+	Version        int          `json:"version"`
+	SavedAt        time.Time    `json:"saved_at"`
+	Totals         Counters     `json:"totals"`
+	Direct         Counters     `json:"direct"`
+	Proxy          Counters     `json:"proxy"`
+	Lifetime       Counters     `json:"lifetime,omitempty"`
+	LifetimeDirect Counters     `json:"lifetime_direct,omitempty"`
+	LifetimeProxy  Counters     `json:"lifetime_proxy,omitempty"`
+	DNS            persistedDNS `json:"dns"`
+	Buckets        []Bucket     `json:"buckets"`
+	Domains        []DomainStat `json:"domains"`
+	Nodes          []NodeStat   `json:"nodes"`
+	Errors         []ErrorEntry `json:"errors"`
+	PeakUp         int64        `json:"peak_upload_bps"`
+	PeakDown       int64        `json:"peak_download_bps"`
 }
 
 // Save writes the current state to Config.File atomically.
@@ -53,11 +58,14 @@ func (c *Collector) Save() error {
 
 	c.mu.Lock()
 	snap := snapshot{
-		Version: snapshotVersion,
-		SavedAt: time.Now(),
-		Totals:  c.totals,
-		Direct:  c.direct,
-		Proxy:   c.proxy,
+		Version:        snapshotVersion,
+		SavedAt:        time.Now(),
+		Totals:         c.totals,
+		Direct:         c.direct,
+		Proxy:          c.proxy,
+		Lifetime:       c.lifetime,
+		LifetimeDirect: c.lifetimeDirect,
+		LifetimeProxy:  c.lifetimeProxy,
 		DNS: persistedDNS{
 			Queries:    c.dns.Queries,
 			CacheHits:  c.dns.CacheHits,
@@ -112,8 +120,8 @@ func (c *Collector) Load() error {
 	if err := json.Unmarshal(data, &snap); err != nil {
 		return fmt.Errorf("parse stats file: %w", err)
 	}
-	if snap.Version != snapshotVersion {
-		return fmt.Errorf("stats file version %d, want %d", snap.Version, snapshotVersion)
+	if snap.Version < 1 || snap.Version > snapshotVersion {
+		return fmt.Errorf("stats file version %d not supported (1..%d)", snap.Version, snapshotVersion)
 	}
 
 	cutoff := time.Now().Add(-time.Duration(c.cfg.HistoryMinutes) * c.cfg.BucketInterval).Unix()
@@ -124,6 +132,18 @@ func (c *Collector) Load() error {
 	c.totals = snap.Totals
 	c.direct = snap.Direct
 	c.proxy = snap.Proxy
+	c.lifetime = snap.Lifetime
+	c.lifetimeDirect = snap.LifetimeDirect
+	c.lifetimeProxy = snap.LifetimeProxy
+	// Snapshots written before the lifetime counters existed (version 1)
+	// carry no lifetime fields. Seed them from the accumulated totals so the
+	// all-time numbers do not silently restart from zero. Version 2 files
+	// always carry the fields, including after a deliberate LifetimeReset.
+	if snap.Version < 2 && c.lifetime.Total() == 0 && c.totals.Total() > 0 {
+		c.lifetime = snap.Totals
+		c.lifetimeDirect = snap.Direct
+		c.lifetimeProxy = snap.Proxy
+	}
 	c.dns = DNSStat{
 		Queries:    snap.DNS.Queries,
 		CacheHits:  snap.DNS.CacheHits,
@@ -194,6 +214,26 @@ func allDomainsLocked(m map[string]*DomainStat) []DomainStat {
 		out = append(out, *d)
 	}
 	return out
+}
+
+// LifetimeTotals reads the permanent counters straight from a snapshot file,
+// without building a collector. It is meant for frontends that show the
+// all-time totals while the engine is stopped. Missing or unreadable files
+// yield zero counters.
+func LifetimeTotals(path string) (all, direct, proxy Counters) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return Counters{}, Counters{}, Counters{}
+	}
+	var snap snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return Counters{}, Counters{}, Counters{}
+	}
+	if snap.Version < 2 && snap.Lifetime.Total() == 0 && snap.Totals.Total() > 0 {
+		// Version 1 snapshot without lifetime fields: same seeding as Load.
+		return snap.Totals, snap.Direct, snap.Proxy
+	}
+	return snap.Lifetime, snap.LifetimeDirect, snap.LifetimeProxy
 }
 
 func allNodesLocked(m map[string]*NodeStat) []NodeStat {

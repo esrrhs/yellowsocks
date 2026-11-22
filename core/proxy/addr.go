@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+
+	"github.com/esrrhs/yellowsocks/core/netdial"
 )
 
 // canonicalHost rewrites an address the way gohome's SOCKS encoder expects it.
@@ -50,10 +52,24 @@ func addrString(a net.Addr) string {
 // listenUDPFor opens a socket that can send to host. IPv6 literals use udp6
 // so the write is not stuck on an IPv4-only wildcard socket.
 func listenUDPFor(host string) (*net.UDPConn, error) {
+	var conn *net.UDPConn
+	var err error
 	if ip := net.ParseIP(canonicalHost(host)); ip != nil && ip.To4() == nil {
-		return net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6unspecified, Port: 0})
+		conn, err = net.ListenUDP("udp6", &net.UDPAddr{IP: net.IPv6unspecified, Port: 0})
+	} else {
+		conn, err = net.ListenUDP("udp", nil)
 	}
-	return net.ListenUDP("udp", nil)
+	if err != nil {
+		return nil, err
+	}
+	// Direct UDP relays send to arbitrary real targets; under TUN mode the
+	// interface pin keeps those sends off the virtual adapter. The bind is a
+	// no-op unless TUN mode is active.
+	if berr := netdial.BindUDPConn(conn); berr != nil {
+		_ = conn.Close()
+		return nil, berr
+	}
+	return conn, nil
 }
 
 // listenClientUDPRelay binds the SOCKS5 UDP relay on the same family as the

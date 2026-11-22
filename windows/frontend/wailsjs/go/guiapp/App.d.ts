@@ -4,6 +4,8 @@ import {guiapp} from '../models';
 import {stats} from '../models';
 import {version} from '../models';
 
+export function EnableFrontendEvents():Promise<void>;
+
 export function EngineStatus():Promise<guiapp.EngineStatus>;
 
 export function GetAutoStartCore():Promise<boolean>;
@@ -11,6 +13,10 @@ export function GetAutoStartCore():Promise<boolean>;
 export function GetConfig():Promise<string>;
 
 export function GetErrors():Promise<Array<stats.ErrorEntry>>;
+
+export function GetLaunchAtLogin():Promise<boolean>;
+
+export function GetLifetimeStats():Promise<stats.LifetimeStats>;
 
 export function GetNodes():Promise<Array<stats.NodeStat>>;
 
@@ -22,14 +28,24 @@ export function GetSessions():Promise<Array<stats.SessionView>>;
 
 export function GetSystemProxy():Promise<boolean>;
 
+export function GetTunMode():Promise<boolean>;
+
 export function GetVersion():Promise<version.Info>;
+
+export function ResetLifetimeStats():Promise<void>;
 
 export function SaveConfig(arg1:string):Promise<void>;
 
 export function SetAutoStartCore(arg1:boolean):Promise<void>;
 
+export function SetLaunchAtLogin(arg1:boolean):Promise<void>;
+
 export function SetSystemProxy(arg1:boolean):Promise<void>;
+
+export function SetTunMode(arg1:boolean):Promise<void>;
 
 export function StartEngine():Promise<void>;
 
 export function StopEngine():Promise<void>;
+
+export function TunSessionStats():Promise<string>;

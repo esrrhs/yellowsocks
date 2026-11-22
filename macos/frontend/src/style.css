@@ -546,3 +546,43 @@ body {
     user-select: text;
     word-break: break-all;
 }
+
+/* ---------- lifetime traffic ---------- */
+
+.lifetime-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 12px;
+}
+
+.lt-item {
+    background: rgba(255, 255, 255, 0.03);
+    border-radius: 10px;
+    padding: 12px 14px;
+}
+
+.lt-label {
+    color: var(--text-dim);
+    font-size: 12px;
+    margin-bottom: 6px;
+}
+
+.lt-label.lt-cn {
+    color: var(--up);
+}
+
+.lt-label.lt-foreign {
+    color: var(--down);
+}
+
+.lt-value {
+    font-size: 20px;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.lt-sub {
+    color: var(--text-dim);
+    font-size: 11px;
+    margin-top: 4px;
+}

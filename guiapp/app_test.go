@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/esrrhs/yellowsocks/core/stats"
 )
 
 // useTempConfigDir redirects os.UserConfigDir (AppData on Windows, HOME on
@@ -107,5 +109,16 @@ func TestStartStopEngine(t *testing.T) {
 	}
 	if a.GetOverview() != nil {
 		t.Fatalf("GetOverview should be nil when stopped")
+	}
+
+	// The GUI enables stats persistence by default: stopping the engine
+	// writes the final snapshot with the lifetime totals next to the other
+	// data files.
+	if _, err := os.Stat(statsPath()); err != nil {
+		t.Fatalf("stats snapshot was not persisted after engine stop: %v", err)
+	}
+	all, _, _ := stats.LifetimeTotals(statsPath())
+	if all.Total() < 0 {
+		t.Fatalf("lifetime totals unreadable from %s", statsPath())
 	}
 }

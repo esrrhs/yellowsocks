@@ -2,9 +2,9 @@ package main
 
 import (
 	"embed"
+	"time"
 
 	"github.com/esrrhs/gohome/loggo"
-	"github.com/esrrhs/yellowsocks/core/launch"
 	"github.com/esrrhs/yellowsocks/guiapp"
 	"github.com/wailsapp/wails/v2"
 	"github.com/wailsapp/wails/v2/pkg/options"
@@ -19,13 +19,15 @@ var assets embed.FS
 // only wires the Wails app for Windows. Build with `wails build` in this
 // directory.
 func main() {
-	// loggo writes log files into the CWD and panics when it cannot, so make
-	// sure we are in a writable place before initializing logging. This is the
-	// same dance the CLI does (see cli/main.go).
+	// Portable mode: keep logs next to the exe (or the per-user fallback
+	// when that is not writable) and adopt any per-user data into a fresh
+	// portable directory. loggo writes into the CWD and panics when it
+	// cannot, so this must run before logging starts.
+	logWritable, startHidden := guiapp.Boot()
 	loggo.Ini(loggo.Config{
 		Level:     loggo.NameToLevel("info"),
 		Prefix:    "yellowsocks-gui",
-		NoLogFile: !launch.EnsureWritableWorkDir(),
+		NoLogFile: !logWritable,
 	})
 
 	// A previous instance may have been hard-killed while the system proxy
@@ -34,7 +36,16 @@ func main() {
 	// subprocess itself from launching.
 	guiapp.CleanupStaleSystemProxy()
 
+	// The TUN-mode elevated relaunch hands over to this copy: give the old
+	// instance a moment to release its listen ports, then confirm we are
+	// alive so the old instance can quit.
+	if guiapp.ElevatedRequested() {
+		time.Sleep(2 * time.Second)
+		guiapp.WriteElevatedHandshake()
+	}
+
 	app := guiapp.NewApp()
+	app.EnableFrontendEvents()
 
 	err := wails.Run(&options.App{
 		Title:     "YellowSocks",
@@ -42,6 +53,9 @@ func main() {
 		Height:    720,
 		MinWidth:  800,
 		MinHeight: 600,
+		// Launch-at-login starts the app with --hidden: tray only, the
+		// engine and system proxy come up on their own.
+		StartHidden: startHidden,
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},

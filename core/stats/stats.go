@@ -75,6 +75,15 @@ func (c Counters) Total() int64 { return c.Upload + c.Download }
 func (c *Counters) addUpload(n int64)   { c.Upload += n }
 func (c *Counters) addDownload(n int64) { c.Download += n }
 
+// LifetimeStats is the permanent traffic record: all bytes ever relayed plus
+// the domestic (direct) and foreign (proxy) shares. Unlike the session
+// counters these survive restarts and are never cleared by Reset.
+type LifetimeStats struct {
+	Totals Counters `json:"totals"`
+	Direct Counters `json:"direct"`
+	Proxy  Counters `json:"proxy"`
+}
+
 // Bucket is one history interval.
 type Bucket struct {
 	T int64 `json:"t"` // bucket start, unix seconds
@@ -177,6 +186,12 @@ type Collector struct {
 	totals   Counters
 	direct   Counters
 	proxy    Counters
+	// Lifetime counters accumulate forever: they survive restarts via the
+	// snapshot and are never cleared by Reset. Direct is the domestic
+	// (China) share, Proxy the foreign share, as decided by the router.
+	lifetime       Counters
+	lifetimeDirect Counters
+	lifetimeProxy  Counters
 	dns      DNSStat
 	dnsNames map[string]*DomainStat
 	domains  map[string]*DomainStat
@@ -553,17 +568,23 @@ func (c *Collector) addTraffic(up, down int64, d Decision) {
 	c.rotateLocked(now)
 	c.totals.addUpload(up)
 	c.totals.addDownload(down)
+	c.lifetime.addUpload(up)
+	c.lifetime.addDownload(down)
 	c.cur.Upload += up
 	c.cur.Download += down
 	switch d {
 	case DecisionDirect:
 		c.direct.addUpload(up)
 		c.direct.addDownload(down)
+		c.lifetimeDirect.addUpload(up)
+		c.lifetimeDirect.addDownload(down)
 		c.cur.DirectUpload += up
 		c.cur.DirectDownload += down
 	case DecisionProxy:
 		c.proxy.addUpload(up)
 		c.proxy.addDownload(down)
+		c.lifetimeProxy.addUpload(up)
+		c.lifetimeProxy.addDownload(down)
 		c.cur.ProxyUpload += up
 		c.cur.ProxyDownload += down
 	}
@@ -813,18 +834,21 @@ func (c *Collector) pruneLocked(m map[string]*DomainStat) {
 
 // Overview is the live summary returned by the API.
 type Overview struct {
-	Now           int64        `json:"now"`
-	StartTime     int64        `json:"start_time"`
-	UptimeSeconds int64        `json:"uptime_seconds"`
-	ActiveConns   int          `json:"active_conns"`
-	Totals        Counters     `json:"totals"`
-	Direct        Counters     `json:"direct"`
-	Proxy         Counters     `json:"proxy"`
-	Rate          Rate         `json:"rate"`    // last 5 seconds
-	Rate1m        Rate         `json:"rate_1m"` // last 60 seconds
-	Peak          Rate         `json:"peak"`    // fastest second seen
-	DNS           DNSStat      `json:"dns"`
-	TopDomains    []DomainStat `json:"top_domains"`
+	Now            int64        `json:"now"`
+	StartTime      int64        `json:"start_time"`
+	UptimeSeconds  int64        `json:"uptime_seconds"`
+	ActiveConns    int          `json:"active_conns"`
+	Totals         Counters     `json:"totals"`
+	Direct         Counters     `json:"direct"`
+	Proxy          Counters     `json:"proxy"`
+	Lifetime       Counters     `json:"lifetime"`        // never reset, survives restarts
+	LifetimeDirect Counters     `json:"lifetime_direct"` // domestic share of lifetime
+	LifetimeProxy  Counters     `json:"lifetime_proxy"`  // foreign share of lifetime
+	Rate           Rate         `json:"rate"`            // last 5 seconds
+	Rate1m         Rate         `json:"rate_1m"`         // last 60 seconds
+	Peak           Rate         `json:"peak"`            // fastest second seen
+	DNS            DNSStat      `json:"dns"`
+	TopDomains     []DomainStat `json:"top_domains"`
 }
 
 // ActiveOptions filters the live connection list.
@@ -846,18 +870,21 @@ func (c *Collector) Overview() Overview {
 	c.rotateLocked(now)
 
 	o := Overview{
-		Now:           nowSec,
-		StartTime:     c.start.Unix(),
-		UptimeSeconds: int64(now.Sub(c.start) / time.Second),
-		ActiveConns:   len(c.active),
-		Totals:        c.totals,
-		Direct:        c.direct,
-		Proxy:         c.proxy,
-		Rate:          c.rateLocked(nowSec, 5),
-		Rate1m:        c.rateLocked(nowSec, 60),
-		Peak:          Rate{Upload: c.peakUp, Download: c.peakDown},
-		DNS:           c.dnsSnapshotLocked(10),
-		TopDomains:    c.topDomainsLocked(10, "bytes"),
+		Now:            nowSec,
+		StartTime:      c.start.Unix(),
+		UptimeSeconds:  int64(now.Sub(c.start) / time.Second),
+		ActiveConns:    len(c.active),
+		Totals:         c.totals,
+		Direct:         c.direct,
+		Proxy:          c.proxy,
+		Lifetime:       c.lifetime,
+		LifetimeDirect: c.lifetimeDirect,
+		LifetimeProxy:  c.lifetimeProxy,
+		Rate:           c.rateLocked(nowSec, 5),
+		Rate1m:         c.rateLocked(nowSec, 60),
+		Peak:           Rate{Upload: c.peakUp, Download: c.peakDown},
+		DNS:            c.dnsSnapshotLocked(10),
+		TopDomains:     c.topDomainsLocked(10, "bytes"),
 	}
 	return o
 }
@@ -1149,7 +1176,8 @@ func (c *Collector) HistoryWindow() (oldest, newest time.Time) {
 }
 
 // Reset clears every counter, history and log. Active sessions are kept so a
-// reset cannot strand them.
+// reset cannot strand them. The lifetime counters are deliberately kept:
+// they record the all-time traffic totals and only LifetimeReset clears them.
 func (c *Collector) Reset() {
 	now := time.Now()
 	c.mu.Lock()
@@ -1170,6 +1198,30 @@ func (c *Collector) Reset() {
 	c.peakUp = 0
 	c.peakDown = 0
 	c.start = now
+}
+
+// LifetimeReset clears only the permanent lifetime counters. Everything else
+// is left alone.
+func (c *Collector) LifetimeReset() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.lifetime = Counters{}
+	c.lifetimeDirect = Counters{}
+	c.lifetimeProxy = Counters{}
+}
+
+// Lifetime returns the permanent traffic totals: all traffic plus its
+// domestic (direct) and foreign (proxy) shares.
+func (c *Collector) Lifetime() (all, direct, proxy Counters) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.lifetime, c.lifetimeDirect, c.lifetimeProxy
+}
+
+// LifetimeStats returns the permanent totals as a struct.
+func (c *Collector) LifetimeStats() LifetimeStats {
+	all, direct, proxy := c.Lifetime()
+	return LifetimeStats{Totals: all, Direct: direct, Proxy: proxy}
 }
 
 func copyMap(m map[string]int64) map[string]int64 {

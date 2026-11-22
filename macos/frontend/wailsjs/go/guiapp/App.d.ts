@@ -12,6 +12,10 @@ export function GetConfig():Promise<string>;
 
 export function GetErrors():Promise<Array<stats.ErrorEntry>>;
 
+export function GetLaunchAtLogin():Promise<boolean>;
+
+export function GetLifetimeStats():Promise<stats.LifetimeStats>;
+
 export function GetNodes():Promise<Array<stats.NodeStat>>;
 
 export function GetOverview():Promise<stats.Overview>;
@@ -22,13 +26,21 @@ export function GetSessions():Promise<Array<stats.SessionView>>;
 
 export function GetSystemProxy():Promise<boolean>;
 
+export function GetTunMode():Promise<boolean>;
+
 export function GetVersion():Promise<version.Info>;
+
+export function ResetLifetimeStats():Promise<void>;
 
 export function SaveConfig(arg1:string):Promise<void>;
 
 export function SetAutoStartCore(arg1:boolean):Promise<void>;
 
+export function SetLaunchAtLogin(arg1:boolean):Promise<void>;
+
 export function SetSystemProxy(arg1:boolean):Promise<void>;
+
+export function SetTunMode(arg1:boolean):Promise<void>;
 
 export function StartEngine():Promise<void>;
 
