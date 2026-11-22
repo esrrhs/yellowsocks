@@ -270,7 +270,14 @@ func (s *Socks5Server) routeDecision(host string, port int) (router.RouteDecisio
 
 	decision := router.Proxy
 	if s.cfg.Router != nil {
-		decision = s.cfg.Router.Decide(realHost, parsedIP)
+		// A fake address has no real geography: route purely by the
+		// recovered domain so a reserved/GeoIP rule can never misclassify it
+		// as direct. Real learned IPs keep parsedIP so CIDR/GeoIP still apply.
+		ipForDecision := parsedIP
+		if s.cfg.DNS != nil && s.cfg.DNS.IsFakeIP(host) {
+			ipForDecision = nil
+		}
+		decision = s.cfg.Router.Decide(realHost, ipForDecision)
 	}
 	return decision, realHost
 }
@@ -291,7 +298,24 @@ func (s *Socks5Server) beginSession(p stats.Proto, client, host string, port int
 
 func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, targetPort int) {
 	targetHost = canonicalHost(targetHost)
+	// TUN-mode in-process DNS: captured TCP/53 connections are answered by the
+	// engine resolver (smart split + fake-ip) instead of being relayed, so a
+	// truncated-response TCP retry never leaks to a public resolver/upstream.
+	if s.cfg.DNS != nil && s.cfg.DNS.TUNActive() && targetPort == 53 {
+		loggo.Info("[SOCKS5] TCP/53 hijack: answering in-process for %s", targetHost)
+		_ = network.Sock5SendConnectReply(clientConn, 0x00, "0.0.0.0:0")
+		_ = s.cfg.DNS.ServeConn(clientConn)
+		return
+	}
 	decision, realHost := s.routeDecision(targetHost, targetPort)
+	// When a target reached us as an IP but we recovered its original domain
+	// (fake-ip from our DNS, or a learned mapping), proxy it by name so the
+	// upstream resolves remotely instead of dialing a possibly-blocked real
+	// IP. Direct connections keep the literal IP.
+	forwardHost := targetHost
+	if decision == router.Proxy && realHost != targetHost && net.ParseIP(realHost) == nil {
+		forwardHost = realHost
+	}
 	targetAddr := joinDialAddr(targetHost, targetPort)
 	ruleStr := "Proxy (SPP)"
 	if decision == router.Direct {
@@ -389,7 +413,7 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 			return
 		}
 
-		if err := network.Sock5SetRequest(sppConn, canonicalHost(targetHost), targetPort, 10000); err != nil {
+		if err := network.Sock5SetRequest(sppConn, canonicalHost(forwardHost), targetPort, 10000); err != nil {
 			loggo.Error("[SOCKS5] SPP upstream connect to %s via %s failed: %v", targetAddr, nodeName, err)
 			sess.Fail(fmt.Errorf("SPP upstream connect: %w", err))
 			_ = network.Sock5SendConnectReply(clientConn, 0x01, "0.0.0.0:0")
@@ -626,6 +650,19 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 		}
 		dstHost = canonicalHost(dstHost)
 
+		// TUN-mode in-process DNS: answer captured :53 datagrams locally so
+		// the smart resolver (and fake-ip) apply to every system query and
+		// domain<->IP mappings are learned. Resolved in a goroutine because a
+		// direct-DNS lookup can take seconds and must not stall the relay's
+		// read loop.
+		if s.cfg.DNS != nil && s.cfg.DNS.TUNActive() && dstPort == 53 {
+			cAddr := activeClientUDP.Load()
+			if cAddr != nil {
+				go s.answerDNSDatagram(payload, dstHost, dstPort, relayConn, cAddr, udpSess, &assocClosed)
+			}
+			continue
+		}
+
 		decision, realHost := s.routeDecision(dstHost, dstPort)
 		targetAddr := joinDialAddr(dstHost, dstPort)
 
@@ -684,11 +721,45 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 				s.cfg.Stats.RecordError("socks5", dstHost, "SPP UDP session for %s: %v", targetAddr, err)
 				continue
 			}
-			if _, err := sppUConn.WriteToUDP(pktBuf[:n], sppRelayTarget); err == nil {
+			// Forward the recovered domain to the upstream when available so
+			// it resolves remotely (mirrors the TCP CONNECT path); otherwise
+			// keep the original datagram verbatim.
+			outbound := pktBuf[:n]
+			if realHost != dstHost && net.ParseIP(realHost) == nil {
+				if repacked, perr := network.Sock5PackUDP(realHost, dstPort, payload); perr == nil {
+					outbound = repacked
+				}
+			}
+			if _, err := sppUConn.WriteToUDP(outbound, sppRelayTarget); err == nil {
 				udpSess.AddDatagram(dstHost, stats.DecisionProxy, int64(len(payload)), 0)
 			}
 		}
 	}
+}
+
+// answerDNSDatagram resolves a captured :53 query in-process and writes the
+// reply back through the SOCKS5 UDP relay, sourcing it from the original
+// destination so tun2socks delivers it to the application socket that asked.
+func (s *Socks5Server) answerDNSDatagram(payload []byte, srcHost string, srcPort int, relay *net.UDPConn, client *net.UDPAddr, sess *stats.Session, closed *atomic.Bool) {
+	defer common.CrashLog()
+	out := s.cfg.DNS.ResolvePayload(payload)
+	if out == nil {
+		loggo.Warn("[SOCKS5] UDP/53 hijack: ResolvePayload returned nil for %s:%d", srcHost, srcPort)
+	} else {
+		loggo.Info("[SOCKS5] UDP/53 hijack: answered %d bytes for %s:%d", len(out), srcHost, srcPort)
+	}
+	if out == nil || closed.Load() {
+		return
+	}
+	packed, err := network.Sock5PackUDP(srcHost, srcPort, out)
+	if err != nil {
+		return
+	}
+	if closed.Load() {
+		return
+	}
+	_, _ = relay.WriteToUDP(packed, client)
+	sess.AddDatagram(srcHost, stats.DecisionDirect, 0, int64(len(out)))
 }
 
 // defaultIdleTimeout closes proxied connections whose peer vanished without a

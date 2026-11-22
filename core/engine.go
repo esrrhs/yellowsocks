@@ -408,6 +408,15 @@ func (e *Engine) Stats() *stats.Collector {
 	return e.collector
 }
 
+// DNS returns the engine's DNS server, or nil before Start completes. TUN
+// mode uses it to flip in-process :53 hijack and fake-ip at runtime without
+// restarting the engine.
+func (e *Engine) DNS() *appdns.Server {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.dnsServer
+}
+
 func sppHost(server string) string {
 	host, _, err := net.SplitHostPort(server)
 	if err != nil || host == "" {

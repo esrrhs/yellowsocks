@@ -365,6 +365,7 @@ func (m *tunManager) startWatchdog(params TunParams) {
 			deadline = params.Soak
 			interval = 5 * time.Second
 		}
+		loggo.Info("[TUN] watchdog: soak=%v deadline=%v interval=%v", params.Soak, deadline, interval)
 		soakStart := time.Now()
 		var lastErr error
 		for time.Since(soakStart) < deadline {

@@ -222,6 +222,7 @@ func (a *App) StopEngine() error {
 	// The TUN stack forwards into the engine inbound and holds references
 	// to its addresses: always bring it down before the engine.
 	_ = tunDisable()
+	a.disableTUNDNS()
 	a.mu.Lock()
 	a.tunActive = false
 	defer a.mu.Unlock()
@@ -291,6 +292,7 @@ func (a *App) SetTunMode(on bool) error {
 
 	if !on {
 		err := tunDisable()
+		a.disableTUNDNS()
 		a.mu.Lock()
 		a.tunActive = false
 		a.tunErr = ""
@@ -365,7 +367,9 @@ func (a *App) applyTun() error {
 
 	params := a.tunParamsFrom(cfg)
 	params.Soak = tunWatchdogSoak
+	loggo.Info("[GUI] applyTun: tunWatchdogSoak=%v active-before=%v", tunWatchdogSoak, tunIsActive())
 	if err := tunEnable(params); err != nil {
+		a.disableTUNDNS()
 		a.mu.Lock()
 		a.tunActive = false
 		a.tunErr = err.Error()
@@ -373,6 +377,10 @@ func (a *App) applyTun() error {
 		a.emitStatus()
 		return err
 	}
+	// The adapter is up: flip the engine into TUN-mode DNS handling so every
+	// captured :53 query is answered in-process (smart split + fake-ip) and
+	// proxied domains reach the upstream by name instead of as real IPs.
+	a.enableTUNDNS()
 	a.mu.Lock()
 	a.tunActive = true
 	a.tunErr = ""
@@ -385,6 +393,35 @@ func (a *App) applyTun() error {
 	a.emitStatus()
 	loggo.Info("[GUI] TUN mode enabled")
 	return nil
+}
+
+// enableTUNDNS flips the running engine's DNS server into TUN-mode handling
+// (in-process :53 hijack + fake-ip). A no-op when the engine is not running.
+func (a *App) enableTUNDNS() {
+	a.mu.Lock()
+	e := a.engine
+	a.mu.Unlock()
+	if e == nil {
+		return
+	}
+	if dns := e.DNS(); dns != nil {
+		if err := dns.EnableTUN(""); err != nil {
+			loggo.Warn("[GUI] enable TUN DNS: %v", err)
+		}
+	}
+}
+
+// disableTUNDNS reverts enableTUNDNS. Safe to call when the engine is gone.
+func (a *App) disableTUNDNS() {
+	a.mu.Lock()
+	e := a.engine
+	a.mu.Unlock()
+	if e == nil {
+		return
+	}
+	if dns := e.DNS(); dns != nil {
+		dns.DisableTUN()
+	}
 }
 
 // tunParamsFrom collects the engine endpoints the TUN stack forwards into
@@ -435,6 +472,7 @@ func (a *App) tunParamsFrom(cfg core.EngineConfig) TunParams {
 	// The TUN watchdog auto-rolls-back a dead pipeline so the user's network
 	// recovers on its own; surface the reason in the UI.
 	params.OnRollback = func(reason string) {
+		a.disableTUNDNS()
 		a.mu.Lock()
 		a.tunActive = false
 		a.tunErr = "TUN 管线自检失败,已自动回滚: " + reason

@@ -386,7 +386,13 @@ func (s *HTTPServer) routeDecision(host string, port int) (router.RouteDecision,
 
 	decision := router.Proxy
 	if s.cfg.Router != nil {
-		decision = s.cfg.Router.Decide(realHost, parsedIP)
+		// A fake address has no real geography: route purely by the recovered
+		// domain so reserved/GeoIP rules can never misclassify it as direct.
+		ipForDecision := parsedIP
+		if s.cfg.DNS != nil && s.cfg.DNS.IsFakeIP(host) {
+			ipForDecision = nil
+		}
+		decision = s.cfg.Router.Decide(realHost, ipForDecision)
 	}
 	return decision, realHost
 }
@@ -405,6 +411,13 @@ func (s *HTTPServer) beginSession(p stats.Proto, client, host string, port int, 
 func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, targetHost string, targetPort int) {
 	targetHost = canonicalHost(targetHost)
 	decision, realHost := s.routeDecision(targetHost, targetPort)
+	// When a target reached us as an IP but we recovered its original domain,
+	// proxy it by name so the upstream resolves remotely instead of dialing a
+	// possibly-blocked real IP (mirrors the SOCKS5 CONNECT path).
+	forwardHost := targetHost
+	if decision == router.Proxy && realHost != targetHost && net.ParseIP(realHost) == nil {
+		forwardHost = realHost
+	}
 	targetAddr := joinDialAddr(targetHost, targetPort)
 	ruleStr := "Proxy (SPP)"
 	if decision == router.Direct {
@@ -511,7 +524,7 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 			return
 		}
 
-		if err := network.Sock5SetRequest(sppConn, targetHost, targetPort, 10000); err != nil {
+		if err := network.Sock5SetRequest(sppConn, forwardHost, targetPort, 10000); err != nil {
 			loggo.Error("[HTTP Proxy] SPP upstream connect to %s via %s failed: %v", targetAddr, nodeName, err)
 			sess.Fail(fmt.Errorf("SPP upstream connect: %w", err))
 			const http502 = "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n"

@@ -111,8 +111,12 @@ func main() {
 	out("%s ENGINE_STATE running=%v socks5=%s dns=%s", startTag, st.Running, st.Socks5, st.DNS)
 
 	// Bring TUN up right away (the whole point of the driver), with a long
-	// watchdog soak so diagnostics can inspect the live adapter.
+	// watchdog soak so diagnostics can inspect the live adapter. Disable
+	// first so any autostarted or adapter-left-up state is cleared and the
+	// subsequent applyTun re-runs with this process's soak value (applyTun
+	// is a no-op when the adapter is already up).
 	guiapp.SetTunWatchdogSoak(10 * time.Minute)
+	setTun(a, false)
 	setTun(a, true)
 
 	// Self-test: the driver's own traffic enters the TUN like any other

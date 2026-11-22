@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/esrrhs/gohome/loggo"
@@ -69,6 +70,18 @@ type Server struct {
 	stopCh         chan struct{}
 	stopOnce       sync.Once
 	janitorOnce    sync.Once
+
+	// TUN-mode DNS hijack + fake-ip (see fakeip.go). Flipped at runtime so the
+	// engine does not need a restart to switch between plain-proxy and TUN.
+	tunMode        atomic.Bool
+	fakeIPEnabled  atomic.Bool
+	fakeIPMu       sync.Mutex
+	fakeIPNet      *net.IPNet
+	fakeIPBase     net.IP
+	fakeIPCount    uint64 // total addresses in the range
+	fakeIPOffset   uint64 // first assignable index (skips the low reserved block)
+	fakeIPNext     uint64 // next index to allocate, relative to fakeIPOffset
+	domainToFakeIP sync.Map // domain -> assigned fake IP string
 }
 
 // maxDNSMessageSize is the largest DNS wire message (RFC 1035: a 2-octet
@@ -546,20 +559,39 @@ func (s *Server) resolve(r *dns.Msg, viaTCP bool) (*dns.Msg, error) {
 	upstream := "doh"
 
 	isDirect := s.router != nil && s.router.ShouldDirectDomain(qName)
-	switch {
-	case isDirect:
-		upstream = "direct"
-		resp, err = s.resolveDirect(r, viaTCP)
-	case !s.enableIPv6 && q.Qtype == dns.TypeAAAA:
-		// Upstream has no IPv6 route. An empty AAAA makes clients use the A record.
-		upstream = "synthetic"
-		resp = emptyReply(r)
-	default:
-		resp, err = s.resolveDoH(r)
-		if err != nil {
-			loggo.Warn("[DNS] DoH failed for %s, falling back to direct DNS: %v", qName, err)
+
+	// Reverse lookups for our own fake addresses are answered locally with the
+	// mapped domain, instead of leaking the query to an upstream resolver.
+	if q.Qtype == dns.TypePTR && s.fakeIPEnabled.Load() {
+		if pr, ok := s.fakeIPPtrReply(r, qName); ok {
+			upstream = "fakeip"
+			resp = pr
+		}
+	}
+
+	if resp == nil {
+		switch {
+		case isDirect:
 			upstream = "direct"
 			resp, err = s.resolveDirect(r, viaTCP)
+		case !s.enableIPv6 && q.Qtype == dns.TypeAAAA:
+			// Upstream has no IPv6 route. An empty AAAA makes clients use the A record.
+			upstream = "synthetic"
+			resp = emptyReply(r)
+		case s.fakeIPEnabled.Load() && q.Qtype == dns.TypeA:
+			// Proxied domains get a fake address: the upstream resolves the
+			// real IP remotely when the engine forwards the domain name, which
+			// bypasses GFW DNS pollution and real-IP blocking. No upstream
+			// lookup is performed here.
+			upstream = "fakeip"
+			resp = s.fakeIPReply(r, qName)
+		default:
+			resp, err = s.resolveDoH(r)
+			if err != nil {
+				loggo.Warn("[DNS] DoH failed for %s, falling back to direct DNS: %v", qName, err)
+				upstream = "direct"
+				resp, err = s.resolveDirect(r, viaTCP)
+			}
 		}
 	}
 
