@@ -428,10 +428,12 @@ func TestReportFailureMarksUDPFamilyDownWithoutProbeStorm(t *testing.T) {
 		t.Fatal("rudp node should start alive via lightweight probe")
 	}
 
-	// Drop the resident client first so HasRecentTraffic cannot suppress failure reports.
+	// Drop the resident client and stop the background health loop so it cannot
+	// race to drain triggerCheckCh or revive the node before assertions run.
 	m.mu.Lock()
 	m.stopClientLocked(m.runtimes[0])
 	m.mu.Unlock()
+	m.stopHealthLoop()
 
 	for i := 0; i < 20; i++ {
 		m.ReportNodeFailure("rudp1", net.ErrClosed)

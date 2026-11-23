@@ -52,7 +52,7 @@ func enableLaunchAtLogin() error {
 	if err != nil {
 		return err
 	}
-	key, err := registry.OpenKey(registry.CURRENT_USER, runKeyPath, registry.QUERY_VALUE|registry.SET_VALUE)
+	key, _, err := registry.CreateKey(registry.CURRENT_USER, runKeyPath, registry.QUERY_VALUE|registry.SET_VALUE)
 	if err != nil {
 		return fmt.Errorf("open run key: %w", err)
 	}
@@ -67,6 +67,9 @@ func enableLaunchAtLogin() error {
 func disableLaunchAtLogin() error {
 	key, err := registry.OpenKey(registry.CURRENT_USER, runKeyPath, registry.QUERY_VALUE|registry.SET_VALUE)
 	if err != nil {
+		if err == registry.ErrNotExist {
+			return nil
+		}
 		return fmt.Errorf("open run key: %w", err)
 	}
 	defer key.Close()

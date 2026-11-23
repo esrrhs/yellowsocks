@@ -280,6 +280,8 @@ type Manager struct {
 	activeIndex    int32 // -1 while no node is active
 	localSocks5    string
 	checkStopCh    chan struct{}
+	checkStopOnce  sync.Once
+	healthDoneCh   chan struct{}
 	triggerCheckCh chan struct{}
 	closed         atomic.Bool
 	healthInterval time.Duration
@@ -325,6 +327,7 @@ func newManager(nodes []*Node, localSocks5 string, interval time.Duration) (*Man
 		runtimes:       runtimes,
 		localSocks5:    localSocks5,
 		checkStopCh:    make(chan struct{}),
+		healthDoneCh:   make(chan struct{}),
 		triggerCheckCh: make(chan struct{}, 1),
 		activeIndex:    -1,
 		healthInterval: interval,
@@ -657,6 +660,7 @@ func (m *Manager) fallbackLocked(exclude int) int {
 }
 
 func (m *Manager) healthLoop() {
+	defer close(m.healthDoneCh)
 	ticker := time.NewTicker(m.healthInterval)
 	defer ticker.Stop()
 
@@ -881,12 +885,19 @@ func (m *Manager) Socks5Auth() (string, string) {
 	return "", ""
 }
 
+func (m *Manager) stopHealthLoop() {
+	m.checkStopOnce.Do(func() {
+		close(m.checkStopCh)
+	})
+	<-m.healthDoneCh
+}
+
 // Close stops health checks and all active SPP clients.
 func (m *Manager) Close() {
 	if !m.closed.CompareAndSwap(false, true) {
 		return
 	}
-	close(m.checkStopCh)
+	m.stopHealthLoop()
 
 	m.mu.Lock()
 	defer m.mu.Unlock()

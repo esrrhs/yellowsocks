@@ -17,9 +17,3 @@ func tunDisable() error { return nil }
 func tunIsActive() bool { return false }
 
 func tunSessionStatsLive() string { return "unsupported" }
-
-func isElevated() bool { return false }
-
-func relaunchElevated() error {
-	return errors.New("TUN mode is not supported on this platform yet")
-}
