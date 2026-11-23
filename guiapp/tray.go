@@ -35,8 +35,14 @@ func runTray(a *App) {
 			mSysProxy.SetTitle("系统代理: 开")
 		}
 
+		// A left click on the icon is the reflex for "open it again" once the
+		// window has been closed to the tray, and on Windows it did nothing
+		// at all before: only the menu item was wired. The menu keeps its own
+		// entry as the discoverable equivalent, and the right click still
+		// opens the menu because only the left button is claimed here.
+		systray.SetOnClick(func(systray.IMenu) { showMainWindow(a) })
 		mShow.Click(func() {
-			wailsruntime.WindowShow(a.ctx)
+			showMainWindow(a)
 		})
 		mStart.Click(func() {
 			if err := a.StartEngine(); err == nil {
@@ -62,6 +68,22 @@ func runTray(a *App) {
 		})
 		mQuit.Click(a.quitApp)
 	}, func() {})
+}
+
+// showMainWindow raises the window from the tray. Unminimising is not enough
+// for a window that was closed to the tray (that one is hidden, not minimised),
+// and Windows will not hand the foreground to a process that is not already in
+// front of the user, so the always-on-top round trip is what actually pulls it
+// above whatever had focus.
+func showMainWindow(a *App) {
+	ctx := a.ctx
+	if ctx == nil {
+		return
+	}
+	wailsruntime.WindowUnminimise(ctx)
+	wailsruntime.WindowShow(ctx)
+	wailsruntime.WindowSetAlwaysOnTop(ctx, true)
+	wailsruntime.WindowSetAlwaysOnTop(ctx, false)
 }
 
 // trayIcon returns icon bytes in the format the platform expects: Windows
