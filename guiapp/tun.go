@@ -35,6 +35,11 @@ var tunWatchdogSoak time.Duration
 // SetTunWatchdogSoak overrides the watchdog soak window.
 func SetTunWatchdogSoak(d time.Duration) { tunWatchdogSoak = d }
 
+// tunShutdown releases the platform TUN resources for process exit. Unlike
+// tunDisable — which only takes the capture point down so the machine goes
+// back to its own default route — this stops the packet stack for good.
+func tunShutdown() error { return tunShutdownPlatform() }
+
 // The self-probe rollback in startWatchdog is deliberately not switchable:
 // a TUN that is up while the pipeline is dead black-holes the whole machine,
 // so there must be no way to leave it running unattended.

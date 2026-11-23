@@ -16,4 +16,6 @@ func tunDisable() error { return nil }
 
 func tunIsActive() bool { return false }
 
+func tunShutdownPlatform() error { return nil }
+
 func tunSessionStatsLive() string { return "unsupported" }

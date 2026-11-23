@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/esrrhs/gohome/loggo"
+	"golang.org/x/sys/windows"
 	"github.com/esrrhs/yellowsocks/guiapp"
 )
 
@@ -58,6 +59,12 @@ type command struct {
 }
 
 func main() {
+	auto := false
+	for _, arg := range os.Args[1:] {
+		if arg == "-auto" || arg == "--auto" {
+			auto = true
+		}
+	}
 	exe, _ := os.Executable()
 	// Pin the CWD to the exe directory FIRST: out.log, the command file and
 	// loggo's files must live where the orchestrator looks for them, no
@@ -85,15 +92,52 @@ func main() {
 	// Capture stderr: the tun2socks engine calls log.Fatalf (os.Exit) on
 	// start failures and gvisor panics print to stderr — without this the
 	// failure reason dies with the (closable) console window.
+	//
+	// os.Stderr is only the Go variable: the runtime writes a panic dump (and
+	// a fatal error) straight to file descriptor 2, which still points at the
+	// console. Rebinding STD_ERROR_HANDLE is what makes those dumps land in
+	// this file, and a silent exit impossible to diagnose is exactly what we
+	// hit before.
 	if ef, err := os.OpenFile(errLog, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o644); err == nil {
 		os.Stderr = ef
+		if err := windows.SetStdHandle(windows.STD_ERROR_HANDLE, windows.Handle(ef.Fd())); err != nil {
+			fmt.Printf("rebind stderr: %v\n", err)
+		}
 		defer ef.Close()
 	}
 	out("%s started pid=%d exe=%s", startTag, os.Getpid(), exe)
 
 	a := guiapp.NewApp()
 	app = a
+	// Soak must be set BEFORE Startup: Startup restores the persisted TUN
+	// intent on its own goroutine, and that bring-up is the one under test.
+	guiapp.SetTunWatchdogSoak(120 * time.Second)
 	a.Startup(context.Background())
+
+	st0 := a.EngineStatus()
+	out("%s STARTUP done running=%v tun=%v tunErr=%q", startTag, st0.Running, st0.Tun, st0.TunError)
+
+	// Heartbeat: tells "stuck in a step" apart from "process died" when the
+	// only artefact left is out.log.
+	go func() {
+		for {
+			time.Sleep(5 * time.Second)
+			// Lock-free on purpose: if a bring-up is stuck holding the app
+			// lock, EngineStatus would block and the heartbeat would stop.
+			out("%s HEARTBEAT %s", startTag, a.TunSessionStats())
+		}
+	}()
+
+	// -auto runs the whole acceptance scenario once and exits, so a single
+	// elevated launch produces a complete report (no command file, no second
+	// UAC prompt for diagnostics). It skips the port-wait below: Startup has
+	// already bound the engine ports, so waiting for them to be free would
+	// only stall for the full timeout.
+	if auto {
+		runScenario(a)
+		out("%s scenario returned; main would now exit", startTag)
+		return
+	}
 
 	// Kill stale driver instances first: they keep the engine ports bound, so
 	// the new engine fails with "Only one usage of each socket address" and
@@ -106,15 +150,17 @@ func main() {
 
 	// A previous driver instance may still hold the engine ports: wait for
 	// them to close before starting, so exactly one live engine exists.
-	for _, port := range []string{"127.0.0.1:1053", "127.0.0.1:10808", "127.0.0.1:8080"} {
-		deadline := time.Now().Add(8 * time.Second)
-		for time.Now().Before(deadline) {
-			ln, err := net.Listen("tcp", port)
-			if err == nil {
-				_ = ln.Close()
-				break
+	if !st0.Running {
+		for _, port := range []string{"127.0.0.1:1053", "127.0.0.1:10808", "127.0.0.1:8080"} {
+			deadline := time.Now().Add(8 * time.Second)
+			for time.Now().Before(deadline) {
+				ln, err := net.Listen("tcp", port)
+				if err == nil {
+					_ = ln.Close()
+					break
+				}
+				time.Sleep(300 * time.Millisecond)
 			}
-			time.Sleep(300 * time.Millisecond)
 		}
 	}
 
@@ -144,7 +190,6 @@ func main() {
 	// A bounded soak keeps the adapter up long enough to probe the pipeline,
 	// while the watchdog still rolls it back if nothing works — the lease
 	// below is the second, independent stop.
-	guiapp.SetTunWatchdogSoak(120 * time.Second)
 	setTun(a, false)
 	armLease(tunLease)
 	setTun(a, true)
@@ -261,6 +306,7 @@ func leaseWatchdog(a *guiapp.App) {
 }
 
 func setTun(a *guiapp.App, on bool) {
+	out("%s calling SetTunMode(%v)", startTag, on)
 	start := time.Now()
 	err := a.SetTunMode(on)
 	st := a.EngineStatus()

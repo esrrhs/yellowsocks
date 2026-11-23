@@ -176,7 +176,10 @@ func (a *App) Shutdown(ctx context.Context) {
 	active := a.sysProxyActive
 	a.mu.Unlock()
 	a.tunApplyMu.Lock()
-	_ = tunDisable()
+	// Process exit: unlike a TUN toggle (which only removes the capture
+	// point and keeps the packet stack warm), this releases the adapter and
+	// stops the stack for good.
+	_ = tunShutdown()
 	a.tunApplyMu.Unlock()
 	if running {
 		_ = a.StopEngine()

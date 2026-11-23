@@ -4,8 +4,10 @@ package guiapp
 
 import (
 	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/netip"
 	"os"
@@ -17,6 +19,7 @@ import (
 	"time"
 
 	"github.com/esrrhs/gohome/loggo"
+	appdns "github.com/esrrhs/yellowsocks/core/dns"
 	"github.com/esrrhs/yellowsocks/core/netdial"
 	tun2socks_engine "github.com/xjasonlyu/tun2socks/v2/engine"
 	"golang.org/x/sys/windows"
@@ -31,74 +34,176 @@ import (
 // matching what a real user request exercises.
 const probeURL = "https://www.baidu.com"
 
+// probeProxyHost is a name that is always routed through the upstream. Its
+// answer must come back from the fake-ip pool; a real address means the DNS
+// hijack is not in effect.
+const probeProxyHost = "www.google.com"
+
+// fakeIPNet is the pool the DNS layer hands out, used to recognise a fake
+// answer without duplicating the range.
+var fakeIPNet = func() *net.IPNet {
+	_, n, err := net.ParseCIDR(appdns.DefaultFakeIPRange)
+	if err != nil {
+		panic("invalid DefaultFakeIPRange: " + err.Error())
+	}
+	return n
+}()
+
 //go:embed tun/wintun_amd64.dll
 var wintunDLL []byte
 
-// tunGUID is the fixed device-instance GUID embedded in the engine's device
-// URL: wintun reuses the adapter with the same GUID across runs instead of
-// accumulating duplicates, and the SwDevice is bound to the creating
-// process — when that process dies the device (and its takeover routes)
-// are removed automatically, so crashes self-heal the network.
-var tunGUID = windows.GUID{
-	Data1: 0x5f6c2a91,
-	Data2: 0x8b3d,
-	Data3: 0x4e7a,
-	Data4: [8]byte{0xa2, 0x14, 0x3c, 0x9d, 0x77, 0xe1, 0x0b, 0x46},
-}
+// The adapter is created by tun2socks (plain "tun://YellowSocks"), so its
+// device GUID is the library's; what matters here is that the SwDevice is
+// bound to the creating process — when that process dies, the device and its
+// takeover routes are removed with it, which is the last-resort recovery from
+// a crash that never got to run teardown.
+
+// tunBringUpDeadline bounds how long a single enable() may keep the OS in a
+// half-configured state before the bring-up guard force-rolls it back. The
+// normal bring-up takes a few seconds (UAC plus adapter creation); 60s only
+// ever triggers on a hung wintun call, a wedged tun2socks start or a stuck
+// route transaction — the cases where a deadlock would otherwise leave the
+// machine routed into a pipeline that never comes up.
+const tunBringUpDeadline = 60 * time.Second
 
 // tunManager owns the tun2socks engine lifecycle and the Windows routing
 // state around it.
 type tunManager struct {
 	mu         sync.Mutex
-	active     bool
-	stopped    atomic.Bool
+	active     atomic.Bool    // lock-free: the guard and disable() read it
+	bringingUp atomic.Bool    // true between "touch the OS" and "verified"
+	hung       atomic.Bool    // latched by forceTeardown; later calls skip mu
+	stopped    atomic.Bool    // stops the pipeline watchdog
+	stopMu     sync.Mutex     // serializes tun2socks Stop calls
 	openHandle *wintun.Adapter // keeps our OpenAdapter reference alive
 	luid       wgwinipcfg.LUID
 	physIfIdx  uint32
 	physLUID   wgwinipcfg.LUID
 	physGw     netip.Addr
 	upstreamRT []netip.Prefix // /32 routes for upstream servers on the physical adapter
-	dnsBackup  []dnsOverride  // interface DNS servers replaced for the take-over
+	// stackUp records that the tun2socks stack was started in this process.
+	// It is never stopped until exit (see enable()): the library cannot be
+	// restarted, and its failure path exits the process.
+	stackUp    atomic.Bool
+	stackProxy string // upstream the running stack forwards into
+	// dnsBackup holds the resolver lists replaced for the take-over. It is
+	// published atomically as well so forceTeardown() can put them back
+	// without taking mu (which a stuck enable() may hold forever).
+	dnsBackup atomic.Value // []dnsOverride
+	// rollbackFn is the OnRollback callback of the current run, published so
+	// the forced teardown can report why the adapter disappeared.
+	rollbackFn atomic.Value // func(string)
 }
 
 // dnsOverride remembers one interface's resolver list so it can be put back
 // when the TUN goes down.
 type dnsOverride struct {
 	luid    wgwinipcfg.LUID
+	alias   string // friendly name, used for the crash-recovery journal
 	servers []netip.Addr
 }
 
 var manager = &tunManager{}
 
 func tunEnable(params TunParams) error { return manager.enable(params) }
+func tunShutdownPlatform() error      { manager.shutdown(); return nil }
 func tunDisable() error                { return manager.disable() }
 func tunIsActive() bool                { return manager.isActive() }
 
-// tunSessionStatsLive returns live TUN diagnostics for the driver/GUI.
+// tunSessionStatsLive returns live TUN diagnostics for the driver/GUI. It
+// never blocks on mu: a stuck bring-up must not freeze the diagnostics the
+// watchdog and the GUI poll.
 func tunSessionStatsLive() string {
 	m := manager
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if !m.active {
+	if !m.active.Load() {
 		return "inactive"
 	}
-	return fmt.Sprintf("physIfIdx=%d upstreamExceptions=%d", m.physIfIdx, len(m.upstreamRT))
+	if m.hung.Load() {
+		return "hung"
+	}
+	if m.mu.TryLock() {
+		defer m.mu.Unlock()
+		return fmt.Sprintf("physIfIdx=%d upstreamExceptions=%d", m.physIfIdx, len(m.upstreamRT))
+	}
+	return "busy"
 }
 
 func (m *tunManager) isActive() bool {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.active
+	return m.active.Load()
+}
+
+// lockOrForce takes m.mu, giving up when a bring-up or teardown is stuck on
+// it. A hung enable() holds the lock forever, and every later disable would
+// block on it — the user could then never switch TUN off, and the watchdog
+// could never roll back. Returning false tells the caller to unwind with the
+// lock-free path instead.
+func (m *tunManager) lockOrForce(what string) bool {
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		if m.mu.TryLock() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			loggo.Error("[TUN] %s: state lock still held after 3s (a bring-up or teardown is stuck)", what)
+			return false
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
 }
 
 func (m *tunManager) enable(params TunParams) (err error) {
-	m.mu.Lock()
+	if !m.lockOrForce("enable") {
+		m.forceTeardown("state lock unavailable before enable (a previous bring-up is stuck)")
+		return errors.New("TUN state is locked by a stuck bring-up; forced cleanup requested")
+	}
 	defer m.mu.Unlock()
-	var perr error
-	if m.active {
+	if m.active.Load() {
 		return errors.New("TUN mode already active")
 	}
 	m.stopped.Store(false)
+	m.hung.Store(false)
+	m.bringingUp.Store(true)
+	// atomic.Value panics on a nil store, and the callback is published so
+	// the forced teardown can report a rollback it did not initiate.
+	rollback := params.OnRollback
+	if rollback == nil {
+		rollback = func(string) {}
+	}
+	m.rollbackFn.Store(rollback)
+
+	// Bring-up guard: a hung wintun/tun2socks call must never leave the
+	// machine routed into a half-built adapter. This goroutine does not take
+	// m.mu — if enable() deadlocks while holding it, the guard is the only
+	// thing that can still unwind the routing state. It is disarmed as soon
+	// as enable() returns (success or failure).
+	guardStop := make(chan struct{})
+	guardDone := make(chan struct{})
+	go func() {
+		defer close(guardDone)
+		select {
+		case <-time.After(tunBringUpDeadline):
+			if m.bringingUp.Load() {
+				m.forceTeardown(fmt.Sprintf("bring-up did not finish within %v", tunBringUpDeadline))
+			}
+		case <-guardStop:
+		}
+	}()
+	// Registered after the unlock defer, so it runs BEFORE the lock is
+	// released: the guard is never left armed against a finished bring-up.
+	defer func() {
+		m.bringingUp.Store(false)
+		close(guardStop)
+		<-guardDone
+	}()
+	// A panic in the middle of the OS setup would otherwise leave the
+	// adapter up with the takeover routes installed.
+	defer func() {
+		if r := recover(); r != nil {
+			m.forceTeardown(fmt.Sprintf("panic during bring-up: %v", r))
+			err = fmt.Errorf("TUN bring-up panicked: %v", r)
+		}
+	}()
+	var perr error
 
 	// 1. wintun.dll on disk: the standalone wintun module loads it with
 	// LoadLibraryEx from the application directory (or System32).
@@ -106,37 +211,55 @@ func (m *tunManager) enable(params TunParams) (err error) {
 		return fmt.Errorf("prepare wintun.dll: %w", err)
 	}
 
-	// 2. The tun2socks engine creates the wintun adapter itself (fixed
-	// GUID via the device URL query, so runs reuse the same adapter),
-	// the gvisor stack, and forwards every captured flow into the engine's
-	// SOCKS5 inbound — the same proxy Clash Verge's kernel forwards into.
-	// NOTE: do NOT create the adapter separately before this — a second
-	// CreateAdapter for the same name/GUID conflicts and the engine's
-	// start() failure path calls log.Fatalf (os.Exit), killing the GUI.
-	// The engine creates a fresh wintun adapter (random GUID) each run; the
-	// SwDevice is process-bound, so the adapter — and its takeover routes —
-	// are removed automatically when this process exits, self-healing any
-	// leftover state.
-	tun2socks_engine.Insert(&tun2socks_engine.Key{
-		Device:     "tun://" + tunAdapterName,
-		Proxy:      "socks5://" + params.Socks5Addr,
-		LogLevel:   "debug",
-		MTU:        tunMTU,
-		UDPTimeout: 60 * time.Second,
-	})
-	tun2socks_engine.Start()
+	// 2. The tun2socks engine creates the wintun adapter itself, the gvisor
+	// stack, and forwards every captured flow into the engine's SOCKS5
+	// inbound — the same proxy Clash Verge's kernel forwards into.
+	//
+	// The stack is started AT MOST ONCE per process. tun2socks v2 keeps its
+	// device/stack in package globals: Stop() closes them but leaves the
+	// globals set, and a later Start() runs against that torn-down state —
+	// on failure it calls log.Fatalf, which exits the process. Turning TUN
+	// off and on again would therefore kill the GUI (silently: the fatal
+	// line goes to a console that dies with the process). Keeping the stack
+	// alive and treating "TUN off" as "remove the capture point" (the
+	// adapter address and the takeover routes) is what Clash does too, and
+	// it makes toggling instant instead of a full adapter rebuild.
+	if !m.stackUp.Load() {
+		tun2socks_engine.Insert(&tun2socks_engine.Key{
+			Device:     "tun://" + tunAdapterName,
+			Proxy:      "socks5://" + params.Socks5Addr,
+			LogLevel:   "debug",
+			MTU:        tunMTU,
+			UDPTimeout: 60 * time.Second,
+		})
+		tun2socks_engine.Start()
+		m.stackUp.Store(true)
+		m.stackProxy = params.Socks5Addr
+	} else if m.stackProxy != params.Socks5Addr {
+		// The captured flows must reach the engine's inbound on the address
+		// it listens on now. Re-pointing the stack means restarting it,
+		// which cannot be done safely in-process, so refuse instead of
+		// risking an exit or a silently dead pipeline.
+		return fmt.Errorf("TUN 引擎已在运行且上游 SOCKS5 端口已改变 (%s → %s)；请退出应用后重新开启 TUN",
+			m.stackProxy, params.Socks5Addr)
+	}
 
 	// 3. The adapter now exists: grab its LUID for the routing config.
-	// OpenAdapter keeps a second handle open; NEVER close it while the
-	// engine runs (WintunCloseAdapter removes the adapter instance). The
-	// leaked handle is released at process exit, after which the SwDevice
-	// — bound to this process — is removed too, self-healing leftovers.
-	adapterDev, err := wintun.OpenAdapter(tunAdapterName)
-	if err != nil {
-		m.teardownLocked()
-		return fmt.Errorf("open TUN adapter: %w", err)
+	// OpenAdapter keeps a second handle open for the lifetime of the
+	// process; NEVER close it (WintunCloseAdapter removes the adapter
+	// instance, and the next enable would have nothing to route into). It is
+	// released only when the app exits, after which the process-bound
+	// SwDevice is removed too, self-healing leftovers.
+	adapterDev := m.openHandle
+	if adapterDev == nil {
+		opened, oerr := openAdapterRetry(tunAdapterName, 5*time.Second)
+		if oerr != nil {
+			m.teardownLocked()
+			return fmt.Errorf("open TUN adapter: %w", oerr)
+		}
+		adapterDev = opened
+		m.openHandle = adapterDev
 	}
-	m.openHandle = adapterDev
 	luid := adapterDev.LUID()
 	tunLUID := wgwinipcfg.LUID(luid)
 	m.luid = tunLUID
@@ -289,6 +412,9 @@ func (m *tunManager) enable(params TunParams) (err error) {
 	} else if len(servers) == 0 {
 		loggo.Warn("[TUN] TUN adapter has no IPv4 DNS server: system lookups will bypass the hijack")
 	}
+	// Undo any take-over a previous run left behind (crash, power loss)
+	// before installing this run's, so the journal holds the real originals.
+	recoverDNSState()
 	m.overridePhysicalDNS(tunLUID)
 
 	// 9. Pin the engine's own dials (direct relays, DNS upstreams,
@@ -309,17 +435,30 @@ func (m *tunManager) enable(params TunParams) (err error) {
 	// 10. /32 exceptions for the proxy's own upstream servers: the SPP
 	// library dials from code where no socket option can be injected, so
 	// those flows are kept off the TUN at the routing layer.
+	//
+	// An "already exists" answer is not success: it means a previous run (or
+	// another adapter now gone) left a route for this prefix, and if it points
+	// at a dead interface the proxy's own tunnel would be black-holed. Replace
+	// it so the route is this run's — and therefore gets removed on teardown.
 	for _, ipStr := range params.UpstreamIPs {
 		ip := netip.MustParseAddr(ipStr)
 		prefix := netip.PrefixFrom(ip, ip.BitLen())
 		if err := m.physLUID.AddRoute(prefix, m.physGw, 1); err != nil {
-			loggo.Warn("[TUN] upstream /32 route %s via %s: %v", prefix, m.physGw, err)
-			continue
+			// Delete is best effort: the stale route may live on an
+			// interface that no longer exists.
+			_ = m.physLUID.DeleteRoute(prefix, m.physGw)
+			if derr := m.physLUID.AddRoute(prefix, m.physGw, 1); derr != nil {
+				loggo.Warn("[TUN] upstream /32 route %s via %s: %v (after replacing a stale route: %v)",
+					prefix, m.physGw, derr, err)
+				continue
+			}
+			loggo.Info("[TUN] upstream /32 route %s replaced a stale entry", prefix)
 		}
 		m.upstreamRT = append(m.upstreamRT, prefix)
 	}
 
-	m.active = true
+	m.active.Store(true)
+	m.bringingUp.Store(false)
 	loggo.Info("[TUN] adapter %s up (%s/30, MTU %d); physical iface #%d via %s; upstream exceptions: %d",
 		tunAdapterName, tunIPv4, tunMTU, m.physIfIdx, m.physGw, len(m.upstreamRT))
 	m.startWatchdog(params)
@@ -327,9 +466,14 @@ func (m *tunManager) enable(params TunParams) (err error) {
 }
 
 func (m *tunManager) disable() error {
-	m.mu.Lock()
+	if !m.lockOrForce("disable") {
+		// enable() (or a previous teardown) is stuck holding the lock. The
+		// only way to get the user's network back is the lock-free path.
+		m.forceTeardown("state lock unavailable during disable")
+		return nil
+	}
 	defer m.mu.Unlock()
-	if !m.active {
+	if !m.active.Load() {
 		return nil
 	}
 	m.teardownLocked()
@@ -369,22 +513,92 @@ func (m *tunManager) teardownLocked() {
 	}
 	m.upstreamRT = nil
 
-	// 2. Stop the engine: closes the gvisor stack and the adapter handle
-	// (which removes the adapter instance — belt and suspenders after the
-	// explicit flush above).
-	tun2socks_engine.Stop()
-
-	// 3. Drop our own adapter reference (the engine's close already
-	// removed the adapter; this close is a harmless double-remove).
-	if m.openHandle != nil {
-		_ = m.openHandle.Close()
-		m.openHandle = nil
-	}
-	m.active = false
+	// 2. The tun2socks stack and our adapter handle stay up on purpose: the
+	// library is single-shot per process (see enable), and with no address
+	// and no route on the adapter it captures nothing, so the machine is
+	// back on its own default route. The next enable reuses both, which is
+	// also why toggling is fast.
+	m.active.Store(false)
 }
 
-// dnsClientPolicyKey is where Windows keeps the resolver policies Clash and
-// sing-box flip while a TUN is up.
+// stopStack shuts tun2socks down for good. Only valid on the way out of the
+// process: the library cannot be started again afterwards.
+func (m *tunManager) stopStack() {
+	if !m.stackUp.CompareAndSwap(true, false) {
+		return
+	}
+	if m.stopMu.TryLock() {
+		tun2socks_engine.Stop()
+		m.stopMu.Unlock()
+	}
+}
+
+// forceTeardown unwinds the TUN state WITHOUT taking m.mu.
+//
+// It is the last line of defence: enable() holds mu for the whole bring-up,
+// so if a wintun/tun2socks call deadlocks inside it, both the pipeline
+// watchdog's rollback and a user toggle would block on that lock forever —
+// leaving the machine routed into a pipeline that never answers. Everything
+// here reads only atomics or re-discovers state from the OS, and every step
+// is best effort, so it makes progress (and gives the network back) even in
+// that state.
+func (m *tunManager) forceTeardown(reason string) {
+	if m.stopped.Swap(true) && !m.active.Load() && !m.bringingUp.Load() {
+		return // already unwound and nothing was up
+	}
+	m.hung.Store(true)
+	loggo.Error("[TUN] FORCED teardown: %s", reason)
+
+	// 1. Routing state first: find our adapter by name (the LUID may never
+	// have been stored if the bring-up died early) and drop its takeover
+	// routes, address and resolver. With no /1 route left, traffic falls
+	// back to the physical default route even if the adapter lingers.
+	family := wgwinipcfg.AddressFamily(windows.AF_INET)
+	if luid, ok := luidByName(tunAdapterName); ok {
+		_ = luid.FlushRoutes(family)
+		_ = luid.FlushIPAddresses(family)
+		_ = luid.FlushDNS(family)
+	}
+	// 2. Resolvers back on every interface we redirected, and the
+	// multi-homed policy released, before anything else can fail.
+	m.restorePhysicalDNS()
+	if err := setSmartResolutionDisabled(false); err != nil {
+		loggo.Warn("[TUN] forced teardown: restore smart name resolution: %v", err)
+	}
+	_, _ = exec.Command("ipconfig", "/flushdns").CombinedOutput()
+
+	// 3. The tun2socks stack is deliberately left running: with the adapter's
+	// address and routes gone it captures nothing, and stopping it would be
+	// both unnecessary and unsafe (single-shot library). Everything that can
+	// block is above; this path never waits on the stack.
+
+	m.active.Store(false)
+	m.bringingUp.Store(false)
+
+	// 4. Tell the UI why the adapter vanished so the user is not left with a
+	// silent "TUN on" indicator and no connectivity.
+	if fn, ok := m.rollbackFn.Load().(func(string)); ok && fn != nil {
+		go fn("TUN 已强制回滚: " + reason)
+	}
+}
+
+// luidByName resolves an adapter's LUID from its friendly name. Used by the
+// forced teardown, which must not depend on state the bring-up may never
+// have recorded.
+func luidByName(name string) (wgwinipcfg.LUID, bool) {
+	adapters, err := wgwinipcfg.GetAdaptersAddresses(windows.AF_INET, wgwinipcfg.GAAFlagIncludeAll)
+	if err != nil {
+		loggo.Warn("[TUN] enumerate adapters: %v", err)
+		return 0, false
+	}
+	for _, a := range adapters {
+		if a.FriendlyName() == name {
+			return a.LUID, true
+		}
+	}
+	return 0, false
+}
+
 const dnsClientPolicyKey = `SOFTWARE\Policies\Microsoft\Windows NT\DNSClient`
 
 // setSmartResolutionDisabled turns Windows' multi-homed name resolution off
@@ -434,6 +648,7 @@ func (m *tunManager) overridePhysicalDNS(tunLUID wgwinipcfg.LUID) {
 	}
 	target := netip.MustParseAddr(tunProbeDNS)
 	family := wgwinipcfg.AddressFamily(windows.AF_INET)
+	var backup []dnsOverride
 	for i := range rows {
 		row := &rows[i]
 		// Loopback (index 1) and our own adapter keep their settings.
@@ -444,6 +659,7 @@ func (m *tunManager) overridePhysicalDNS(tunLUID wgwinipcfg.LUID) {
 		if derr != nil {
 			continue
 		}
+		alias := tunAliasByLUID(row.InterfaceLUID)
 		if len(prev) == 1 && prev[0] == target {
 			continue // already pointed here by an earlier run
 		}
@@ -451,19 +667,46 @@ func (m *tunManager) overridePhysicalDNS(tunLUID wgwinipcfg.LUID) {
 			loggo.Warn("[TUN] point interface %d at %s: %v", row.InterfaceIndex, tunProbeDNS, serr)
 			continue
 		}
-		m.dnsBackup = append(m.dnsBackup, dnsOverride{luid: row.InterfaceLUID, servers: prev})
+		backup = append(backup, dnsOverride{luid: row.InterfaceLUID, alias: alias, servers: prev})
 	}
-	loggo.Info("[TUN] DNS take-over: %d interface(s) now resolve through %s", len(m.dnsBackup), tunProbeDNS)
+	// Journal first, then apply: a crash between the two leaves a file the
+	// next bring-up repairs, while a crash after both leaves the resolvers
+	// recorded. Publishing comes before the take-over is reported so a forced
+	// teardown racing this point still sees the list it has to put back.
+	entries := make([]tunStateEntry, 0, len(backup))
+	for _, b := range backup {
+		e := tunStateEntry{Alias: b.alias}
+		for _, srv := range b.servers {
+			e.Servers = append(e.Servers, srv.String())
+		}
+		entries = append(entries, e)
+	}
+	saveDNSState(entries)
+	m.dnsBackup.Store(backup)
+	loggo.Info("[TUN] DNS take-over: %d interface(s) now resolve through %s", len(backup), tunProbeDNS)
+}
+
+// dnsOverrideSnapshot returns the resolver lists replaced by the take-over.
+func (m *tunManager) dnsOverrideSnapshot() []dnsOverride {
+	if v := m.dnsBackup.Load(); v != nil {
+		if list, ok := v.([]dnsOverride); ok {
+			return list
+		}
+	}
+	return nil
 }
 
 // restorePhysicalDNS puts every resolver list saved by overridePhysicalDNS
-// back. Best effort: each interface is restored independently.
+// back. Best effort: each interface is restored independently, and the saved
+// list is cleared first so a concurrent path cannot restore twice.
 func (m *tunManager) restorePhysicalDNS() {
-	if len(m.dnsBackup) == 0 {
+	saved := m.dnsOverrideSnapshot()
+	if len(saved) == 0 {
 		return
 	}
+	m.dnsBackup.Store([]dnsOverride(nil))
 	family := wgwinipcfg.AddressFamily(windows.AF_INET)
-	for _, b := range m.dnsBackup {
+	for _, b := range saved {
 		servers := b.servers
 		if len(servers) == 0 {
 			// The interface had no explicit servers (DHCP-provided): an
@@ -474,8 +717,8 @@ func (m *tunManager) restorePhysicalDNS() {
 			loggo.Warn("[TUN] restore interface DNS: %v", err)
 		}
 	}
-	loggo.Info("[TUN] DNS take-over released: %d interface(s) restored", len(m.dnsBackup))
-	m.dnsBackup = nil
+	clearDNSState()
+	loggo.Info("[TUN] DNS take-over released: %d interface(s) restored", len(saved))
 }
 
 // physicalDefaultRoute finds the current default IPv4 route (0.0.0.0/0)
@@ -507,12 +750,6 @@ func physicalDefaultRoute(exclude wgwinipcfg.LUID) (uint32, netip.Addr, error) {
 		return 0, netip.Addr{}, errors.New("no IPv4 default route found")
 	}
 	return bestRow.InterfaceIndex, bestRow.NextHop.Addr(), nil
-}
-
-// guidString renders a windows.GUID in the braced form the device URL
-// query expects.
-func guidString(g windows.GUID) string {
-	return fmt.Sprintf("{%s}", g.String())
 }
 
 // startWatchdog guards the user's network against a dead pipeline: if the
@@ -563,7 +800,17 @@ func (m *tunManager) startWatchdog(params TunParams) {
 		}
 		loggo.Info("[TUN] watchdog: pipeline verified, probing every 15s")
 
+		// The international path is monitored separately: a broken upstream
+		// means "外网不通" while the machine is still online, which is the
+		// failure users actually report. It is reported, never rolled back —
+		// tearing the adapter down would not bring the upstream back, and it
+		// would take the working domestic path with it.
+		if err := proxiedProbe(); err != nil {
+			loggo.Warn("[TUN] watchdog: proxied path not working yet: %v", err)
+		}
+
 		failures := 0
+		proxyFailures := 0
 		for {
 			time.Sleep(15 * time.Second)
 			if m.stopped.Load() {
@@ -577,6 +824,14 @@ func (m *tunManager) startWatchdog(params TunParams) {
 				}
 			} else {
 				failures = 0
+				if err := proxiedProbe(); err != nil {
+					proxyFailures++
+					if proxyFailures%4 == 1 {
+						loggo.Warn("[TUN] proxied path failing (domestic still fine): %v", err)
+					}
+				} else {
+					proxyFailures = 0
+				}
 			}
 		}
 	}()
@@ -592,6 +847,34 @@ func pipelineProbe() error {
 		return err
 	}
 	_ = resp.Body.Close()
+	return nil
+}
+
+// proxiedProbe walks the foreign path: resolve a proxied name (which must
+// come back from the fake-ip pool, proving the DNS hijack is in effect) and
+// connect to the fake address, which the engine translates back to the domain
+// and forwards to the upstream. No HTTP: the TLS payload is not what is under
+// test, and a 443 connect is the cheapest proof the relay works.
+func proxiedProbe() error {
+	ips, err := net.LookupIP(probeProxyHost)
+	if err != nil {
+		return fmt.Errorf("resolve %s: %w", probeProxyHost, err)
+	}
+	var fake net.IP
+	for _, ip := range ips {
+		if v4 := ip.To4(); v4 != nil && fakeIPNet.Contains(v4) {
+			fake = v4
+			break
+		}
+	}
+	if fake == nil {
+		return fmt.Errorf("%s did not resolve to a fake address (%v): DNS hijack not in effect", probeProxyHost, ips)
+	}
+	conn, err := net.DialTimeout("tcp", net.JoinHostPort(fake.String(), "443"), 6*time.Second)
+	if err != nil {
+		return fmt.Errorf("connect to fake %s: %w", fake, err)
+	}
+	_ = conn.Close()
 	return nil
 }
 
@@ -629,4 +912,156 @@ func ensureWintunDLL() error {
 func wintunDLLPresent(path string) bool {
 	st, err := os.Stat(path)
 	return err == nil && st.Size() == int64(len(wintunDLL))
+}
+
+// openAdapterRetry opens the wintun adapter, retrying briefly: right after the
+// engine creates it the device node can take a moment to become openable.
+func openAdapterRetry(name string, timeout time.Duration) (*wintun.Adapter, error) {
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for {
+		a, err := wintun.OpenAdapter(name)
+		if err == nil {
+			return a, nil
+		}
+		lastErr = err
+		if time.Now().After(deadline) {
+			return nil, lastErr
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// shutdown releases the TUN for good: routes and address come off, then the
+// tun2socks stack (and with it the adapter) is stopped. Only App.Shutdown
+// calls this — the stack cannot be started again afterwards.
+func (m *tunManager) shutdown() {
+	if m.lockOrForce("shutdown") {
+		if m.active.Load() {
+			m.teardownLocked()
+		}
+		m.mu.Unlock()
+	} else {
+		m.forceTeardown("shutdown with the state lock held")
+	}
+	m.stopStack()
+	if m.openHandle != nil {
+		_ = m.openHandle.Close()
+		m.openHandle = nil
+	}
+}
+
+// tunStateName is the crash-recovery journal for the DNS take-over. It is
+// written BEFORE an interface's resolvers are replaced and removed after they
+// are put back; a leftover file therefore means the previous run died while
+// the take-over was active and its original servers still have to be
+// restored. Without it, a crash leaves every adapter pointing at our resolver
+// and nobody remembers what DHCP handed out.
+const tunStateName = "tun-dns-state.json"
+
+type tunStateEntry struct {
+	Alias   string   `json:"alias"`
+	Servers []string `json:"servers"`
+}
+
+type tunState struct {
+	DNS []tunStateEntry `json:"dns"`
+}
+
+func tunStatePath() string { return filepath.Join(DataDir(), tunStateName) }
+
+// saveDNSState persists the resolver lists the take-over is about to replace.
+func saveDNSState(entries []tunStateEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	data, err := json.MarshalIndent(tunState{DNS: entries}, "", "  ")
+	if err != nil {
+		loggo.Warn("[TUN] encode DNS recovery state: %v", err)
+		return
+	}
+	if err := os.WriteFile(tunStatePath(), data, 0o644); err != nil {
+		loggo.Warn("[TUN] write DNS recovery state: %v", err)
+	}
+}
+
+// clearDNSState drops the journal once the resolvers are back.
+func clearDNSState() {
+	if err := os.Remove(tunStatePath()); err != nil && !os.IsNotExist(err) {
+		loggo.Warn("[TUN] remove DNS recovery state: %v", err)
+	}
+}
+
+// recoverDNSState undoes a take-over left behind by a crashed run. It runs at
+// the start of enable(), before this run installs its own (and journals its
+// own) resolvers, so the aliases and server lists are the previous run's
+// originals rather than our own 223.5.5.5.
+func recoverDNSState() {
+	data, err := os.ReadFile(tunStatePath())
+	if err != nil {
+		return
+	}
+	var st tunState
+	if err := json.Unmarshal(data, &st); err != nil {
+		loggo.Warn("[TUN] parse DNS recovery state: %v", err)
+		clearDNSState()
+		return
+	}
+	family := wgwinipcfg.AddressFamily(windows.AF_INET)
+	restored := 0
+	for _, e := range st.DNS {
+		luid, ok := luidByFriendlyName(e.Alias)
+		if !ok {
+			continue
+		}
+		var servers []netip.Addr
+		for _, s := range e.Servers {
+			if addr, err := netip.ParseAddr(s); err == nil {
+				servers = append(servers, addr)
+			}
+		}
+		if len(servers) == 0 {
+			servers = nil // DHCP-provided originally
+		}
+		if err := luid.SetDNS(family, servers, nil); err != nil {
+			loggo.Warn("[TUN] recover resolvers on %s: %v", e.Alias, err)
+			continue
+		}
+		restored++
+	}
+	clearDNSState()
+	if restored > 0 {
+		loggo.Info("[TUN] recovered %d adapter(s) from a previous run that died with the DNS take-over active", restored)
+		_, _ = exec.Command("ipconfig", "/flushdns").CombinedOutput()
+	}
+}
+
+// luidByFriendlyName resolves an adapter LUID from the alias stored in the
+// recovery journal.
+func luidByFriendlyName(alias string) (wgwinipcfg.LUID, bool) {
+	adapters, err := wgwinipcfg.GetAdaptersAddresses(windows.AF_INET, wgwinipcfg.GAAFlagIncludeAll)
+	if err != nil {
+		return 0, false
+	}
+	for _, a := range adapters {
+		if a.FriendlyName() == alias {
+			return a.LUID, true
+		}
+	}
+	return 0, false
+}
+
+// tunAliasByLUID returns an interface's friendly name (empty when unknown),
+// used to key the crash-recovery journal by a name that survives reboots.
+func tunAliasByLUID(luid wgwinipcfg.LUID) string {
+	adapters, err := wgwinipcfg.GetAdaptersAddresses(windows.AF_INET, wgwinipcfg.GAAFlagIncludeAll)
+	if err != nil {
+		return ""
+	}
+	for _, a := range adapters {
+		if a.LUID == luid {
+			return a.FriendlyName()
+		}
+	}
+	return ""
 }

@@ -308,6 +308,38 @@ Archives are written to `pack/`:
 
 Each archive contains `yellowsocks-cli` and `config.example.yaml`.
 
+## TUN mode (Windows)
+
+The Windows client can capture all system traffic through a Wintun adapter
+(tun2socks → the engine's own SOCKS5 inbound), so games, launchers and CLI
+tools that ignore the system proxy are proxied too.
+
+- **Requires administrator rights.** Toggling it on from an unelevated window
+  prompts for UAC once; the adapter cannot be created otherwise.
+- **Foreign traffic goes through name, not address.** Proxied domains get an
+  address from the fake-ip pool (`198.18.0.0/15`); when the client connects to
+  it, the engine recovers the original domain and forwards *that* to the
+  upstream SOCKS5 (`spp_proto: socks5`, `spp_server: <host:port>`), which
+  resolves it remotely. This is what makes DNS pollution and IP blocking
+  irrelevant — the same approach Clash Verge takes.
+- **Domestic traffic stays direct** and keeps using the real resolver.
+
+Safety nets, in the order they engage:
+
+| Layer | What it covers |
+| --- | --- |
+| Pipeline probe | An HTTPS fetch through the full capture path right after bring-up, then every 15s. Three consecutive failures roll the adapter back so the machine returns to its own default route. |
+| International probe | Resolves a proxied name (must be a fake-ip) and connects to it. Failures are reported, never rolled back: a dead upstream must not take the working domestic path down with it. |
+| Bring-up guard | If `enable` has not finished within 60s (hung wintun call, wedged route transaction), an independent goroutine unwinds the routing state. |
+| Lock-free forced teardown | A stuck bring-up holds the state lock; disabling would block forever on it. Disable, the guard and shutdown all fall back to a path that never takes that lock and re-discovers the adapter from the OS. |
+| DNS take-over journal | The resolver lists replaced by the take-over are written to `tun-dns-state.json` before they are touched and deleted after they are restored; a leftover file (crash, power loss) is replayed by the next bring-up. |
+| Process-bound adapter | The adapter is a SwDevice owned by the process, so it — and its routes — disappear with a hard crash even if none of the above ran. |
+
+`windows/tuntest` is the privileged acceptance driver: `yellowsocks-tuntest.exe
+-auto` brings the adapter up, walks DNS → TCP → HTTPS for a domestic and a
+proxied host, traces the fake-ip handshake with pktmon, and tears everything
+down again, writing a full report to `tuntest-out.log`.
+
 ## Repository Layout
 
 - `cli/` — CLI entry point (`yellowsocks-cli`)
