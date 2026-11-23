@@ -35,12 +35,18 @@ var tunWatchdogSoak time.Duration
 // SetTunWatchdogSoak overrides the watchdog soak window.
 func SetTunWatchdogSoak(d time.Duration) { tunWatchdogSoak = d }
 
+// The self-probe rollback in startWatchdog is deliberately not switchable:
+// a TUN that is up while the pipeline is dead black-holes the whole machine,
+// so there must be no way to leave it running unattended.
+
 // Tun constants shared by the platform implementations and the GUI wiring.
 const (
 	tunAdapterName = "YellowSocks"
-	tunIPv4        = "198.18.0.1"        // adapter address (host route /32)
-	tunDNSv4       = "198.18.0.2"        // gateway peer (route nexthop)
-	tunProbeDNS    = "223.5.5.5"         // adapter DNS (AliDNS, reachable via the pipeline)
-	tunGatewayMAC4 = "02-50-59-31-38-32" // static neighbor MAC for the gateway
-	tunMTU         = 1500
+	// tunIPv4/30 gives the adapter a connected subnet whose peer
+	// (198.18.0.2) documents the gateway sing-tun uses. Takeover routes are
+	// ON-LINK (NextHop 0.0.0.0) because wintun cannot resolve neighbours.
+	tunIPv4     = "198.18.0.1"
+	tunGateway4 = "198.18.0.2" // /30 peer used as the takeover next hop
+	tunProbeDNS = "223.5.5.5"  // adapter DNS (AliDNS); the :53 datagram is hijacked in-process
+	tunMTU      = 1500
 )

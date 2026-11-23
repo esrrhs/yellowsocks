@@ -71,10 +71,32 @@ func (s *Server) EnableTUN(fakeIPRange string) error {
 	s.fakeIPNext = 0
 	s.fakeIPMu.Unlock()
 
+	// Drop every answer learned before the takeover. The cache is consulted
+	// before the fake-ip branch, so a proxied name resolved (or polluted)
+	// earlier in the process lifetime would keep handing out its real IP for
+	// the whole TTL — the connection then goes to a blocked address instead
+	// of a fake one and never reaches the upstream by name.
+	cacheDropped := 0
+	s.cache.Range(func(k, _ any) bool {
+		s.cache.Delete(k)
+		cacheDropped++
+		return true
+	})
+	mapDropped := 0
+	s.ipToDomain.Range(func(k, _ any) bool {
+		s.ipToDomain.Delete(k)
+		mapDropped++
+		return true
+	})
+	s.domainToFakeIP.Range(func(k, _ any) bool {
+		s.domainToFakeIP.Delete(k)
+		return true
+	})
+
 	s.fakeIPEnabled.Store(true)
 	s.tunMode.Store(true)
-	loggo.Info("[DNS] TUN mode on: in-process :53 hijack + fake-ip pool %s (%d usable addresses)",
-		fakeIPRange, count-fakeIPReservedLow)
+	loggo.Info("[DNS] TUN mode on: in-process :53 hijack + fake-ip pool %s (%d usable addresses); dropped %d cached answers and %d IP mappings",
+		fakeIPRange, count-fakeIPReservedLow, cacheDropped, mapDropped)
 	return nil
 }
 

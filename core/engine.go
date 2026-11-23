@@ -117,10 +117,10 @@ func NewEngine(cfg EngineConfig) *Engine {
 		cfg.DNSListen = "127.0.0.1:53"
 	}
 	if cfg.DirectDNS == "" {
-		cfg.DirectDNS = "1.1.1.1:53"
+		cfg.DirectDNS = "223.5.5.5:53"
 	}
 	if cfg.RemoteDoH == "" {
-		cfg.RemoteDoH = "https://1.1.1.1/dns-query"
+		cfg.RemoteDoH = "https://223.5.5.5/dns-query"
 	}
 	if cfg.SPPProto == "" {
 		cfg.SPPProto = "tcp"

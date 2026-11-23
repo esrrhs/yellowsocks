@@ -87,6 +87,13 @@ type App struct {
 	tunErr         string // last TUN failure, surfaced in the UI
 	appliedPorts   string // ports registered with the OS, for stale cleanup
 
+	// tunApplyMu serializes bring-up and teardown of the adapter. Two paths
+	// race for it: StartEngine asynchronously restores the persisted TUN
+	// intent, while the user (or a test driver) can toggle the switch at the
+	// same instant. Unsynchronized, the loser's teardown lands right after
+	// the winner's bring-up and the adapter flashes up and vanishes.
+	tunApplyMu sync.Mutex
+
 	// frontendEvents enables Wails runtime calls (EventsEmit). The Wails
 	// shells turn it on; the test driver leaves it off — the runtime exits
 	// the process on any call with a non-lifecycle context.
@@ -168,7 +175,9 @@ func (a *App) Shutdown(ctx context.Context) {
 	running := a.running
 	active := a.sysProxyActive
 	a.mu.Unlock()
+	a.tunApplyMu.Lock()
 	_ = tunDisable()
+	a.tunApplyMu.Unlock()
 	if running {
 		_ = a.StopEngine()
 	}
@@ -221,8 +230,10 @@ func (a *App) StartEngine() error {
 func (a *App) StopEngine() error {
 	// The TUN stack forwards into the engine inbound and holds references
 	// to its addresses: always bring it down before the engine.
+	a.tunApplyMu.Lock()
 	_ = tunDisable()
 	a.disableTUNDNS()
+	a.tunApplyMu.Unlock()
 	a.mu.Lock()
 	a.tunActive = false
 	defer a.mu.Unlock()
@@ -291,8 +302,10 @@ func (a *App) SetTunMode(on bool) error {
 	}
 
 	if !on {
+		a.tunApplyMu.Lock()
 		err := tunDisable()
 		a.disableTUNDNS()
+		a.tunApplyMu.Unlock()
 		a.mu.Lock()
 		a.tunActive = false
 		a.tunErr = ""
@@ -315,6 +328,8 @@ func (a *App) SetTunMode(on bool) error {
 // applyTun brings the virtual adapter up. Must not hold a.mu: the elevated
 // relaunch quits the process and tunEnable has its own lock.
 func (a *App) applyTun() error {
+	a.tunApplyMu.Lock()
+	defer a.tunApplyMu.Unlock()
 	if tunIsActive() {
 		return nil
 	}

@@ -103,7 +103,7 @@ doh_listen: "127.0.0.1:8053"
 # tls_cert: "/etc/letsencrypt/live/example.com/fullchain.pem"
 # tls_key: "/etc/letsencrypt/live/example.com/privkey.pem"
 direct_dns: "114.114.114.114:53"
-doh_url: "https://1.1.1.1/dns-query"
+doh_url: "https://223.5.5.5/dns-query"
 
 # 分流：域名与网段直连，其余走 SPP
 # geoip_file: "GeoLite2-Country.mmdb"

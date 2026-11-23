@@ -116,10 +116,10 @@ func NewServer(cfg Config) (*Server, error) {
 		cfg.ListenAddr = "127.0.0.1:53"
 	}
 	if cfg.DoHURL == "" {
-		cfg.DoHURL = "https://1.1.1.1/dns-query"
+		cfg.DoHURL = "https://223.5.5.5/dns-query"
 	}
 	if cfg.DirectDNS == "" {
-		cfg.DirectDNS = "1.1.1.1:53"
+		cfg.DirectDNS = "223.5.5.5:53"
 	}
 	if cfg.DoTListenAddr != "" && (cfg.TLSCertFile == "" || cfg.TLSKeyFile == "") {
 		return nil, fmt.Errorf("dot_listen requires tls_cert and tls_key")

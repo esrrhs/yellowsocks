@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -19,6 +20,7 @@ import (
 	"github.com/esrrhs/yellowsocks/core/netdial"
 	tun2socks_engine "github.com/xjasonlyu/tun2socks/v2/engine"
 	"golang.org/x/sys/windows"
+	"golang.org/x/sys/windows/registry"
 	wintun "golang.zx2c4.com/wintun"
 	wgwinipcfg "golang.zx2c4.com/wireguard/windows/tunnel/winipcfg"
 )
@@ -56,6 +58,14 @@ type tunManager struct {
 	physLUID   wgwinipcfg.LUID
 	physGw     netip.Addr
 	upstreamRT []netip.Prefix // /32 routes for upstream servers on the physical adapter
+	dnsBackup  []dnsOverride  // interface DNS servers replaced for the take-over
+}
+
+// dnsOverride remembers one interface's resolver list so it can be put back
+// when the TUN goes down.
+type dnsOverride struct {
+	luid    wgwinipcfg.LUID
+	servers []netip.Addr
 }
 
 var manager = &tunManager{}
@@ -144,17 +154,25 @@ func (m *tunManager) enable(params TunParams) (err error) {
 		return fmt.Errorf("assign TUN address: %w", err)
 	}
 
-	// 5. Interface tuning (mirrors wireguard-windows / sing-tun):
-	// forwarding on, router discovery and DAD off (the address must be
-	// usable instantly, not sit tentative while traffic black-holes), fixed
-	// MTU, and an interface metric of 0 so the takeover routes win
-	// immediately.
+	// 5. Interface tuning (mirrors wireguard-windows / sing-tun): router
+	// discovery and DAD off (the address must be usable instantly, not sit
+	// tentative while traffic black-holes), fixed MTU, and an interface
+	// metric of 0 so the takeover routes win immediately.
+	//
+	// IP forwarding MUST stay off. With forwarding enabled tcpip.sys treats
+	// the machine as a router for packets arriving on this interface: an
+	// inbound SYN-ACK is not delivered to the local TCP stack, Windows emits
+	// an ICMP redirect ("198.18.0.1 to net 198.18.0.1") and resets the
+	// connection. pktmon shows the exact sequence — SYN, a correct
+	// SYN-ACK, ICMP redirect, RST — and tun2socks consequently reports
+	// "connection was refused" for every TCP forward while UDP (which has no
+	// handshake to lose) keeps working.
 	ipif, err := tunLUID.IPInterface(wgwinipcfg.AddressFamily(windows.AF_INET))
 	if err != nil {
 		m.teardownLocked()
 		return fmt.Errorf("read IP interface: %w", err)
 	}
-	ipif.ForwardingEnabled = true
+	ipif.ForwardingEnabled = false
 	ipif.RouterDiscoveryBehavior = wgwinipcfg.RouterDiscoveryDisabled
 	ipif.DadTransmits = 0
 	ipif.ManagedAddressConfigurationSupported = false
@@ -167,21 +185,26 @@ func (m *tunManager) enable(params TunParams) (err error) {
 		return fmt.Errorf("apply interface tuning: %w", err)
 	}
 
-	// 6. Permanent v4 neighbor entry for the gateway peer: wintun is a pure
-	// L3 adapter (NdisMediumIP, no ARP support), so without this entry
-	// Windows queues every unicast packet behind a neighbor probe that
-	// never resolves and the TUN silently black-holes all traffic.
-	gateway := netip.MustParseAddr(tunDNSv4) // 198.18.0.2 peer
-	ps := fmt.Sprintf("New-NetNeighbor -InterfaceAlias '%s' -IPAddress %s -LinkLayerAddress %s -State Permanent -PolicyStore ActiveStore -ErrorAction Stop",
-		tunAdapterName, tunDNSv4, tunGatewayMAC4)
-	if output, nerr := exec.Command("powershell", "-NoProfile", "-Command", ps).CombinedOutput(); nerr != nil {
-		loggo.Warn("[TUN] permanent neighbor %s: %v: %s", tunDNSv4, nerr, string(output))
-	}
-
-	// 7. Default-route takeover via two half-routes through the gateway
-	// peer (sing-tun's Windows configuration: full 0.0.0.0/0 equivalent
-	// split into two /1s so the physical default route stays in place as a
-	// fallback when the TUN goes down).
+	// 6. Default-route takeover as two half-routes (0.0.0.0/1 + 128.0.0.0/1)
+	// so the physical default route stays in place as the fallback when the
+	// TUN goes down.
+	//
+	// NextHop is the zero address = ON-LINK, which is mandatory for wintun:
+	// it is a pure L3 adapter (NdisMediumIP) that cannot resolve neighbours
+	// (New-NetNeighbor -LinkLayerAddress fails with "does not support
+	// setting LinkLayerAddress").
+	//
+	// On-link routes (NextHop 0.0.0.0) are NOT usable here either: they turn
+	// every destination into a directly-connected neighbour, Windows starts
+	// neighbour unreachability detection for each of them, and since an L3
+	// adapter can never answer, popular destinations end up "Unreachable" in
+	// the neighbour table — traffic then dies a few seconds after enable.
+	//
+	// The working combination is a gateway next hop plus a PERMANENT
+	// neighbour entry for that gateway that carries no link-layer address:
+	// Windows keeps the entry reachable, so it never probes, and the packets
+	// are handed to wintun, which needs no L2 address at all.
+	gateway := netip.MustParseAddr(tunGateway4)
 	halfs := []netip.Prefix{
 		netip.MustParsePrefix("0.0.0.0/1"),
 		netip.MustParsePrefix("128.0.0.0/1"),
@@ -197,6 +220,14 @@ func (m *tunManager) enable(params TunParams) (err error) {
 		}
 		return out
 	}
+	// Permanent gateway neighbour, best effort: Windows rejects the
+	// LinkLayerAddress form on this media type, but accepts the entry without
+	// one, which is all the stack needs to stop probing.
+	ps := fmt.Sprintf("New-NetNeighbor -InterfaceAlias '%s' -IPAddress %s -State Permanent -PolicyStore ActiveStore -ErrorAction Stop",
+		tunAdapterName, tunGateway4)
+	if output, nerr := exec.Command("powershell", "-NoProfile", "-Command", ps).CombinedOutput(); nerr != nil {
+		loggo.Warn("[TUN] permanent gateway neighbour %s: %v: %s", tunGateway4, nerr, string(output))
+	}
 	// SetRoutesForFamily would fail with ERROR_NOT_FOUND on a freshly
 	// created adapter (its internal flush finds no route rows yet): flush
 	// tolerantly, then plain-add the takeover routes.
@@ -206,11 +237,19 @@ func (m *tunManager) enable(params TunParams) (err error) {
 		return fmt.Errorf("add v4 routes: %w", err)
 	}
 
-	// 8. Adapter DNS: a real public DNS reachable through the pipeline.
-	// The engine forwards DNS queries like any UDP flow: TUN capture →
-	// SOCKS5 UDP relay → engine inbound → Decide(223.5.5.5) → direct dial
-	// (a CN IP) → real answer. The engine's smart DNS split applies to
-	// every resolver query system-wide.
+	// 7. Adapter DNS: the engine's in-process :53 hijack, so every resolver
+	// query on the machine is answered by the smart resolver and proxied
+	// domains receive a fake-ip from the pool.
+	//
+	// The address itself is irrelevant (the datagram is hijacked before it
+	// reaches the wire), but Windows only sends DNS to the adapter when the
+	// adapter owns a server entry, so one must be published. Do NOT call
+	// wgwinipcfg's LUID.FlushDNS here: it is implemented as
+	// SetDNS(family, nil, nil), which CLEARS the very servers just set —
+	// that silently left the adapter with an empty DNS list, Windows kept
+	// resolving through the physical NIC and every proxied name received a
+	// poisoned answer instead of a fake-ip. Resolver-cache invalidation is a
+	// separate concern and is done through ipconfig /flushdns below.
 	if err := tunLUID.SetDNS(
 		wgwinipcfg.AddressFamily(windows.AF_INET),
 		[]netip.Addr{netip.MustParseAddr(tunProbeDNS)}, []string{},
@@ -218,7 +257,39 @@ func (m *tunManager) enable(params TunParams) (err error) {
 		m.teardownLocked()
 		return fmt.Errorf("set TUN DNS: %w", err)
 	}
-	_ = tunLUID.FlushDNS(wgwinipcfg.AddressFamily(windows.AF_INET))
+	// The cache still holds answers learned before the takeover (polluted
+	// real IPs for proxied names): without this flush the first lookups of
+	// every domain return those stale records and skip fake-ip entirely.
+	if output, ferr := exec.Command("ipconfig", "/flushdns").CombinedOutput(); ferr != nil {
+		loggo.Warn("[TUN] flush resolver cache: %v: %s", ferr, string(output))
+	}
+	// Windows answers a lookup by asking EVERY interface's DNS servers in
+	// parallel and taking the first reply ("smart multi-homed name
+	// resolution"). The physical NIC's resolver answers a polluted record in
+	// milliseconds, so without turning that behaviour off the TUN's fake-ip
+	// answer loses the race and proxied names keep resolving to blocked real
+	// addresses. This is the same policy Clash/sing-box apply on Windows.
+	if err := setSmartResolutionDisabled(true); err != nil {
+		loggo.Warn("[TUN] disable smart name resolution: %v", err)
+	}
+	// The DNS Client service reads that policy at start, so it has to be
+	// restarted before the policy has any effect on lookups; flushing alone
+	// leaves the old behaviour (ask every adapter, first polluted answer
+	// wins) in place. Costs a fraction of a second of resolution during
+	// bring-up, which is invisible next to the UAC/adapter setup around it.
+	if output, rerr := exec.Command("powershell", "-NoProfile", "-Command",
+		"Restart-Service -Name dnscache -Force -ErrorAction Stop").CombinedOutput(); rerr != nil {
+		loggo.Warn("[TUN] restart DNS client to apply resolver policy: %v: %s", rerr, strings.TrimSpace(string(output)))
+	}
+	if output, ferr := exec.Command("ipconfig", "/flushdns").CombinedOutput(); ferr != nil {
+		loggo.Warn("[TUN] flush resolver cache after policy: %v: %s", ferr, string(output))
+	}
+	if servers, serr := tunLUID.DNS(); serr != nil {
+		loggo.Warn("[TUN] read back TUN DNS: %v", serr)
+	} else if len(servers) == 0 {
+		loggo.Warn("[TUN] TUN adapter has no IPv4 DNS server: system lookups will bypass the hijack")
+	}
+	m.overridePhysicalDNS(tunLUID)
 
 	// 9. Pin the engine's own dials (direct relays, DNS upstreams,
 	// upstream sockets) to the physical adapter: without the bind they
@@ -281,6 +352,16 @@ func (m *tunManager) teardownLocked() {
 		_ = m.luid.FlushDNS(family)
 		m.luid = 0
 	}
+	// Put the interfaces' own resolvers back before the policy is released:
+	// with the TUN gone the physical adapters must answer lookups again.
+	m.restorePhysicalDNS()
+	// Restore the resolver policy: with the TUN gone the physical adapters
+	// must answer lookups again, and a stale policy would keep them from
+	// being consulted.
+	if err := setSmartResolutionDisabled(false); err != nil {
+		loggo.Warn("[TUN] restore smart name resolution: %v", err)
+	}
+	_, _ = exec.Command("ipconfig", "/flushdns").CombinedOutput()
 	for _, prefix := range m.upstreamRT {
 		if err := m.physLUID.DeleteRoute(prefix, m.physGw); err != nil {
 			loggo.Warn("[TUN] delete upstream route %s: %v", prefix, err)
@@ -300,6 +381,101 @@ func (m *tunManager) teardownLocked() {
 		m.openHandle = nil
 	}
 	m.active = false
+}
+
+// dnsClientPolicyKey is where Windows keeps the resolver policies Clash and
+// sing-box flip while a TUN is up.
+const dnsClientPolicyKey = `SOFTWARE\Policies\Microsoft\Windows NT\DNSClient`
+
+// setSmartResolutionDisabled turns Windows' multi-homed name resolution off
+// (disabled=true) so lookups go to the TUN's hijacking resolver only, and
+// removes the policy again on teardown. Deleting the values restores the
+// default behaviour instead of pinning a policy the user never asked for.
+func setSmartResolutionDisabled(disabled bool) error {
+	key, _, err := registry.CreateKey(registry.LOCAL_MACHINE, dnsClientPolicyKey, registry.SET_VALUE)
+	if err != nil {
+		return err
+	}
+	defer key.Close()
+	for _, name := range []string{"DisableSmartNameResolution", "DisableSmartMultiHomedNameResolution"} {
+		if !disabled {
+			if derr := key.DeleteValue(name); derr != nil && !errors.Is(derr, registry.ErrNotExist) {
+				return derr
+			}
+			continue
+		}
+		if serr := key.SetDWordValue(name, 1); serr != nil {
+			return serr
+		}
+	}
+	return nil
+}
+
+// overridePhysicalDNS points every other IPv4 interface at the TUN's
+// resolver for the lifetime of the adapter.
+//
+// Publishing 223.5.5.5 on the TUN alone is not enough: Windows still answers
+// lookups from whichever interface it likes, and the physical NIC's resolver
+// returns a polluted record in single-digit milliseconds — long before the
+// TUN's fake-ip answer comes back. The proxy decision is made from the
+// domain, so a polluted REAL address both skips fake-ip and points the
+// connection at a blocked IP. Redirecting every interface's resolver at the
+// hijacked address makes the outcome independent of Windows' interface
+// choice.
+//
+// 223.5.5.5 is a public resolver, so even a missed restore (crash, power
+// loss) leaves the machine with working DNS; the normal path puts the
+// original servers back on teardown.
+func (m *tunManager) overridePhysicalDNS(tunLUID wgwinipcfg.LUID) {
+	rows, err := wgwinipcfg.GetIPInterfaceTable(wgwinipcfg.AddressFamily(windows.AF_INET))
+	if err != nil {
+		loggo.Warn("[TUN] enumerate interfaces for DNS take-over: %v", err)
+		return
+	}
+	target := netip.MustParseAddr(tunProbeDNS)
+	family := wgwinipcfg.AddressFamily(windows.AF_INET)
+	for i := range rows {
+		row := &rows[i]
+		// Loopback (index 1) and our own adapter keep their settings.
+		if row.InterfaceLUID == tunLUID || row.InterfaceIndex == 1 {
+			continue
+		}
+		prev, derr := row.InterfaceLUID.DNS()
+		if derr != nil {
+			continue
+		}
+		if len(prev) == 1 && prev[0] == target {
+			continue // already pointed here by an earlier run
+		}
+		if serr := row.InterfaceLUID.SetDNS(family, []netip.Addr{target}, nil); serr != nil {
+			loggo.Warn("[TUN] point interface %d at %s: %v", row.InterfaceIndex, tunProbeDNS, serr)
+			continue
+		}
+		m.dnsBackup = append(m.dnsBackup, dnsOverride{luid: row.InterfaceLUID, servers: prev})
+	}
+	loggo.Info("[TUN] DNS take-over: %d interface(s) now resolve through %s", len(m.dnsBackup), tunProbeDNS)
+}
+
+// restorePhysicalDNS puts every resolver list saved by overridePhysicalDNS
+// back. Best effort: each interface is restored independently.
+func (m *tunManager) restorePhysicalDNS() {
+	if len(m.dnsBackup) == 0 {
+		return
+	}
+	family := wgwinipcfg.AddressFamily(windows.AF_INET)
+	for _, b := range m.dnsBackup {
+		servers := b.servers
+		if len(servers) == 0 {
+			// The interface had no explicit servers (DHCP-provided): an
+			// empty list hands it back to DHCP.
+			servers = nil
+		}
+		if err := b.luid.SetDNS(family, servers, nil); err != nil {
+			loggo.Warn("[TUN] restore interface DNS: %v", err)
+		}
+	}
+	loggo.Info("[TUN] DNS take-over released: %d interface(s) restored", len(m.dnsBackup))
+	m.dnsBackup = nil
 }
 
 // physicalDefaultRoute finds the current default IPv4 route (0.0.0.0/0)
