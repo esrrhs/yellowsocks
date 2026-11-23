@@ -5,18 +5,13 @@ package guiapp
 import "testing"
 
 // TestLaunchAtLoginRoundTrip exercises the real HKCU Run key: enable, verify,
-// disable, verify. t.Cleanup removes the entry even on failure, so a crashed
-// run cannot leave an autostart pointing at the test binary.
+// disable, verify. The entry is restored rather than dropped on the way out —
+// these tests run against the live registry, where the value name also belongs
+// to the installed copy of the app, so a blind delete would quietly turn the
+// user's autostart off.
 func TestLaunchAtLoginRoundTrip(t *testing.T) {
-	t.Cleanup(func() { _ = disableLaunchAtLogin() })
-
-	if launchAtLoginEnabled() {
-		// A previous crashed run or a real installation already registered
-		// the value name; start from a clean slate.
-		if err := disableLaunchAtLogin(); err != nil {
-			t.Fatalf("pre-clean: %v", err)
-		}
-	}
+	prev := launchAtLoginRaw()
+	t.Cleanup(func() { restoreLaunchAtLoginRaw(prev) })
 
 	if err := enableLaunchAtLogin(); err != nil {
 		t.Fatalf("enable: %v", err)
@@ -43,14 +38,15 @@ func TestLaunchAtLoginRoundTrip(t *testing.T) {
 
 // TestSyncLaunchAtLogin checks the repair paths: a missing entry is
 // re-registered when the intent is on, and a foreign entry is cleared when
-// the intent is off.
+// the intent is off. Like the round trip, it leaves the registry as it found it.
 func TestSyncLaunchAtLogin(t *testing.T) {
-	t.Cleanup(func() { _ = disableLaunchAtLogin() })
+	prev := launchAtLoginRaw()
+	t.Cleanup(func() { restoreLaunchAtLoginRaw(prev) })
+
+	// Intent on, entry absent: sync registers it.
 	if err := disableLaunchAtLogin(); err != nil {
 		t.Fatalf("pre-clean: %v", err)
 	}
-
-	// Intent on, entry absent: sync registers it.
 	syncLaunchAtLogin(guiSettings{LaunchAtLogin: true})
 	if !launchAtLoginEnabled() {
 		t.Fatal("sync did not register with intent on")

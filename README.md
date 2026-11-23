@@ -340,6 +340,23 @@ Safety nets, in the order they engage:
 proxied host, traces the fake-ip handshake with pktmon, and tears everything
 down again, writing a full report to `tuntest-out.log`.
 
+### Building the Windows GUI
+
+```bash
+cd windows
+wails build -o yellowsocks-gui.exe -ldflags "-H windowsgui -s -w"
+```
+
+Use `wails build`, not `go build`: it is what embeds the icon
+(`build/windows/icon.ico`) and the manifest, so the exe, the taskbar button and
+alt-tab all get the real icon instead of the generic Go one. `-o` picks the
+output name, which is also how you rebuild while a copy of the app is running —
+the running exe is locked and cannot be overwritten in place.
+
+The result is portable: `yellowsocks-gui.exe`, `wintun.dll` and `config.yaml`
+next to each other are a complete installation, settings and logs land in the
+same directory.
+
 ## Repository Layout
 
 - `cli/` — CLI entry point (`yellowsocks-cli`)

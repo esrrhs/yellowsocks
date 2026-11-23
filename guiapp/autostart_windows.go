@@ -83,6 +83,23 @@ func disableLaunchAtLogin() error {
 	return nil
 }
 
+// restoreLaunchAtLoginRaw puts the key back to whatever it held before a caller
+// touched it. The tests exercise the real HKCU Run key, and a plain cleanup
+// would delete the entry of the installation that happens to be registered on
+// the machine running them, not just undo the test's own change.
+func restoreLaunchAtLoginRaw(prev string) {
+	if prev == "" {
+		_ = disableLaunchAtLogin()
+		return
+	}
+	key, _, err := registry.CreateKey(registry.CURRENT_USER, runKeyPath, registry.QUERY_VALUE|registry.SET_VALUE)
+	if err != nil {
+		return
+	}
+	defer key.Close()
+	_ = key.SetStringValue(runValueName, prev)
+}
+
 // syncLaunchAtLogin repairs the Run-key entry at app startup: re-register the
 // current exe path when it moved, and clear an entry left behind when the
 // persisted intent was turned off elsewhere.
