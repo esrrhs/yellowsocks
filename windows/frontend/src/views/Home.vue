@@ -31,6 +31,10 @@ const tunMode = ref(false);
 const lifetime = ref<stats.LifetimeStats | null>(null);
 
 let timer: number | undefined;
+// Unsubscribing matters: this view is re-mounted on every tab switch, and a
+// listener left behind would keep replacing the state of an unmounted view
+// (and pile up one more copy each time).
+let offStatus: (() => void) | undefined;
 
 async function refresh() {
   try {
@@ -66,7 +70,11 @@ async function toggleSystemProxy() {
   actionError.value = "";
   try {
     await SetSystemProxy(!status.value.system_proxy);
-    status.value.system_proxy = !status.value.system_proxy;
+    // Do NOT flip the local copy: the backend emits engine:status before this
+    // promise settles, and flipping on top of that delivered value undoes it
+    // (the chip then shows the state it had before the click, which reads as
+    // "the button does nothing"). Ask the backend what it actually applied.
+    status.value.system_proxy = await GetSystemProxy();
   } catch (e: any) {
     actionError.value = String(e?.message ?? e);
   }
@@ -76,7 +84,7 @@ async function toggleAutoStart() {
   actionError.value = "";
   try {
     await SetAutoStartCore(!autoStart.value);
-    autoStart.value = !autoStart.value;
+    autoStart.value = await GetAutoStartCore();
   } catch (e: any) {
     actionError.value = String(e?.message ?? e);
   }
@@ -86,7 +94,8 @@ async function toggleLaunchAtLogin() {
   actionError.value = "";
   try {
     await SetLaunchAtLogin(!launchAtLogin.value);
-    launchAtLogin.value = !launchAtLogin.value;
+    // The OS registry is the source of truth for this one.
+    launchAtLogin.value = await GetLaunchAtLogin();
   } catch (e: any) {
     actionError.value = String(e?.message ?? e);
   }
@@ -147,7 +156,7 @@ function fmtUptime(seconds?: number | null): string {
 }
 
 onMounted(async () => {
-  EventsOn("engine:status", (st: guiapp.EngineStatus) => {
+  offStatus = EventsOn("engine:status", (st: guiapp.EngineStatus) => {
     status.value = new guiapp.EngineStatus(st);
     tunMode.value = !!st.tun;
     if (!st.running) {
@@ -170,6 +179,8 @@ onMounted(async () => {
 
 onUnmounted(() => {
   if (timer) window.clearInterval(timer);
+  offStatus?.();
+  offStatus = undefined;
 });
 
 // Traffic chart: two SVG polylines (upload/download) normalised against the
