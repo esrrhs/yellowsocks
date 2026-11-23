@@ -968,7 +968,11 @@ type tunState struct {
 	DNS []tunStateEntry `json:"dns"`
 }
 
-func tunStatePath() string { return filepath.Join(DataDir(), tunStateName) }
+// tunStateDir is where the journal is written: the app's data directory in
+// production, a temp directory under test.
+var tunStateDir = DataDir
+
+func tunStatePath() string { return filepath.Join(tunStateDir(), tunStateName) }
 
 // saveDNSState persists the resolver lists the take-over is about to replace.
 func saveDNSState(entries []tunStateEntry) {
@@ -992,24 +996,39 @@ func clearDNSState() {
 	}
 }
 
-// recoverDNSState undoes a take-over left behind by a crashed run. It runs at
-// the start of enable(), before this run installs its own (and journals its
-// own) resolvers, so the aliases and server lists are the previous run's
-// originals rather than our own 223.5.5.5.
-func recoverDNSState() {
+// loadDNSState reads the journal left behind by a crashed run. A corrupt or
+// empty journal is dropped rather than kept: it can never be applied, and
+// leaving it in place would mean warning on every later bring-up.
+func loadDNSState() ([]tunStateEntry, bool) {
 	data, err := os.ReadFile(tunStatePath())
 	if err != nil {
-		return
+		return nil, false
 	}
 	var st tunState
 	if err := json.Unmarshal(data, &st); err != nil {
 		loggo.Warn("[TUN] parse DNS recovery state: %v", err)
 		clearDNSState()
+		return nil, false
+	}
+	if len(st.DNS) == 0 {
+		clearDNSState()
+		return nil, false
+	}
+	return st.DNS, true
+}
+
+// recoverDNSState undoes a take-over left behind by a crashed run. It runs at
+// the start of enable(), before this run installs its own (and journals its
+// own) resolvers, so the aliases and server lists are the previous run's
+// originals rather than our own 223.5.5.5.
+func recoverDNSState() {
+	entries, ok := loadDNSState()
+	if !ok {
 		return
 	}
 	family := wgwinipcfg.AddressFamily(windows.AF_INET)
 	restored := 0
-	for _, e := range st.DNS {
+	for _, e := range entries {
 		luid, ok := luidByFriendlyName(e.Alias)
 		if !ok {
 			continue
