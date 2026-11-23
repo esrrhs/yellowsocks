@@ -144,7 +144,7 @@ func main() {
 	// A bounded soak keeps the adapter up long enough to probe the pipeline,
 	// while the watchdog still rolls it back if nothing works — the lease
 	// below is the second, independent stop.
-	guiapp.SetTunWatchdogSoak(30 * time.Second)
+	guiapp.SetTunWatchdogSoak(120 * time.Second)
 	setTun(a, false)
 	armLease(tunLease)
 	setTun(a, true)
@@ -232,7 +232,7 @@ func main() {
 // pipeline watchdog already rolls back a dead pipeline within seconds, but it
 // only probes the network path: a driver that hangs, is killed, or is simply
 // forgotten must not leave the machine black-holed either.
-const tunLease = 45 * time.Second
+const tunLease = 120 * time.Second
 
 // leaseUntil holds the lease deadline as unix nanoseconds (0 = no lease).
 var leaseUntil atomic.Int64

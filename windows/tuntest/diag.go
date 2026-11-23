@@ -122,9 +122,10 @@ func probePipeline() {
 // tunStats renders the live TUN counters maintained by the GUI app.
 func tunStats() string { return app.TunSessionStats() }
 
-// captureHandshake records a single TCP attempt in pktmon and prints every
-// TCP line of the formatted trace. The flags column shows whether the peer
-// answer (SYN,ACK) ever reached Windows and which side sent the RST.
+// captureHandshake records traffic to and from the TUN adapter in pktmon and
+// prints every formatted line. Filtering on the adapter address keeps the
+// trace focused: a reply the stack never accepted is visible as an inbound
+// packet present at the miniport, and the RST flags show which side gave up.
 func captureHandshake(label, host string, port int) {
 	dir := exeDir()
 	etl := filepath.Join(dir, "PktMon-diag.etl")
@@ -134,7 +135,8 @@ func captureHandshake(label, host string, port int) {
 	for _, script := range []string{
 		"pktmon stop",
 		"pktmon filter remove",
-		"pktmon status",
+		"pktmon filter add ys-tun -i 198.18.0.1",
+		"pktmon filter list",
 	} {
 		out("  | $ %s", script)
 		for _, line := range runPS(script, 20*time.Second) {
@@ -154,6 +156,9 @@ func captureHandshake(label, host string, port int) {
 	}
 
 	time.Sleep(500 * time.Millisecond)
+	// Resolve and dial inside the capture so the DNS exchange and the TCP
+	// handshake it enables are both in the trace.
+	probeDNS(host)
 	out("[driver] CAPTURE %s: dial %s:%d", label, host, port)
 	err := probeTCP(host, port, 6*time.Second)
 	time.Sleep(500 * time.Millisecond)
@@ -168,10 +173,10 @@ func captureHandshake(label, host string, port int) {
 	if info, serr := os.Stat(txt); serr != nil {
 		out("[driver] CAPTURE %s: no formatted txt (%v)", label, serr)
 	} else {
-		out("[driver] CAPTURE %s: pktmon.txt %d bytes, dial err=%v", label, info.Size(), err)
+		out("[driver] CAPTURE %s: pktmon-diag.txt %d bytes, dial err=%v", label, info.Size(), err)
 	}
 	for _, line := range runPS(fmt.Sprintf(
-		"Get-Content -LiteralPath %q -Encoding Unicode -ErrorAction SilentlyContinue | Select-String -Pattern 'TCP|SYN|ACK|RST|Flags|198\\.18\\.0\\.1' | Select-Object -Last 60 | ForEach-Object { $_.Line }",
+		"Get-Content -LiteralPath %q -Encoding Unicode -ErrorAction SilentlyContinue | Select-String -Pattern '198\\.18\\.0\\.1' | Select-Object -Last 80 | ForEach-Object { $_.Line }",
 		txt), 30*time.Second) {
 		out("  | %s", line)
 	}
