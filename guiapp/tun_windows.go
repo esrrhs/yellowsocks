@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/netip"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -348,7 +347,7 @@ func (m *tunManager) enable(params TunParams) (err error) {
 	// one, which is all the stack needs to stop probing.
 	ps := fmt.Sprintf("New-NetNeighbor -InterfaceAlias '%s' -IPAddress %s -State Permanent -PolicyStore ActiveStore -ErrorAction Stop",
 		tunAdapterName, tunGateway4)
-	if output, nerr := exec.Command("powershell", "-NoProfile", "-Command", ps).CombinedOutput(); nerr != nil {
+	if output, nerr := hiddenCommand("powershell", "-NoProfile", "-Command", ps).CombinedOutput(); nerr != nil {
 		loggo.Warn("[TUN] permanent gateway neighbour %s: %v: %s", tunGateway4, nerr, string(output))
 	}
 	// SetRoutesForFamily would fail with ERROR_NOT_FOUND on a freshly
@@ -383,7 +382,7 @@ func (m *tunManager) enable(params TunParams) (err error) {
 	// The cache still holds answers learned before the takeover (polluted
 	// real IPs for proxied names): without this flush the first lookups of
 	// every domain return those stale records and skip fake-ip entirely.
-	if output, ferr := exec.Command("ipconfig", "/flushdns").CombinedOutput(); ferr != nil {
+	if output, ferr := hiddenCommand("ipconfig", "/flushdns").CombinedOutput(); ferr != nil {
 		loggo.Warn("[TUN] flush resolver cache: %v: %s", ferr, string(output))
 	}
 	// Windows answers a lookup by asking EVERY interface's DNS servers in
@@ -400,11 +399,11 @@ func (m *tunManager) enable(params TunParams) (err error) {
 	// leaves the old behaviour (ask every adapter, first polluted answer
 	// wins) in place. Costs a fraction of a second of resolution during
 	// bring-up, which is invisible next to the UAC/adapter setup around it.
-	if output, rerr := exec.Command("powershell", "-NoProfile", "-Command",
+	if output, rerr := hiddenCommand("powershell", "-NoProfile", "-Command",
 		"Restart-Service -Name dnscache -Force -ErrorAction Stop").CombinedOutput(); rerr != nil {
 		loggo.Warn("[TUN] restart DNS client to apply resolver policy: %v: %s", rerr, strings.TrimSpace(string(output)))
 	}
-	if output, ferr := exec.Command("ipconfig", "/flushdns").CombinedOutput(); ferr != nil {
+	if output, ferr := hiddenCommand("ipconfig", "/flushdns").CombinedOutput(); ferr != nil {
 		loggo.Warn("[TUN] flush resolver cache after policy: %v: %s", ferr, string(output))
 	}
 	if servers, serr := tunLUID.DNS(); serr != nil {
@@ -505,7 +504,7 @@ func (m *tunManager) teardownLocked() {
 	if err := setSmartResolutionDisabled(false); err != nil {
 		loggo.Warn("[TUN] restore smart name resolution: %v", err)
 	}
-	_, _ = exec.Command("ipconfig", "/flushdns").CombinedOutput()
+	_, _ = hiddenCommand("ipconfig", "/flushdns").CombinedOutput()
 	for _, prefix := range m.upstreamRT {
 		if err := m.physLUID.DeleteRoute(prefix, m.physGw); err != nil {
 			loggo.Warn("[TUN] delete upstream route %s: %v", prefix, err)
@@ -565,7 +564,7 @@ func (m *tunManager) forceTeardown(reason string) {
 	if err := setSmartResolutionDisabled(false); err != nil {
 		loggo.Warn("[TUN] forced teardown: restore smart name resolution: %v", err)
 	}
-	_, _ = exec.Command("ipconfig", "/flushdns").CombinedOutput()
+	_, _ = hiddenCommand("ipconfig", "/flushdns").CombinedOutput()
 
 	// 3. The tun2socks stack is deliberately left running: with the adapter's
 	// address and routes gone it captures nothing, and stopping it would be
@@ -1051,7 +1050,7 @@ func recoverDNSState() {
 	clearDNSState()
 	if restored > 0 {
 		loggo.Info("[TUN] recovered %d adapter(s) from a previous run that died with the DNS take-over active", restored)
-		_, _ = exec.Command("ipconfig", "/flushdns").CombinedOutput()
+		_, _ = hiddenCommand("ipconfig", "/flushdns").CombinedOutput()
 	}
 }
 
