@@ -50,10 +50,16 @@ func main() {
 	}
 
 	// Only one copy may run: a second one cannot bind the engine ports and
-	// would tear down the live TUN session's routes on its way out. The wait
-	// covers the handover above, where the old copy is still shutting down.
-	if !guiapp.AcquireSingleInstance(8 * time.Second) {
-		loggo.Info("[GUI] another instance is already running; brought its window forward and exited")
+	// would tear down the live TUN session's routes on its way out. Two
+	// timeouts, because the wait means different things: a plain start just
+	// wants the running copy's window brought forward (be quick about it),
+	// while a handover successor genuinely has to outlast the predecessor's
+	// TUN teardown, which is much slower than an empty shutdown.
+	instanceWait := time.Second
+	if guiapp.ElevatedRequested() && !guiapp.ElevatedDirect() {
+		instanceWait = 25 * time.Second
+	}
+	if !guiapp.AcquireSingleInstance(instanceWait) {
 		return
 	}
 

@@ -117,6 +117,12 @@ type App struct {
 	lifetimeAll    stats.Counters
 	lifetimeDirect stats.Counters
 	lifetimeProxy  stats.Counters
+
+	// Closed once Shutdown has torn TUN and the engine down. The TUN handover
+	// waits on it before quitting, so the elevated successor never starts
+	// building the adapter while this copy is still removing it.
+	shutdownDone chan struct{}
+	shutdownOnce sync.Once
 }
 
 // NewApp creates the App application struct that is bound to the frontend.
@@ -124,7 +130,7 @@ func NewApp() *App {
 	// Rule-based routing is the default, and it has to be set here rather than
 	// left empty: the tray and the window read this before Startup has loaded
 	// the settings file, and an empty mode would render as "no mode selected".
-	return &App{proxyMode: router.ModeRule.String()}
+	return &App{proxyMode: router.ModeRule.String(), shutdownDone: make(chan struct{})}
 }
 
 // startup is called when the app starts. The context is saved so we can call
@@ -209,6 +215,12 @@ func (a *App) Shutdown(ctx context.Context) {
 		_ = disableSystemProxy()
 	}
 	systrayQuit()
+	// Everything is down: drop the single-instance claim so a waiting
+	// successor (the elevated copy in a TUN handover) can take over, and tell
+	// the handover it is safe to exit. Order matters -- the claim must be free
+	// only once the adapter is gone.
+	ReleaseSingleInstance()
+	a.shutdownOnce.Do(func() { close(a.shutdownDone) })
 }
 
 // StartEngine loads the config file and starts the proxy engine.
@@ -442,12 +454,18 @@ func (a *App) applyTun() error {
 			a.tunErr = ""
 			a.mu.Unlock()
 			loggo.Info("[GUI] elevated instance confirmed; handing over")
-			// Give the graceful shutdown a moment, then force it: the
-			// elevated successor re-binds the same ports and keeps the
-			// system proxy (or TUN) state, so nothing is left dangling.
+			// The successor is waiting on the single-instance claim, but it
+			// must not get it before this copy has torn TUN down: it would
+			// bring the adapter up on top of a half-removed one and tun2socks
+			// answers that with log.Fatalf. Shutdown releases the claim, and
+			// this wait only exists so a hung teardown cannot wedge us forever.
 			go func() {
-				time.Sleep(3 * time.Second)
-				loggo.Info("[GUI] graceful shutdown timed out during handover; exiting")
+				select {
+				case <-a.shutdownDone:
+					loggo.Info("[GUI] teardown finished; exiting for the elevated instance")
+				case <-time.After(15 * time.Second):
+					loggo.Warn("[GUI] teardown did not finish in time; exiting anyway")
+				}
 				os.Exit(0)
 			}()
 			runtime.Quit(a.ctx)
