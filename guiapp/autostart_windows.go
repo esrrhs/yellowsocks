@@ -10,11 +10,16 @@ import (
 	"golang.org/x/sys/windows/registry"
 )
 
-// Launch-at-login via the per-user Run key. It needs no admin rights, works
-// for portable exes anywhere on disk and is removed again on disable. The
-// registered command starts the app with --hidden so a boot login brings up
-// the tray only; the engine auto-connects and restores the system proxy on
-// its own (settings.json).
+// Launch-at-login registration for the unelevated path: the per-user Run key.
+// It needs no admin rights, works for portable exes anywhere on disk and is
+// removed again on disable. The registered command starts the app with
+// --hidden so a boot login brings up the tray only; the engine auto-connects
+// and restores the system proxy on its own (settings.json).
+//
+// The elevated copy upgrades this to a logon scheduled task (launchtask_windows.go)
+// so that TUN users neither click a UAC prompt nor pay for the handover at every
+// boot. Both helpers below decide between the two; the Run-key operations stay
+// separate so the tests can exercise them without touching the live task.
 
 const runKeyPath = `Software\Microsoft\Windows\CurrentVersion\Run`
 const runValueName = "YellowSocks"
@@ -42,12 +47,13 @@ func launchAtLoginRaw() string {
 	return v
 }
 
-// launchAtLoginEnabled reports whether our Run-key entry exists.
+// launchAtLoginEnabled reports whether either registration exists: the logon
+// task, or the Run key the unelevated path uses.
 func launchAtLoginEnabled() bool {
-	return launchAtLoginRaw() != ""
+	return launchTaskRegistered() || launchAtLoginRaw() != ""
 }
 
-func enableLaunchAtLogin() error {
+func enableRunEntry() error {
 	cmd, err := launchAtLoginCommand()
 	if err != nil {
 		return err
@@ -64,7 +70,7 @@ func enableLaunchAtLogin() error {
 	return nil
 }
 
-func disableLaunchAtLogin() error {
+func deleteRunEntry() error {
 	key, err := registry.OpenKey(registry.CURRENT_USER, runKeyPath, registry.QUERY_VALUE|registry.SET_VALUE)
 	if err != nil {
 		if err == registry.ErrNotExist {
@@ -83,13 +89,44 @@ func disableLaunchAtLogin() error {
 	return nil
 }
 
+// enableLaunchAtLogin picks the best registration this process is allowed to
+// write. Elevated: a logon task, which starts the app at full privilege with no
+// UAC prompt, and the Run key goes away because keeping both would launch two
+// instances at logon (the second would lose the listen ports and sit there
+// broken). Unelevated: the Run key, as before.
+func enableLaunchAtLogin() error {
+	if isElevated() {
+		if err := ensureLaunchTask(); err == nil {
+			if derr := deleteRunEntry(); derr != nil {
+				// Two registrations would race at logon; the task is the one
+				// worth keeping, so retry the cleanup once and report it.
+				loggo.Warn("[GUI] drop Run key after task registration: %v", derr)
+			}
+			loggo.Info("[GUI] registered launch at login as an elevated logon task")
+			return nil
+		} else {
+			loggo.Warn("[GUI] logon task unavailable, using the Run key instead: %v", err)
+		}
+	}
+	return enableRunEntry()
+}
+
+func disableLaunchAtLogin() error {
+	taskErr := deleteLaunchTask()
+	runErr := deleteRunEntry()
+	if taskErr != nil {
+		return taskErr
+	}
+	return runErr
+}
+
 // restoreLaunchAtLoginRaw puts the key back to whatever it held before a caller
 // touched it. The tests exercise the real HKCU Run key, and a plain cleanup
 // would delete the entry of the installation that happens to be registered on
 // the machine running them, not just undo the test's own change.
 func restoreLaunchAtLoginRaw(prev string) {
 	if prev == "" {
-		_ = disableLaunchAtLogin()
+		_ = deleteRunEntry()
 		return
 	}
 	key, _, err := registry.CreateKey(registry.CURRENT_USER, runKeyPath, registry.QUERY_VALUE|registry.SET_VALUE)
@@ -100,19 +137,31 @@ func restoreLaunchAtLoginRaw(prev string) {
 	_ = key.SetStringValue(runValueName, prev)
 }
 
-// syncLaunchAtLogin repairs the Run-key entry at app startup: re-register the
-// current exe path when it moved, and clear an entry left behind when the
-// persisted intent was turned off elsewhere.
+// syncLaunchAtLogin repairs the registration at app startup: re-register
+// against the current exe path when it moved, upgrade to the logon task when
+// this copy is elevated, and clear whatever is left when the persisted intent
+// was turned off elsewhere.
 func syncLaunchAtLogin(st guiSettings) {
-	current := launchAtLoginRaw()
-	if st.LaunchAtLogin {
-		desired, err := launchAtLoginCommand()
-		if err == nil && current != desired {
-			_ = enableLaunchAtLogin()
-		}
+	if !st.LaunchAtLogin {
+		_ = disableLaunchAtLogin()
 		return
 	}
-	if current != "" {
-		_ = disableLaunchAtLogin()
+	if isElevated() {
+		// Re-registering every start keeps the task pointing at the exe after
+		// the portable folder is moved, and costs one short-lived schtasks.
+		_ = enableLaunchAtLogin()
+		return
+	}
+	// An earlier elevated run may already have registered the task. Writing the
+	// Run key back now would start a second instance at the next logon, so the
+	// task wins and the key is dropped.
+	if launchTaskRegistered() {
+		_ = deleteRunEntry()
+		return
+	}
+	current := launchAtLoginRaw()
+	desired, err := launchAtLoginCommand()
+	if err == nil && current != desired {
+		_ = enableRunEntry()
 	}
 }

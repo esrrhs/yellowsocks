@@ -134,6 +134,14 @@ func ElevatedRequested() bool {
 	return hasArg("--elevated", "-elevated", "/elevated")
 }
 
+// ElevatedDirect reports whether this copy was started by the logon scheduled
+// task, which runs at the highest privilege already. There is no predecessor
+// to hand over from in that case, so the two waits that exist only to make a
+// UAC relaunch safe (the port-release sleep and the handshake) are skipped.
+func ElevatedDirect() bool {
+	return hasArg("--elevated-direct", "-elevated-direct", "/elevated-direct")
+}
+
 func hasArg(want ...string) bool {
 	for _, arg := range os.Args[1:] {
 		lower := strings.ToLower(arg)

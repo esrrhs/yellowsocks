@@ -12,7 +12,6 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -394,15 +393,16 @@ func (m *tunManager) enable(params TunParams) (err error) {
 	if err := setSmartResolutionDisabled(true); err != nil {
 		loggo.Warn("[TUN] disable smart name resolution: %v", err)
 	}
-	// The DNS Client service reads that policy at start, so it has to be
-	// restarted before the policy has any effect on lookups; flushing alone
-	// leaves the old behaviour (ask every adapter, first polluted answer
-	// wins) in place. Costs a fraction of a second of resolution during
-	// bring-up, which is invisible next to the UAC/adapter setup around it.
-	if output, rerr := hiddenCommand("powershell", "-NoProfile", "-Command",
-		"Restart-Service -Name dnscache -Force -ErrorAction Stop").CombinedOutput(); rerr != nil {
-		loggo.Warn("[TUN] restart DNS client to apply resolver policy: %v: %s", rerr, strings.TrimSpace(string(output)))
-	}
+	// No service restart follows, on purpose. Dnscache is registered without
+	// SERVICE_ACCEPT_STOP, so `Restart-Service -Force` can never stop it: it
+	// sat on the stop request for the full service timeout and then failed
+	// with "cannot stop the DNS Client service", which cost ~8s of the
+	// bring-up on every single start while changing nothing. The policy is a
+	// registry value the client watches, so writing it is the whole job --
+	// and even without the watch the race it protects against is already
+	// gone, because overridePhysicalDNS points every interface at one
+	// resolver (ours). One more flush covers any answer cached between the
+	// first flush and the policy write.
 	if output, ferr := hiddenCommand("ipconfig", "/flushdns").CombinedOutput(); ferr != nil {
 		loggo.Warn("[TUN] flush resolver cache after policy: %v: %s", ferr, string(output))
 	}

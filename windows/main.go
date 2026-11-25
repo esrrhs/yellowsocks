@@ -38,10 +38,23 @@ func main() {
 
 	// The TUN-mode elevated relaunch hands over to this copy: give the old
 	// instance a moment to release its listen ports, then confirm we are
-	// alive so the old instance can quit.
-	if guiapp.ElevatedRequested() {
+	// alive so the old instance can quit. The logon task starts us elevated
+	// with no predecessor, so it opts out of both waits.
+	//
+	// This has to run before the single-instance claim below: the old copy is
+	// still alive precisely until it sees the handshake, so claiming first
+	// would wait out the whole timeout and quit.
+	if guiapp.ElevatedRequested() && !guiapp.ElevatedDirect() {
 		time.Sleep(2 * time.Second)
 		guiapp.WriteElevatedHandshake()
+	}
+
+	// Only one copy may run: a second one cannot bind the engine ports and
+	// would tear down the live TUN session's routes on its way out. The wait
+	// covers the handover above, where the old copy is still shutting down.
+	if !guiapp.AcquireSingleInstance(8 * time.Second) {
+		loggo.Info("[GUI] another instance is already running; brought its window forward and exited")
+		return
 	}
 
 	app := guiapp.NewApp()

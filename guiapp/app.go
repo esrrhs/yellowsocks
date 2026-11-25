@@ -128,8 +128,10 @@ func (a *App) Startup(ctx context.Context) {
 	}
 	a.mu.Unlock()
 	// Keep the OS launch-at-login entry pointing at the current exe (the
-	// binary may have been moved since it was registered).
-	syncLaunchAtLogin(st)
+	// binary may have been moved since it was registered). Off the startup
+	// path: repairing the logon task costs a PowerShell launch, and nothing
+	// waits for it.
+	go syncLaunchAtLogin(st)
 	a.loadLifetimeStats()
 	go runTray(a)
 	// TUN mode needs the engine running; the boot flag alone is not enough.
@@ -142,9 +144,10 @@ func (a *App) Startup(ctx context.Context) {
 // startEngineAndTun starts the engine; TUN mode rides on StartEngine's
 // tail (the engine autostarts whenever AutoStartCore or TunMode wants it).
 func (a *App) startEngineAndTun() {
-	if ElevatedRequested() {
+	if ElevatedRequested() && !ElevatedDirect() {
 		// The unelevated instance is still tearing down while this copy
-		// boots; give its listen ports time to close.
+		// boots; give its listen ports time to close. The logon task starts
+		// us on a clean machine, so there is nothing to wait for there.
 		if cfg, err := a.loadEngineConfig(); err == nil {
 			WaitForPortFree(cfg.Socks5Listen, 10*time.Second)
 			WaitForPortFree(cfg.HTTPListen, 5*time.Second)
