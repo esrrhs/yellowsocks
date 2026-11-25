@@ -157,6 +157,9 @@ func (a *App) Startup(ctx context.Context) {
 	go syncLaunchAtLogin(st)
 	a.loadLifetimeStats()
 	go runTray(a)
+	// A logon start is tray-only, so a double-click on the icon has to be able
+	// to pull the window up from here.
+	go WatchShowRequests(func() { showMainWindow(a) })
 	go a.proxyGuardLoop()
 	// TUN mode needs the engine running; the boot flag alone is not enough.
 	wantEngine := st.AutoStartCore || st.TunMode

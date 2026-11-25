@@ -25,10 +25,20 @@ const singleInstanceName = `Local\YellowSocksGUI`
 // crash, which is why a mutex beats a PID or lock file here.
 var singleInstanceHandle windows.Handle
 
+// A logon start runs with --hidden, so the window exists but is invisible: a
+// double-click on the desktop icon then lands in this file, and poking at the
+// HWND from outside is guesswork (the window Wails hides is not "the main
+// window" as far as the shell is concerned). The owner waits on this event
+// instead and surfaces itself through the same runtime call the tray uses.
+const showRequestEventName = `Local\YellowSocksShow`
+
+var showRequestEvent windows.Handle
+
 var (
 	modkernel32      = windows.NewLazySystemDLL("kernel32.dll")
 	procCreateMutexW = modkernel32.NewProc("CreateMutexW")
 	procSetLastError = modkernel32.NewProc("SetLastError")
+	procCreateEventW = modkernel32.NewProc("CreateEventW")
 )
 
 // createMutex wraps CreateMutexW and keeps its raw last error. x/sys's
@@ -64,6 +74,7 @@ func AcquireSingleInstance(timeout time.Duration) bool {
 			return true
 		case cerr == nil || !errors.Is(cerr, windows.ERROR_ALREADY_EXISTS):
 			singleInstanceHandle = handle
+			createShowRequestEvent()
 			if waited {
 				loggo.Info("[GUI] single-instance acquired after waiting for the predecessor")
 			}
@@ -73,13 +84,64 @@ func AcquireSingleInstance(timeout time.Duration) bool {
 		// drop it and keep polling against the owner's next move.
 		_ = windows.CloseHandle(handle)
 		if time.Now().After(deadline) {
-			loggo.Info("[GUI] another instance is already running; bringing its window forward")
+			loggo.Info("[GUI] another instance is already running; asking it to show its window")
+			// The event is the reliable path (the window may be hidden, which
+			// is invisible to the shell); the HWND poke still helps when the
+			// running copy predates the event.
+			askOwnerToShowWindow()
 			focusExistingWindow()
 			return false
 		}
 		waited = true
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+// createShowRequestEvent creates the auto-reset event this copy will listen on.
+// Named, so a later copy signals the same object.
+func createShowRequestEvent() {
+	name, err := windows.UTF16PtrFromString(showRequestEventName)
+	if err != nil {
+		return
+	}
+	// manualReset=false, initialState=false: one SetEvent means one wake-up.
+	r0, _, _ := procCreateEventW.Call(0, 0, 0, uintptr(unsafe.Pointer(name)))
+	if r0 == 0 {
+		loggo.Warn("[GUI] could not create the show-window event")
+		return
+	}
+	showRequestEvent = windows.Handle(r0)
+}
+
+// WatchShowRequests runs for the life of the process and calls show whenever
+// another copy asks this one to surface. Blocks a thread on purpose.
+func WatchShowRequests(show func()) {
+	if showRequestEvent == 0 {
+		return
+	}
+	for {
+		if r, err := windows.WaitForSingleObject(showRequestEvent, windows.INFINITE); err != nil || r != windows.WAIT_OBJECT_0 {
+			loggo.Warn("[GUI] show-window event wait failed: %v", err)
+			return
+		}
+		show()
+	}
+}
+
+// askOwnerToShowWindow signals the running copy. Opens the existing event rather
+// than creating one, so a signal cannot look like a request from nobody.
+func askOwnerToShowWindow() bool {
+	name, err := windows.UTF16PtrFromString(showRequestEventName)
+	if err != nil {
+		return false
+	}
+	h, oerr := windows.OpenEvent(windows.EVENT_MODIFY_STATE, false, name)
+	if oerr != nil {
+		return false
+	}
+	defer windows.CloseHandle(h)
+	_ = windows.SetEvent(h)
+	return true
 }
 
 // ReleaseSingleInstance gives up the claim early. The TUN handover quits the
