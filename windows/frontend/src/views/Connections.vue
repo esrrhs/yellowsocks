@@ -14,6 +14,23 @@ const errors = ref<stats.ErrorEntry[]>([]);
 const query = ref("");
 const decision = ref<"all" | "proxy" | "direct">("all");
 
+// Sorting is by the live rate (that is the number the cell leads with), with the
+// cumulative total as the tiebreaker so rows with an idle connection still land
+// in a sensible place. Descending first because "who is using my bandwidth" is
+// the question this page answers.
+type SortKey = "up" | "down" | "age";
+const sortKey = ref<SortKey>("down");
+const sortDir = ref<"asc" | "desc">("desc");
+
+function toggleSort(key: SortKey) {
+  if (sortKey.value === key) {
+    sortDir.value = sortDir.value === "desc" ? "asc" : "desc";
+    return;
+  }
+  sortKey.value = key;
+  sortDir.value = "desc";
+}
+
 let timer: number | undefined;
 
 async function refresh() {
@@ -49,6 +66,30 @@ const filtered = computed(() => {
       (s.node ?? "").toLowerCase().includes(q)
     );
   });
+});
+
+// filtered (search + route) first, then ordered by the chosen column.
+const visible = computed(() => {
+  const rows = filtered.value.slice();
+  const key = sortKey.value;
+  const dir = sortDir.value === "desc" ? -1 : 1;
+  rows.sort((a, b) => {
+    let d = 0;
+    if (key === "up") {
+      d = (a.upload_bps ?? 0) - (b.upload_bps ?? 0) ||
+        (a.upload_bytes ?? 0) - (b.upload_bytes ?? 0);
+    } else if (key === "down") {
+      d = (a.download_bps ?? 0) - (b.download_bps ?? 0) ||
+        (a.download_bytes ?? 0) - (b.download_bytes ?? 0);
+    } else {
+      d = (a.age_ms ?? 0) - (b.age_ms ?? 0);
+    }
+    // Ties (and the idle majority) fall back to connection id: without it the
+    // rows reshuffle on every one-second refresh.
+    if (d === 0) return (a.id ?? 0) - (b.id ?? 0);
+    return d * dir;
+  });
+  return rows;
 });
 
 const nodeTotals = computed(() => {
@@ -131,37 +172,72 @@ onUnmounted(() => {
       </div>
 
       <div class="card table-card">
-        <table class="tbl">
+        <table class="tbl tbl-fixed">
+          <colgroup>
+            <col style="width: 23%" />
+            <col style="width: 13%" />
+            <col style="width: 8%" />
+            <col style="width: 16%" />
+            <col style="width: 15%" />
+            <col style="width: 15%" />
+            <col style="width: 10%" />
+          </colgroup>
           <thead>
             <tr>
               <th>{{ t("conn.colHost") }}</th>
               <th>{{ t("conn.colClient") }}</th>
               <th>{{ t("conn.colDecision") }}</th>
               <th>{{ t("conn.colNode") }}</th>
-              <th class="right">{{ t("conn.colRate") }}</th>
-              <th class="right">{{ t("conn.colAge") }}</th>
+              <th class="right sortable" @click="toggleSort('up')">
+                {{ t("conn.colUp") }}
+                <span class="sort-mark" v-if="sortKey === 'up'">{{
+                  sortDir === "desc" ? "▾" : "▴"
+                }}</span>
+              </th>
+              <th class="right sortable" @click="toggleSort('down')">
+                {{ t("conn.colDown") }}
+                <span class="sort-mark" v-if="sortKey === 'down'">{{
+                  sortDir === "desc" ? "▾" : "▴"
+                }}</span>
+              </th>
+              <th class="right sortable" @click="toggleSort('age')">
+                {{ t("conn.colAge") }}
+                <span class="sort-mark" v-if="sortKey === 'age'">{{
+                  sortDir === "desc" ? "▾" : "▴"
+                }}</span>
+              </th>
             </tr>
           </thead>
           <tbody>
-            <tr v-for="s in filtered" :key="s.id">
-              <td class="mono">
+            <tr v-for="s in visible" :key="s.id">
+              <td class="mono wrap">
                 {{ s.host || "—" }}<span class="dim">:{{ s.port }}</span>
               </td>
-              <td class="dim ellipsis">{{ s.client || "—" }}</td>
+              <td class="dim mono wrap">{{ s.client || "—" }}</td>
               <td>
                 <span class="tag" :class="s.decision || 'none'">
                   {{ decisionLabel(s.decision) }}
                 </span>
               </td>
-              <td class="dim ellipsis">{{ s.node || "—" }}</td>
-              <td class="right num">
+              <td class="dim wrap">{{ s.node || "—" }}</td>
+              <td
+                class="right num wrap"
+                :title="fmtBytes(s.upload_bytes)"
+              >
                 <span class="up">↑{{ fmtBps(s.upload_bps) }}</span>
+                <span class="total dim">{{ fmtBytes(s.upload_bytes) }}</span>
+              </td>
+              <td
+                class="right num wrap"
+                :title="fmtBytes(s.download_bytes)"
+              >
                 <span class="down">↓{{ fmtBps(s.download_bps) }}</span>
+                <span class="total dim">{{ fmtBytes(s.download_bytes) }}</span>
               </td>
               <td class="right num dim">{{ fmtAge(s.age_ms) }}</td>
             </tr>
-            <tr v-if="!filtered.length">
-              <td colspan="6" class="empty-row">
+            <tr v-if="!visible.length">
+              <td colspan="7" class="empty-row">
                 {{ sessions.length ? t("conn.noMatch") : t("conn.empty") }}
               </td>
             </tr>

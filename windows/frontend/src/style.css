@@ -908,6 +908,59 @@ body {
     white-space: nowrap;
 }
 
+/* Connections table: fixed column widths with wrapping. A long host name used
+   to push the numeric columns out of sight, and fixed layout offers no
+   horizontal scroll to get them back, so the cells wrap instead. */
+.tbl-fixed {
+    table-layout: fixed;
+}
+
+.tbl-fixed th {
+    white-space: normal;
+}
+
+.tbl-fixed th,
+.tbl-fixed td {
+    padding-left: 10px;
+    padding-right: 10px;
+}
+
+.tbl-fixed td.wrap {
+    white-space: normal;
+    overflow-wrap: anywhere;
+    word-break: break-word;
+}
+
+/* The rate cells stack rate over running total, so they cannot stay nowrap. */
+.tbl-fixed .num {
+    white-space: normal;
+}
+
+.tbl-fixed td .total {
+    display: block;
+    margin-top: 2px;
+    font-size: 11px;
+}
+
+.tbl-fixed .up,
+.tbl-fixed .down {
+    margin-right: 0;
+}
+
+.sortable {
+    cursor: pointer;
+    user-select: none;
+}
+
+.sortable:hover {
+    color: var(--text);
+}
+
+.sort-mark {
+    margin-left: 3px;
+    opacity: 0.85;
+}
+
 .up {
     color: var(--up);
     margin-right: 8px;
