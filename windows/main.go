@@ -56,7 +56,7 @@ func main() {
 	// while a handover successor genuinely has to outlast the predecessor's
 	// TUN teardown, which is much slower than an empty shutdown.
 	instanceWait := time.Second
-	if guiapp.ElevatedRequested() && !guiapp.ElevatedDirect() {
+	if (guiapp.ElevatedRequested() && !guiapp.ElevatedDirect()) || guiapp.Restarted() {
 		instanceWait = 25 * time.Second
 	}
 	if !guiapp.AcquireSingleInstance(instanceWait) {

@@ -142,6 +142,13 @@ func ElevatedDirect() bool {
 	return hasArg("--elevated-direct", "-elevated-direct", "/elevated-direct")
 }
 
+// The flag a replacement copy gets after a restart request: it means "your
+// predecessor is still tearing down, wait for the instance claim".
+const restartedFlag = "--restarted"
+
+// Restarted reports whether this copy was started to replace a running one.
+func Restarted() bool { return hasArg(restartedFlag, "-restarted", "/restarted") }
+
 func hasArg(want ...string) bool {
 	for _, arg := range os.Args[1:] {
 		lower := strings.ToLower(arg)

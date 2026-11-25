@@ -160,6 +160,8 @@ func (a *App) Startup(ctx context.Context) {
 	// A logon start is tray-only, so a double-click on the icon has to be able
 	// to pull the window up from here.
 	go WatchShowRequests(func() { showMainWindow(a) })
+	// Drop restart.request into the data directory to swap in a fresh build.
+	go a.restartWatcher()
 	go a.proxyGuardLoop()
 	// TUN mode needs the engine running; the boot flag alone is not enough.
 	wantEngine := st.AutoStartCore || st.TunMode
@@ -460,18 +462,12 @@ func (a *App) applyTun() error {
 			// The successor is waiting on the single-instance claim, but it
 			// must not get it before this copy has torn TUN down: it would
 			// bring the adapter up on top of a half-removed one and tun2socks
-			// answers that with log.Fatalf. Shutdown releases the claim, and
-			// this wait only exists so a hung teardown cannot wedge us forever.
-			go func() {
-				select {
-				case <-a.shutdownDone:
-					loggo.Info("[GUI] teardown finished; exiting for the elevated instance")
-				case <-time.After(15 * time.Second):
-					loggo.Warn("[GUI] teardown did not finish in time; exiting anyway")
-				}
-				os.Exit(0)
-			}()
-			runtime.Quit(a.ctx)
+			// answers that with log.Fatalf. Shutdown releases the claim.
+			a.armForcedExit("handover")
+			// quitApp, not runtime.Quit: BeforeClose turns a bare Quit into a
+			// hide-to-tray, so Shutdown would never run and the successor
+			// would inherit a live adapter.
+			a.quitApp()
 			return nil
 		}
 		handoverErr := errors.New("管理员授权未完成,TUN 模式未开启")
@@ -692,8 +688,10 @@ func (a *App) EngineStatus() EngineStatus {
 	return a.statusLocked()
 }
 
-// quitApp is invoked from the tray menu: stop the engine, then ask Wails to
-// exit. App.shutdown removes the tray icon afterwards.
+// quitApp is the one real "exit now" path: stop the engine, then ask Wails to
+// exit. Callers are the tray menu, the TUN handover and the restart watcher.
+// The quitting flag must be set first, otherwise BeforeClose hides the window
+// instead of letting the process go, and Shutdown never runs.
 func (a *App) quitApp() {
 	a.mu.Lock()
 	a.quitting = true
