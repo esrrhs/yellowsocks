@@ -3,6 +3,7 @@ import { onMounted, ref } from "vue";
 import { GetVersion } from "../../wailsjs/go/guiapp/App";
 import { BrowserOpenURL } from "../../wailsjs/runtime/runtime";
 import { version } from "../../wailsjs/go/models";
+import { t } from "../i18n";
 
 const info = ref<version.Info | null>(null);
 
@@ -13,32 +14,32 @@ onMounted(async () => {
 
 <template>
   <section class="page">
-    <h2>关于</h2>
+    <h2>{{ t("about.title") }}</h2>
     <div class="card about-card">
       <div class="logo big">YS</div>
       <div class="app-name">YellowSocks</div>
       <table v-if="info" class="info-table">
         <tbody>
           <tr>
-            <td>版本</td>
+            <td>{{ t("about.version") }}</td>
             <td>{{ info.version }}</td>
           </tr>
           <tr>
-            <td>提交</td>
+            <td>{{ t("about.commit") }}</td>
             <td>{{ info.git_commit }}</td>
           </tr>
           <tr>
-            <td>构建时间</td>
+            <td>{{ t("about.buildTime") }}</td>
             <td>{{ info.build_time }}</td>
           </tr>
           <tr>
-            <td>运行环境</td>
+            <td>{{ t("about.env") }}</td>
             <td>{{ info.os }}/{{ info.arch }} · Go {{ info.go_version }}</td>
           </tr>
         </tbody>
       </table>
       <button class="btn" @click="BrowserOpenURL('https://github.com/esrrhs/yellowsocks')">
-        GitHub 项目主页
+        {{ t("about.github") }}
       </button>
     </div>
   </section>

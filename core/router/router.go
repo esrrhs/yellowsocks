@@ -37,6 +37,48 @@ const (
 	Proxy
 )
 
+// Mode is the routing policy: how much of the traffic the rule sets get to
+// decide, matching the three modes every Clash-family client exposes.
+type Mode int32
+
+const (
+	// ModeRule routes each destination by the rule sets (default).
+	ModeRule Mode = iota
+	// ModeGlobal proxies everything except reserved and private destinations.
+	// Those stay direct on purpose: sending 192.168.1.1 or 127.0.0.1 to a
+	// remote node breaks local services and hands internal addresses to the
+	// upstream.
+	ModeGlobal
+	// ModeDirect connects everything directly, rules or not.
+	ModeDirect
+)
+
+// String is the wire form used by the GUI and the settings file.
+func (m Mode) String() string {
+	switch m {
+	case ModeGlobal:
+		return "global"
+	case ModeDirect:
+		return "direct"
+	default:
+		return "rule"
+	}
+}
+
+// ParseMode accepts the wire form and falls back to ModeRule for anything it
+// does not recognise, so a hand-edited settings file cannot leave the router
+// in an undefined state.
+func ParseMode(s string) Mode {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "global":
+		return ModeGlobal
+	case "direct":
+		return ModeDirect
+	default:
+		return ModeRule
+	}
+}
+
 // hostSet is a set of domain suffix rules.
 //
 // Reads happen on the hot path: every routed connection, every UDP datagram
@@ -116,7 +158,11 @@ type Router struct {
 	directIPs   atomic.Value // holds IPNetList, supporting atomic lock-free hot swapping
 	directHosts *hostSet     // direct host whitelist
 	proxyHosts  *hostSet     // proxy host list
-	geoDB       *matcher.GeoDB
+	// mode is read on the routing path, so it is an atomic rather than a
+	// plain field behind a mutex: a mode change must not make every
+	// connection pay for a lock.
+	mode          atomic.Int32
+	geoDB         *matcher.GeoDB
 	geoipLoaded   bool // GeoIP database successfully opened
 	skipCountry   string
 	skipCountries map[string]struct{}
@@ -286,13 +332,31 @@ func (r *Router) LoadDomainFile(filePath string, isDirect bool) error {
 	return scanner.Err()
 }
 
+// SetMode switches the routing policy. Safe to call while traffic is flowing:
+// the mode is an atomic, read without a lock on every decision.
+func (r *Router) SetMode(m Mode) { r.mode.Store(int32(m)) }
+
+// GetMode reports the current routing policy.
+func (r *Router) GetMode() Mode { return Mode(r.mode.Load()) }
+
 // ShouldProxyDomain checks if domain matches proxy domain list
 func (r *Router) ShouldProxyDomain(domain string) bool {
 	return matchListed(r.proxyHosts, domain)
 }
 
 // ShouldDirectDomain checks if domain matches direct whitelist or suffix rules.
+//
+// The mode comes first: it decides whether the lists are consulted at all. In
+// global mode nothing is direct, so DNS for every name is resolved remotely —
+// which is what makes fake-ip cover the whole internet instead of just the
+// proxied half. In direct mode everything is.
 func (r *Router) ShouldDirectDomain(domain string) bool {
+	switch r.GetMode() {
+	case ModeDirect:
+		return true
+	case ModeGlobal:
+		return false
+	}
 	return matchListed(r.directHosts, domain)
 }
 
@@ -356,6 +420,7 @@ type Info struct {
 	DirectCIDRs   int
 	GeoIP         bool
 	SkipCountry   string
+	Mode          string
 }
 
 // Info returns a snapshot of the currently loaded rules.
@@ -367,6 +432,7 @@ func (r *Router) Info() Info {
 		info.DirectCIDRs = len(v.(IPNetList))
 	}
 	info.GeoIP = r.geoipLoaded
+	info.Mode = r.GetMode().String()
 	return info
 }
 
@@ -395,6 +461,19 @@ func (r *Router) Decide(destHost string, destIP net.IP) RouteDecision {
 			destIP = canonicalIP(ip)
 			destHost = ""
 		}
+	}
+
+	// The mode short-circuits the lists. Global still honours the reserved and
+	// private CIDRs: a remote node cannot reach this LAN's 192.168.1.1, and
+	// sending it there would hand the upstream a map of the local network.
+	switch r.GetMode() {
+	case ModeDirect:
+		return Direct
+	case ModeGlobal:
+		if destIP != nil && r.ShouldDirectIP(destIP) {
+			return Direct
+		}
+		return Proxy
 	}
 
 	// If domain is specified, evaluate domain rules first

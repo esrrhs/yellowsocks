@@ -5,6 +5,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/esrrhs/gohome/loggo"
 	"github.com/esrrhs/yellowsocks/core/api"
@@ -106,6 +107,9 @@ type Engine struct {
 	apiServer    *api.Server
 	mu           sync.Mutex
 	running      bool
+	// routingMode outlives the router: the router is rebuilt on every Start,
+	// so the policy has to be remembered here and re-applied to the new one.
+	routingMode atomic.Int32
 }
 
 // NewEngine builds an engine and fills defaults.
@@ -153,6 +157,8 @@ func (e *Engine) Start() error {
 		GFWDomainFiles:   gfwFiles,
 		SkipCountry:      e.cfg.SkipCountry,
 	})
+	// The router is fresh on every start; carry the policy over.
+	e.router.SetMode(router.Mode(e.routingMode.Load()))
 
 	// A SOCKS5 upstream (spp_proto: "socks5") bypasses the SPP manager
 	// entirely: proxied traffic is forwarded to a plain RFC 1928 SOCKS5
@@ -406,6 +412,29 @@ func (e *Engine) Stats() *stats.Collector {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	return e.collector
+}
+
+// SetRoutingMode switches between rule-based, global-proxy and direct routing.
+// It works on a running engine (the router's mode is an atomic) and is
+// remembered for the next Start, which rebuilds the router from scratch.
+func (e *Engine) SetRoutingMode(m router.Mode) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.routingMode.Store(int32(m))
+	if e.router != nil {
+		e.router.SetMode(m)
+	}
+}
+
+// RoutingMode reports the current policy (Rule when the engine is stopped and
+// nothing has been chosen yet).
+func (e *Engine) RoutingMode() router.Mode {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.router != nil {
+		return e.router.GetMode()
+	}
+	return router.Mode(e.routingMode.Load())
 }
 
 // DNS returns the engine's DNS server, or nil before Start completes. TUN

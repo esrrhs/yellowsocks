@@ -30,12 +30,28 @@ export function GetLifetimeStats() {
   return window['go']['guiapp']['App']['GetLifetimeStats']();
 }
 
+export function GetLogPath() {
+  return window['go']['guiapp']['App']['GetLogPath']();
+}
+
+export function GetLogs(arg1, arg2) {
+  return window['go']['guiapp']['App']['GetLogs'](arg1, arg2);
+}
+
 export function GetNodes() {
   return window['go']['guiapp']['App']['GetNodes']();
 }
 
 export function GetOverview() {
   return window['go']['guiapp']['App']['GetOverview']();
+}
+
+export function GetProxyGuard() {
+  return window['go']['guiapp']['App']['GetProxyGuard']();
+}
+
+export function GetProxyMode() {
+  return window['go']['guiapp']['App']['GetProxyMode']();
 }
 
 export function GetSeries(arg1) {
@@ -74,6 +90,14 @@ export function SetLaunchAtLogin(arg1) {
   return window['go']['guiapp']['App']['SetLaunchAtLogin'](arg1);
 }
 
+export function SetProxyGuard(arg1) {
+  return window['go']['guiapp']['App']['SetProxyGuard'](arg1);
+}
+
+export function SetProxyMode(arg1) {
+  return window['go']['guiapp']['App']['SetProxyMode'](arg1);
+}
+
 export function SetSystemProxy(arg1) {
   return window['go']['guiapp']['App']['SetSystemProxy'](arg1);
 }
@@ -88,6 +112,10 @@ export function StartEngine() {
 
 export function StopEngine() {
   return window['go']['guiapp']['App']['StopEngine']();
+}
+
+export function TestConnectivity() {
+  return window['go']['guiapp']['App']['TestConnectivity']();
 }
 
 export function TunSessionStats() {

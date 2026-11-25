@@ -29,6 +29,33 @@ const isSocks5 = computed(() => proto.value === "socks5");
 const isSPP = computed(() => !isSocks5.value && proto.value !== "pingtunnel");
 const isRdns = computed(() => proto.value === "rdns");
 
+// "Allow LAN" is not a separate config key: it is the listen address of the
+// three inbound services. Exposing it as one switch keeps the user from having
+// to edit three strings and get them inconsistent (one bound to 0.0.0.0 and the
+// other two still on loopback is a confusing half-open proxy).
+function splitHostPort(addr: string): [string, string] {
+  if (!addr) return ["", ""];
+  const i = addr.lastIndexOf(":");
+  if (i < 0) return [addr, ""];
+  return [addr.slice(0, i), addr.slice(i)];
+}
+
+const allowLAN = computed({
+  get: () => {
+    const addrs = [form.value.socks5_listen, form.value.http_listen, form.value.dns_listen];
+    return addrs.some((a) => typeof a === "string" && a.startsWith("0.0.0.0:"));
+  },
+  set: (on: boolean) => {
+    const host = on ? "0.0.0.0" : "127.0.0.1";
+    for (const key of ["socks5_listen", "http_listen", "dns_listen"]) {
+      const [h, port] = splitHostPort(String(form.value[key] ?? ""));
+      // A field the user left empty stays empty (service disabled) rather than
+      // being turned into a listener they never asked for.
+      if (h) form.value[key] = host + port;
+    }
+  },
+});
+
 async function load() {
   error.value = "";
   message.value = "";
@@ -269,6 +296,14 @@ onMounted(load);
       <div class="card section">
         <h3>本地监听</h3>
         <div class="form-grid">
+          <label>允许局域网访问</label>
+          <label class="check-line">
+            <input type="checkbox" v-model="allowLAN" />
+            <span class="check-note">
+              把所有监听地址在 127.0.0.1 与 0.0.0.0 之间切换(手机等设备可共用)。
+              同网段的任何人都能用你的代理,Windows 防火墙可能还需要放行。
+            </span>
+          </label>
           <label>SOCKS5 socks5_listen</label>
           <input v-model="form.socks5_listen" placeholder="127.0.0.1:10808" />
           <label>HTTP http_listen</label>

@@ -6,19 +6,26 @@ import {
   GetLaunchAtLogin,
   GetLifetimeStats,
   GetOverview,
+  GetProxyGuard,
+  GetProxyMode,
   GetSeries,
   GetSystemProxy,
   GetTunMode,
   ResetLifetimeStats,
   SetAutoStartCore,
   SetLaunchAtLogin,
+  SetProxyGuard,
+  SetProxyMode,
   SetSystemProxy,
   SetTunMode,
   StartEngine,
   StopEngine,
+  TestConnectivity,
 } from "../../wailsjs/go/guiapp/App";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { guiapp, stats } from "../../wailsjs/go/models";
+import { fmtBytes, fmtBps, fmtUptime } from "../format";
+import { t } from "../i18n";
 
 const status = ref(new guiapp.EngineStatus());
 const overview = ref<stats.Overview | null>(null);
@@ -29,6 +36,10 @@ const autoStart = ref(false);
 const launchAtLogin = ref(false);
 const tunMode = ref(false);
 const lifetime = ref<stats.LifetimeStats | null>(null);
+const proxyMode = ref("rule");
+const probe = ref<guiapp.ProbeReport | null>(null);
+const probing = ref(false);
+const proxyGuard = ref(false);
 
 let timer: number | undefined;
 // Unsubscribing matters: this view is re-mounted on every tab switch, and a
@@ -122,16 +133,39 @@ async function resetLifetime() {
   }
 }
 
-function fmtBytes(n?: number | null): string {
-  if (!n || n <= 0) return "0 B";
-  const units = ["B", "KB", "MB", "GB", "TB", "PB"];
-  let i = 0;
-  let v = n;
-  while (v >= 1024 && i < units.length - 1) {
-    v /= 1024;
-    i++;
+async function toggleProxyGuard() {
+  actionError.value = "";
+  try {
+    await SetProxyGuard(!proxyGuard.value);
+    proxyGuard.value = await GetProxyGuard();
+  } catch (e: any) {
+    actionError.value = String(e?.message ?? e);
   }
-  return `${v.toFixed(i === 0 ? 0 : 2)} ${units[i]}`;
+}
+
+async function setMode(mode: string) {
+  actionError.value = "";
+  try {
+    await SetProxyMode(mode);
+    // Read back rather than assume: the backend normalises unknown values and
+    // emits the status event at the same time.
+    proxyMode.value = await GetProxyMode();
+    proxyGuard.value = await GetProxyGuard();
+  } catch (e: any) {
+    actionError.value = String(e?.message ?? e);
+  }
+}
+
+async function runProbe() {
+  probing.value = true;
+  actionError.value = "";
+  try {
+    probe.value = await TestConnectivity();
+  } catch (e: any) {
+    actionError.value = String(e?.message ?? e);
+  } finally {
+    probing.value = false;
+  }
 }
 
 function lifetimeTotal(c?: stats.Counters | null): number {
@@ -139,26 +173,11 @@ function lifetimeTotal(c?: stats.Counters | null): number {
   return (c.upload_bytes ?? 0) + (c.download_bytes ?? 0);
 }
 
-function fmtBps(n?: number | null): string {
-  return `${fmtBytes(n)}/s`;
-}
-
-function fmtUptime(seconds?: number | null): string {
-  if (!seconds || seconds <= 0) return "-";
-  const d = Math.floor(seconds / 86400);
-  const h = Math.floor((seconds % 86400) / 3600);
-  const m = Math.floor((seconds % 3600) / 60);
-  const s = Math.floor(seconds % 60);
-  if (d > 0) return `${d}天${h}时`;
-  if (h > 0) return `${h}时${m}分`;
-  if (m > 0) return `${m}分${s}秒`;
-  return `${s}秒`;
-}
-
 onMounted(async () => {
   offStatus = EventsOn("engine:status", (st: guiapp.EngineStatus) => {
     status.value = new guiapp.EngineStatus(st);
     tunMode.value = !!st.tun;
+    if (st.proxy_mode) proxyMode.value = st.proxy_mode;
     if (!st.running) {
       overview.value = null;
       series.value = [];
@@ -170,6 +189,7 @@ onMounted(async () => {
     autoStart.value = await GetAutoStartCore();
     launchAtLogin.value = await GetLaunchAtLogin();
     tunMode.value = await GetTunMode();
+    proxyMode.value = await GetProxyMode();
   } catch {
     // binding unavailable; keep default
   }
@@ -216,16 +236,20 @@ const chart = computed(() => {
         <span class="dot" :class="status.running ? 'on' : 'off'"></span>
         <div>
           <div class="status-title">
-            {{ status.running ? "代理运行中" : "代理已停止" }}
+            {{ status.running ? t("engine.running") : t("engine.stopped") }}
           </div>
           <div class="status-sub" v-if="status.running">
             SOCKS5 {{ status.socks5 }} · HTTP {{ status.http }} · DNS
             {{ status.dns }}
           </div>
           <div class="status-sub" v-else-if="status.spp_server">
-            上游 {{ status.spp_server }} ({{ status.spp_proto }}),启动后生效
+            {{
+              t("engine.upstreamPending", {
+                v: `${status.spp_server} (${status.spp_proto})`,
+              })
+            }}
           </div>
-          <div class="status-sub" v-else>在设置中配置上游服务器</div>
+          <div class="status-sub" v-else>{{ t("engine.noUpstream") }}</div>
         </div>
       </div>
       <button
@@ -234,8 +258,38 @@ const chart = computed(() => {
         :disabled="busy"
         @click="toggle"
       >
-        {{ busy ? "处理中..." : status.running ? "停止代理" : "启动代理" }}
+        {{ busy ? t("engine.working") : status.running ? t("engine.stop") : t("engine.start") }}
       </button>
+    </div>
+
+    <div class="mode-row">
+      <span class="mode-label">{{ t("mode.label") }}</span>
+      <div class="seg">
+        <button :class="{ active: proxyMode === 'rule' }" @click="setMode('rule')">
+          {{ t("mode.rule") }}
+        </button>
+        <button
+          :class="{ active: proxyMode === 'global' }"
+          @click="setMode('global')"
+        >
+          {{ t("mode.global") }}
+        </button>
+        <button
+          :class="{ active: proxyMode === 'direct' }"
+          @click="setMode('direct')"
+        >
+          {{ t("mode.direct") }}
+        </button>
+      </div>
+      <span class="mode-hint">
+        {{
+          proxyMode === "rule"
+            ? t("mode.ruleHint")
+            : proxyMode === "global"
+              ? t("mode.globalHint")
+              : t("mode.directHint")
+        }}
+      </span>
     </div>
 
     <div class="options-row">
@@ -245,8 +299,8 @@ const chart = computed(() => {
         @click="toggleSystemProxy"
       >
         <span class="dot" :class="status.system_proxy ? 'on' : 'off'"></span>
-        <span class="chip-title">系统透明代理</span>
-        <span class="chip-state">{{ status.system_proxy ? "已开启" : "已关闭" }}</span>
+        <span class="chip-title">{{ t("chip.systemProxy") }}</span>
+        <span class="chip-state">{{ status.system_proxy ? t("chip.on") : t("chip.off") }}</span>
       </button>
       <button
         class="card option-chip"
@@ -254,8 +308,8 @@ const chart = computed(() => {
         @click="toggleAutoStart"
       >
         <span class="dot" :class="autoStart ? 'on' : 'off'"></span>
-        <span class="chip-title">自动连接</span>
-        <span class="chip-state">{{ autoStart ? "启动时连接" : "手动连接" }}</span>
+        <span class="chip-title">{{ t("chip.autoConnect") }}</span>
+        <span class="chip-state">{{ autoStart ? t("chip.connectOnStart") : t("chip.connectManual") }}</span>
       </button>
       <button
         class="card option-chip"
@@ -263,9 +317,9 @@ const chart = computed(() => {
         @click="toggleLaunchAtLogin"
       >
         <span class="dot" :class="launchAtLogin ? 'on' : 'off'"></span>
-        <span class="chip-title">开机启动</span>
+        <span class="chip-title">{{ t("chip.launchAtLogin") }}</span>
         <span class="chip-state">{{
-          launchAtLogin ? "登录后自动运行" : "未启用"
+          launchAtLogin ? t("chip.loginAuto") : t("chip.disabled")
         }}</span>
       </button>
       <button
@@ -274,15 +328,26 @@ const chart = computed(() => {
         @click="toggleTunMode"
       >
         <span class="dot" :class="status.tun ? 'on' : 'off'"></span>
-        <span class="chip-title">TUN 模式</span>
+        <span class="chip-title">{{ t("chip.tun") }}</span>
         <span class="chip-state">{{
           status.tun
-            ? "全局接管中"
+            ? t("chip.tunActive")
             : status.tun_error
-              ? "失败,点重试"
+              ? t("chip.tunRetry")
               : tunMode
-                ? "授权后生效"
-                : "零配置全局代理"
+                ? t("chip.tunPending")
+                : t("chip.tunIdle")
+        }}</span>
+      </button>
+      <button
+        class="card option-chip"
+        :class="{ on: proxyGuard }"
+        @click="toggleProxyGuard"
+      >
+        <span class="dot" :class="proxyGuard ? 'on' : 'off'"></span>
+        <span class="chip-title">{{ t("chip.guard") }}</span>
+        <span class="chip-state">{{
+          proxyGuard ? t("chip.guardOn") : t("chip.disabled")
         }}</span>
       </button>
     </div>
@@ -291,31 +356,31 @@ const chart = computed(() => {
 
     <div class="cards">
       <div class="card stat">
-        <div class="stat-label">活动连接</div>
+        <div class="stat-label">{{ t("stat.conns") }}</div>
         <div class="stat-value">{{ overview?.active_conns ?? 0 }}</div>
       </div>
       <div class="card stat">
-        <div class="stat-label">上传速率</div>
+        <div class="stat-label">{{ t("stat.upRate") }}</div>
         <div class="stat-value up">{{ fmtBps(overview?.rate?.upload_bps) }}</div>
       </div>
       <div class="card stat">
-        <div class="stat-label">下载速率</div>
+        <div class="stat-label">{{ t("stat.downRate") }}</div>
         <div class="stat-value down">
           {{ fmtBps(overview?.rate?.download_bps) }}
         </div>
       </div>
       <div class="card stat">
-        <div class="stat-label">上传总量</div>
+        <div class="stat-label">{{ t("stat.upTotal") }}</div>
         <div class="stat-value">{{ fmtBytes(overview?.totals?.upload_bytes) }}</div>
       </div>
       <div class="card stat">
-        <div class="stat-label">下载总量</div>
+        <div class="stat-label">{{ t("stat.downTotal") }}</div>
         <div class="stat-value">
           {{ fmtBytes(overview?.totals?.download_bytes) }}
         </div>
       </div>
       <div class="card stat">
-        <div class="stat-label">运行时长</div>
+        <div class="stat-label">{{ t("stat.uptime") }}</div>
         <div class="stat-value small">
           {{ fmtUptime(overview?.uptime_seconds) }}
         </div>
@@ -324,12 +389,37 @@ const chart = computed(() => {
 
     <div class="card chart-card">
       <div class="chart-head">
-        <span>累计流量(永久记录,重启与重置后仍保留)</span>
-        <button class="btn small" @click="resetLifetime">清零</button>
+        <span>{{ t("probe.title") }}</span>
+        <button class="btn small" :disabled="probing" @click="runProbe">
+          {{ probing ? t("probe.running") : t("probe.run") }}
+        </button>
+      </div>
+      <div v-if="probe" class="probe-list">
+        <div v-for="it in probe.items" :key="it.key" class="probe-row">
+          <span class="dot" :class="it.ok ? 'on' : 'off'"></span>
+          <span class="probe-name">{{ it.name }}</span>
+          <span class="probe-ms" :class="{ dim: !it.ok }">
+            {{ it.ok ? `${it.ms}ms` : t("probe.fail") }}
+          </span>
+          <span class="probe-detail">{{ it.detail }}</span>
+        </div>
+        <div class="probe-exit" v-if="probe.exit_ip">
+          {{ t("probe.exitIP") }}:{{ probe.exit_ip }}
+        </div>
+      </div>
+      <p v-else class="hint">
+        {{ t("probe.hint") }}
+      </p>
+    </div>
+
+    <div class="card chart-card">
+      <div class="chart-head">
+        <span>{{ t("lifetime.title") }}</span>
+        <button class="btn small" @click="resetLifetime">{{ t("lifetime.reset") }}</button>
       </div>
       <div class="lifetime-grid">
         <div class="lt-item">
-          <div class="lt-label lt-cn">国内</div>
+          <div class="lt-label lt-cn">{{ t("lifetime.direct") }}</div>
           <div class="lt-value">{{ fmtBytes(lifetimeTotal(lifetime?.direct)) }}</div>
           <div class="lt-sub">
             ↑ {{ fmtBytes(lifetime?.direct?.upload_bytes) }} · ↓
@@ -337,7 +427,7 @@ const chart = computed(() => {
           </div>
         </div>
         <div class="lt-item">
-          <div class="lt-label lt-foreign">国外</div>
+          <div class="lt-label lt-foreign">{{ t("lifetime.proxy") }}</div>
           <div class="lt-value">{{ fmtBytes(lifetimeTotal(lifetime?.proxy)) }}</div>
           <div class="lt-sub">
             ↑ {{ fmtBytes(lifetime?.proxy?.upload_bytes) }} · ↓
@@ -345,7 +435,7 @@ const chart = computed(() => {
           </div>
         </div>
         <div class="lt-item">
-          <div class="lt-label">合计</div>
+          <div class="lt-label">{{ t("lifetime.total") }}</div>
           <div class="lt-value">{{ fmtBytes(lifetimeTotal(lifetime?.totals)) }}</div>
           <div class="lt-sub">
             ↑ {{ fmtBytes(lifetime?.totals?.upload_bytes) }} · ↓
@@ -357,10 +447,10 @@ const chart = computed(() => {
 
     <div class="card chart-card">
       <div class="chart-head">
-        <span>近 30 分钟流量</span>
+        <span>{{ t("chart.title") }}</span>
         <span class="legend">
-          <i class="sw up"></i>上传
-          <i class="sw down"></i>下载
+          <i class="sw up"></i>{{ t("chart.up") }}
+          <i class="sw down"></i>{{ t("chart.down") }}
         </span>
       </div>
       <svg class="chart" preserveAspectRatio="none" viewBox="0 0 100 100">
@@ -383,7 +473,7 @@ const chart = computed(() => {
           y="52"
           text-anchor="middle"
         >
-          {{ status.running ? "暂无数据" : "引擎未运行" }}
+          {{ status.running ? t("chart.empty") : t("chart.noEngine") }}
         </text>
       </svg>
     </div>

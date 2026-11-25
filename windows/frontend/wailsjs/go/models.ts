@@ -10,6 +10,7 @@ export namespace guiapp {
 	    dns: string;
 	    spp_server: string;
 	    spp_proto: string;
+	    proxy_mode: string;
 	    error: string;
 	
 	    static createFrom(source: any = {}) {
@@ -27,8 +28,67 @@ export namespace guiapp {
 	        this.dns = source["dns"];
 	        this.spp_server = source["spp_server"];
 	        this.spp_proto = source["spp_proto"];
+	        this.proxy_mode = source["proxy_mode"];
 	        this.error = source["error"];
 	    }
+	}
+	export class ProbeItem {
+	    key: string;
+	    name: string;
+	    target: string;
+	    ok: boolean;
+	    ms: number;
+	    status: number;
+	    detail: string;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProbeItem(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.key = source["key"];
+	        this.name = source["name"];
+	        this.target = source["target"];
+	        this.ok = source["ok"];
+	        this.ms = source["ms"];
+	        this.status = source["status"];
+	        this.detail = source["detail"];
+	    }
+	}
+	export class ProbeReport {
+	    at: number;
+	    exit_ip: string;
+	    items: ProbeItem[];
+	
+	    static createFrom(source: any = {}) {
+	        return new ProbeReport(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.at = source["at"];
+	        this.exit_ip = source["exit_ip"];
+	        this.items = this.convertValues(source["items"], ProbeItem);
+	    }
+	
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 
 }

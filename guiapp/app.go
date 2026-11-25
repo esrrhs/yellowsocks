@@ -15,6 +15,7 @@ import (
 	"github.com/esrrhs/gohome/loggo"
 	"github.com/esrrhs/yellowsocks/core"
 	"github.com/esrrhs/yellowsocks/core/config"
+	"github.com/esrrhs/yellowsocks/core/router"
 	"github.com/esrrhs/yellowsocks/core/stats"
 	"github.com/esrrhs/yellowsocks/core/version"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
@@ -31,7 +32,15 @@ type guiSettings struct {
 	AutoStartCore bool   `json:"auto_start_core"`
 	LaunchAtLogin bool   `json:"launch_at_login"`
 	TunMode       bool   `json:"tun_mode"`
-	AppliedPorts  string `json:"sysproxy_applied_ports,omitempty"`
+	// ProxyMode is one of "rule" (default), "global" or "direct". Stored as a
+	// string rather than an enum so an older build reading a newer file keeps
+	// the value instead of dropping it.
+	ProxyMode string `json:"proxy_mode,omitempty"`
+	// ProxyGuard keeps the OS proxy registration pointed at us. Opt-in: while
+	// it is on, switching the system proxy off from Windows is undone within
+	// half a minute.
+	ProxyGuard   bool   `json:"proxy_guard,omitempty"`
+	AppliedPorts string `json:"sysproxy_applied_ports,omitempty"`
 }
 
 // defaultConfig is written on first launch. It uses the same format as the
@@ -65,6 +74,7 @@ type EngineStatus struct {
 	DNS         string `json:"dns"`
 	SPPServer   string `json:"spp_server"`
 	SPPProto    string `json:"spp_proto"`
+	ProxyMode   string `json:"proxy_mode"`
 	Error       string `json:"error"`
 }
 
@@ -85,6 +95,8 @@ type App struct {
 	tunWanted      bool   // TUN mode intent, persisted in settings.json
 	tunActive      bool   // the virtual adapter is up and capturing traffic
 	tunErr         string // last TUN failure, surfaced in the UI
+	proxyMode      string // "rule" | "global" | "direct", persisted in settings.json
+	proxyGuard     bool   // keep the OS proxy registration ours, persisted too
 	appliedPorts   string // ports registered with the OS, for stale cleanup
 
 	// tunApplyMu serializes bring-up and teardown of the adapter. Two paths
@@ -109,7 +121,10 @@ type App struct {
 
 // NewApp creates the App application struct that is bound to the frontend.
 func NewApp() *App {
-	return &App{}
+	// Rule-based routing is the default, and it has to be set here rather than
+	// left empty: the tray and the window read this before Startup has loaded
+	// the settings file, and an empty mode would render as "no mode selected".
+	return &App{proxyMode: router.ModeRule.String()}
 }
 
 // startup is called when the app starts. The context is saved so we can call
@@ -125,6 +140,8 @@ func (a *App) Startup(ctx context.Context) {
 		a.autoStartCore = st.AutoStartCore
 		a.launchAtLogin = st.LaunchAtLogin
 		a.tunWanted = st.TunMode
+		a.proxyMode = router.ParseMode(st.ProxyMode).String()
+		a.proxyGuard = st.ProxyGuard
 	}
 	a.mu.Unlock()
 	// Keep the OS launch-at-login entry pointing at the current exe (the
@@ -134,6 +151,7 @@ func (a *App) Startup(ctx context.Context) {
 	go syncLaunchAtLogin(st)
 	a.loadLifetimeStats()
 	go runTray(a)
+	go a.proxyGuardLoop()
 	// TUN mode needs the engine running; the boot flag alone is not enough.
 	wantEngine := st.AutoStartCore || st.TunMode
 	if wantEngine {
@@ -206,6 +224,9 @@ func (a *App) StartEngine() error {
 		return err
 	}
 	engine := core.NewEngine(cfg)
+	// Apply the remembered policy before Start: the router is created inside
+	// Start, and the engine carries the mode over to it.
+	engine.SetRoutingMode(router.ParseMode(a.proxyMode))
 	if err := engine.Start(); err != nil {
 		a.emitStatusLocked(err)
 		return err
@@ -287,6 +308,62 @@ func (a *App) GetTunMode() bool {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return a.tunWanted
+}
+
+// GetProxyMode reports the routing policy: "rule" (default), "global" or
+// "direct".
+func (a *App) GetProxyMode() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.proxyMode
+}
+
+// GetProxyGuard reports whether the system proxy registration is being
+// defended against changes made by other programs.
+func (a *App) GetProxyGuard() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.proxyGuard
+}
+
+// SetProxyGuard turns the guard on or off and persists the choice. Turning it
+// on while the system proxy is registered repairs the registration right away,
+// so the first check is not half a minute late.
+func (a *App) SetProxyGuard(on bool) error {
+	a.mu.Lock()
+	a.proxyGuard = on
+	err := a.persistSettingsLocked()
+	a.mu.Unlock()
+	if err != nil {
+		loggo.Warn("[GUI] persist settings: %s", err.Error())
+	}
+	a.emitStatus()
+	if on {
+		// Repair immediately instead of waiting for the next tick: turning the
+		// switch on means "make this true now".
+		go a.proxyGuardCheck()
+	}
+	return err
+}
+
+// SetProxyMode switches the routing policy and persists it. It takes effect on
+// the running engine immediately (the router reads the mode from an atomic,
+// so in-flight connections are not interrupted) and is re-applied on the next
+// Start, which builds a fresh router.
+func (a *App) SetProxyMode(mode string) error {
+	m := router.ParseMode(mode)
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.proxyMode = m.String()
+	if err := a.persistSettingsLocked(); err != nil {
+		loggo.Warn("[GUI] persist settings: %s", err.Error())
+	}
+	if a.running && a.engine != nil {
+		a.engine.SetRoutingMode(m)
+	}
+	loggo.Info("[GUI] routing mode -> %s", a.proxyMode)
+	a.emitStatusLocked(nil)
+	return nil
 }
 
 // TunSessionStats returns live TUN packet counters (diagnostics).
@@ -848,6 +925,7 @@ func (a *App) statusLocked() EngineStatus {
 		SystemProxy: a.sysProxyActive || a.sysProxyWanted,
 		Tun:         a.tunActive,
 		TunError:    a.tunErr,
+		ProxyMode:   a.proxyMode,
 		Error:       "",
 	}
 	if a.running {

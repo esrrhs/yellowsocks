@@ -18,9 +18,17 @@ export function GetLaunchAtLogin():Promise<boolean>;
 
 export function GetLifetimeStats():Promise<stats.LifetimeStats>;
 
+export function GetLogPath():Promise<string>;
+
+export function GetLogs(arg1:string,arg2:number):Promise<Array<string>>;
+
 export function GetNodes():Promise<Array<stats.NodeStat>>;
 
 export function GetOverview():Promise<stats.Overview>;
+
+export function GetProxyGuard():Promise<boolean>;
+
+export function GetProxyMode():Promise<string>;
 
 export function GetSeries(arg1:number):Promise<Array<stats.SeriesPoint>>;
 
@@ -40,6 +48,10 @@ export function SetAutoStartCore(arg1:boolean):Promise<void>;
 
 export function SetLaunchAtLogin(arg1:boolean):Promise<void>;
 
+export function SetProxyGuard(arg1:boolean):Promise<void>;
+
+export function SetProxyMode(arg1:string):Promise<void>;
+
 export function SetSystemProxy(arg1:boolean):Promise<void>;
 
 export function SetTunMode(arg1:boolean):Promise<void>;
@@ -47,5 +59,7 @@ export function SetTunMode(arg1:boolean):Promise<void>;
 export function StartEngine():Promise<void>;
 
 export function StopEngine():Promise<void>;
+
+export function TestConnectivity():Promise<guiapp.ProbeReport>;
 
 export function TunSessionStats():Promise<string>;

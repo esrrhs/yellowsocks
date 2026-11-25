@@ -5,7 +5,9 @@ go 1.27.3
 require (
 	github.com/esrrhs/gohome v0.0.0-20261117234107-9a6d0fe6c6a2
 	github.com/esrrhs/yellowsocks/guiapp v0.0.0
+	github.com/miekg/dns v1.1.73
 	github.com/wailsapp/wails/v2 v2.17.1
+	golang.org/x/sys v0.50.0
 )
 
 require (
@@ -43,7 +45,6 @@ require (
 	github.com/leaanthony/u v1.1.1 // indirect
 	github.com/mattn/go-colorable v0.1.15 // indirect
 	github.com/mattn/go-isatty v0.0.22 // indirect
-	github.com/miekg/dns v1.1.73 // indirect
 	github.com/oschwald/geoip2-golang v1.13.0 // indirect
 	github.com/oschwald/maxminddb-golang v1.13.1 // indirect
 	github.com/pkg/browser v0.0.0-20240102092130-5ac0b6a4141c // indirect
@@ -67,7 +68,6 @@ require (
 	golang.org/x/exp v0.0.0-20260611194520-c48552f49976 // indirect
 	golang.org/x/net v0.63.0 // indirect
 	golang.org/x/sync v0.25.0 // indirect
-	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 	golang.zx2c4.com/wintun v0.0.0-20230126152724-0fa3db229ce2 // indirect
