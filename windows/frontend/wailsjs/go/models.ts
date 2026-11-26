@@ -40,11 +40,11 @@ export namespace guiapp {
 	}
 	export class ProbeItem {
 	    key: string;
-	    name: string;
 	    target: string;
 	    ok: boolean;
 	    ms: number;
 	    status: number;
+	    detail_key?: string;
 	    detail: string;
 	
 	    static createFrom(source: any = {}) {
@@ -54,11 +54,11 @@ export namespace guiapp {
 	    constructor(source: any = {}) {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.key = source["key"];
-	        this.name = source["name"];
 	        this.target = source["target"];
 	        this.ok = source["ok"];
 	        this.ms = source["ms"];
 	        this.status = source["status"];
+	        this.detail_key = source["detail_key"];
 	        this.detail = source["detail"];
 	    }
 	}

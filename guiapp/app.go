@@ -39,7 +39,11 @@ type guiSettings struct {
 	// ProxyGuard keeps the OS proxy registration pointed at us. Opt-in: while
 	// it is on, switching the system proxy off from Windows is undone within
 	// half a minute.
-	ProxyGuard   bool   `json:"proxy_guard,omitempty"`
+	ProxyGuard bool `json:"proxy_guard,omitempty"`
+	// Language is the UI language ("zh" or "en"). The tray reads it too, so
+	// the menu speaks the same language as the window instead of always
+	// Chinese.
+	Language string `json:"language,omitempty"`
 	AppliedPorts string `json:"sysproxy_applied_ports,omitempty"`
 }
 
@@ -110,6 +114,7 @@ type App struct {
 	tunErr         string // last TUN failure, surfaced in the UI
 	proxyMode      string // "rule" | "global" | "direct", persisted in settings.json
 	proxyGuard     bool   // keep the OS proxy registration ours, persisted too
+	language       string // UI language ("zh" | "en"), shared by window and tray
 	appliedPorts   string // ports registered with the OS, for stale cleanup
 
 	// tunApplyMu serializes bring-up and teardown of the adapter. Two paths
@@ -161,6 +166,11 @@ func (a *App) Startup(ctx context.Context) {
 		a.tunWanted = st.TunMode
 		a.proxyMode = router.ParseMode(st.ProxyMode).String()
 		a.proxyGuard = st.ProxyGuard
+		// Empty means "never chosen" (a settings file from before language
+		// support, or a fresh install): the window decides then, and tells us.
+		if st.Language != "" {
+			a.language = normalizeLang(st.Language)
+		}
 	}
 	a.mu.Unlock()
 	// Keep the OS launch-at-login entry pointing at the current exe (the
@@ -360,6 +370,31 @@ func (a *App) GetProxyGuard() bool {
 	return a.proxyGuard
 }
 
+// GetLanguage returns the UI language the tray renders in, or "" when it has
+// never been chosen (fresh install, or a settings file from before language
+// support). The window owns the switcher: it reads this back on startup so the
+// two surfaces cannot disagree, and answers "" with its own choice.
+func (a *App) GetLanguage() string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.language
+}
+
+// SetLanguage records the UI language and persists it. Nothing is emitted: the
+// window is the one switching, and the tray re-reads the value on its next
+// one-second refresh, which is how its menu follows along without the menu
+// being rebuilt.
+func (a *App) SetLanguage(lang string) error {
+	a.mu.Lock()
+	a.language = normalizeLang(lang)
+	err := a.persistSettingsLocked()
+	a.mu.Unlock()
+	if err != nil {
+		loggo.Warn("[GUI] persist settings: %s", err.Error())
+	}
+	return err
+}
+
 // SetProxyGuard turns the guard on or off and persists the choice. Turning it
 // on while the system proxy is registered repairs the registration right away,
 // so the first check is not half a minute late.
@@ -454,7 +489,7 @@ func (a *App) applyTun() error {
 	running, cfg := a.running, a.lastCfg
 	a.mu.Unlock()
 	if !running {
-		return errors.New("TUN 模式需要引擎处于运行状态,请先启动代理")
+		return uiErr("err.tunNeedRunning", nil)
 	}
 
 	if !isElevated() {
@@ -487,7 +522,7 @@ func (a *App) applyTun() error {
 			a.quitApp()
 			return nil
 		}
-		handoverErr := errors.New("管理员授权未完成,TUN 模式未开启")
+		handoverErr := uiErr("err.tunAuthIncomplete", nil)
 		a.mu.Lock()
 		a.tunWanted = false
 		_ = a.persistSettingsLocked()
@@ -602,12 +637,14 @@ func (a *App) tunParamsFrom(cfg core.EngineConfig) TunParams {
 		}
 	}
 	// The TUN watchdog auto-rolls-back a dead pipeline so the user's network
-	// recovers on its own; surface the reason in the UI.
+	// recovers on its own. tunErr is a diagnostic flag, not display text (the
+	// chip only checks that it is set), so it stays in English: anything that
+	// reaches the screen comes from the catalogue.
 	params.OnRollback = func(reason string) {
 		a.disableTUNDNS()
 		a.mu.Lock()
 		a.tunActive = false
-		a.tunErr = "TUN 管线自检失败,已自动回滚: " + reason
+		a.tunErr = "watchdog rollback: " + reason
 		a.mu.Unlock()
 		a.emitStatus()
 	}
@@ -704,6 +741,7 @@ func (a *App) persistSettingsLocked() error {
 		TunMode:       a.tunWanted,
 		ProxyMode:     a.proxyMode,
 		ProxyGuard:    a.proxyGuard,
+		Language:      a.language,
 		AppliedPorts:  a.appliedPorts,
 	})
 }

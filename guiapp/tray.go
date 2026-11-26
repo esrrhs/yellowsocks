@@ -29,29 +29,36 @@ func runTray(a *App) {
 		systray.SetIcon(trayIcon())
 		systray.SetTooltip("YellowSocks")
 
+		// Every label comes from the shared catalogue, in the language the
+		// window is using. The titles set here are the first paint; refreshTray
+		// rewrites them once a second, which is also how a language switch in
+		// the window reaches the menu without the menu being rebuilt.
+		lang := a.GetLanguage()
+		m := &trayMenu{}
+
 		// Status lines: disabled items used as read-only text. Two of them
 		// keep the icon useful without opening the window.
-		mStatus := systray.AddMenuItem("代理已停止", "Current transfer rate")
-		mStatus.Disable()
-		mConns := systray.AddMenuItem("连接: 0", "Active connections")
-		mConns.Disable()
+		m.status = systray.AddMenuItem(tr(lang, "tray.stopped", nil), "Current transfer rate")
+		m.status.Disable()
+		m.conns = systray.AddMenuItem(tr(lang, "tray.conns", map[string]string{"n": "0"}), "Active connections")
+		m.conns.Disable()
 		systray.AddSeparator()
 
-		mShow := systray.AddMenuItem("显示主界面", "Show the YellowSocks window")
+		m.show = systray.AddMenuItem(tr(lang, "tray.show", nil), "Show the YellowSocks window")
 		systray.AddSeparator()
-		mStart := systray.AddMenuItem("启动代理", "Start the proxy engine")
-		mStop := systray.AddMenuItem("停止代理", "Stop the proxy engine")
-		mStop.Disable()
-		mSysProxy := systray.AddMenuItem("系统代理: 关", "Toggle the OS-wide system proxy")
-		mTun := systray.AddMenuItem("TUN 模式: 关", "Toggle TUN mode (needs administrator)")
+		m.start = systray.AddMenuItem(tr(lang, "tray.start", nil), "Start the proxy engine")
+		m.stop = systray.AddMenuItem(tr(lang, "tray.stop", nil), "Stop the proxy engine")
+		m.stop.Disable()
+		m.sysProxy = systray.AddMenuItem(tr(lang, "tray.systemProxyOff", nil), "Toggle the OS-wide system proxy")
+		m.tun = systray.AddMenuItem(tr(lang, "tray.tunOff", nil), "Toggle TUN mode (needs administrator)")
 
-		mMode := systray.AddMenuItem("分流模式", "Routing mode")
-		mRule := mMode.AddSubMenuItemCheckbox("规则", "Domestic direct, foreign proxied", true)
-		mGlobal := mMode.AddSubMenuItemCheckbox("全局", "Everything through the proxy", false)
-		mDirect := mMode.AddSubMenuItemCheckbox("直连", "Everything direct", false)
+		m.mode = systray.AddMenuItem(tr(lang, "tray.mode", nil), "Routing mode")
+		m.rule = m.mode.AddSubMenuItemCheckbox(tr(lang, "tray.modeRule", nil), "Domestic direct, foreign proxied", true)
+		m.global = m.mode.AddSubMenuItemCheckbox(tr(lang, "tray.modeGlobal", nil), "Everything through the proxy", false)
+		m.direct = m.mode.AddSubMenuItemCheckbox(tr(lang, "tray.modeDirect", nil), "Everything direct", false)
 
 		systray.AddSeparator()
-		mQuit := systray.AddMenuItem("退出", "Quit YellowSocks")
+		m.quit = systray.AddMenuItem(tr(lang, "tray.quit", nil), "Quit YellowSocks")
 
 		// A left click on the icon is the reflex for "open it again" once the
 		// window has been closed to the tray, and on Windows it did nothing
@@ -59,39 +66,39 @@ func runTray(a *App) {
 		// entry as the discoverable equivalent, and the right click still
 		// opens the menu because only the left button is claimed here.
 		systray.SetOnClick(func(systray.IMenu) { showMainWindow(a) })
-		mShow.Click(func() { showMainWindow(a) })
-		mStart.Click(func() {
+		m.show.Click(func() { showMainWindow(a) })
+		m.start.Click(func() {
 			go func() {
 				_ = a.StartEngine()
-				refreshTray(a, mStatus, mConns, mStart, mStop, mSysProxy, mTun, mRule, mGlobal, mDirect)
+				refreshTray(a, m)
 			}()
 		})
-		mStop.Click(func() {
+		m.stop.Click(func() {
 			go func() {
 				_ = a.StopEngine()
-				refreshTray(a, mStatus, mConns, mStart, mStop, mSysProxy, mTun, mRule, mGlobal, mDirect)
+				refreshTray(a, m)
 			}()
 		})
-		mSysProxy.Click(func() {
+		m.sysProxy.Click(func() {
 			go func() {
 				_ = a.SetSystemProxy(!a.GetSystemProxy())
-				refreshTray(a, mStatus, mConns, mStart, mStop, mSysProxy, mTun, mRule, mGlobal, mDirect)
+				refreshTray(a, m)
 			}()
 		})
-		mTun.Click(func() {
+		m.tun.Click(func() {
 			// SetTunMode can block for the UAC handover; never do that on the
 			// menu's own goroutine, which also serves the window messages.
 			go func() {
 				_ = a.SetTunMode(!a.GetTunMode())
-				refreshTray(a, mStatus, mConns, mStart, mStop, mSysProxy, mTun, mRule, mGlobal, mDirect)
+				refreshTray(a, m)
 			}()
 		})
-		mRule.Click(func() { setModeFromTray(a, "rule", mRule, mGlobal, mDirect) })
-		mGlobal.Click(func() { setModeFromTray(a, "global", mRule, mGlobal, mDirect) })
-		mDirect.Click(func() { setModeFromTray(a, "direct", mRule, mGlobal, mDirect) })
-		mQuit.Click(a.quitApp)
+		m.rule.Click(func() { setModeFromTray(a, "rule", m) })
+		m.global.Click(func() { setModeFromTray(a, "global", m) })
+		m.direct.Click(func() { setModeFromTray(a, "direct", m) })
+		m.quit.Click(a.quitApp)
 
-		refreshTray(a, mStatus, mConns, mStart, mStop, mSysProxy, mTun, mRule, mGlobal, mDirect)
+		refreshTray(a, m)
 
 		go func() {
 			ticker := time.NewTicker(time.Second)
@@ -99,7 +106,7 @@ func runTray(a *App) {
 			for {
 				select {
 				case <-ticker.C:
-					refreshTray(a, mStatus, mConns, mStart, mStop, mSysProxy, mTun, mRule, mGlobal, mDirect)
+					refreshTray(a, m)
 				case <-stop:
 					return
 				}
@@ -108,39 +115,60 @@ func runTray(a *App) {
 	}, func() { close(stop) })
 }
 
+// trayMenu groups the items refreshTray rewrites. One value instead of a
+// ten-argument list: the refresh runs from the ticker and from every click
+// handler, and a new item is easy to forget in half of those call sites.
+type trayMenu struct {
+	status   *systray.MenuItem
+	conns    *systray.MenuItem
+	show     *systray.MenuItem
+	start    *systray.MenuItem
+	stop     *systray.MenuItem
+	sysProxy *systray.MenuItem
+	tun      *systray.MenuItem
+	mode     *systray.MenuItem
+	rule     *systray.MenuItem
+	global   *systray.MenuItem
+	direct   *systray.MenuItem
+	quit     *systray.MenuItem
+}
+
 // setModeFromTray applies a mode and moves the checkmark, reading the mode back
 // afterwards instead of trusting the click: the backend normalises unknown
 // values and is the only thing that knows what actually took effect.
-func setModeFromTray(a *App, mode string, mRule, mGlobal, mDirect *systray.MenuItem) {
+func setModeFromTray(a *App, mode string, m *trayMenu) {
 	go func() {
 		if err := a.SetProxyMode(mode); err != nil {
 			return
 		}
-		applyModeChecks(a.GetProxyMode(), mRule, mGlobal, mDirect)
+		applyModeChecks(a.GetProxyMode(), m)
 	}()
 }
 
-func applyModeChecks(mode string, mRule, mGlobal, mDirect *systray.MenuItem) {
+func applyModeChecks(mode string, m *trayMenu) {
 	if mode == "global" {
-		mGlobal.Check()
+		m.global.Check()
 	} else {
-		mGlobal.Uncheck()
+		m.global.Uncheck()
 	}
 	if mode == "direct" {
-		mDirect.Check()
+		m.direct.Check()
 	} else {
-		mDirect.Uncheck()
+		m.direct.Uncheck()
 	}
 	if mode == "rule" {
-		mRule.Check()
+		m.rule.Check()
 	} else {
-		mRule.Uncheck()
+		m.rule.Uncheck()
 	}
 }
 
 // refreshTray pulls one snapshot and rewrites the menu titles. Everything is
-// read through the App methods, so the tray cannot drift from the window.
-func refreshTray(a *App, mStatus, mConns, mStart, mStop, mSysProxy, mTun, mRule, mGlobal, mDirect *systray.MenuItem) {
+// read through the App methods, so the tray cannot drift from the window --
+// language included: the titles are re-rendered from the catalogue on every
+// tick, so switching the language in the window changes the menu within a
+// second without restarting anything.
+func refreshTray(a *App, m *trayMenu) {
 	defer func() {
 		// The menu is destroyed at exit while this may still be in flight;
 		// a panic here would take down the shutdown path.
@@ -148,12 +176,15 @@ func refreshTray(a *App, mStatus, mConns, mStart, mStop, mSysProxy, mTun, mRule,
 	}()
 
 	st := a.EngineStatus()
+	lang := a.GetLanguage()
+	text := func(key string, vars map[string]string) string { return tr(lang, key, vars) }
+
 	if st.Running {
-		mStart.Disable()
-		mStop.Enable()
+		m.start.Disable()
+		m.stop.Enable()
 	} else {
-		mStart.Enable()
-		mStop.Disable()
+		m.start.Enable()
+		m.stop.Disable()
 	}
 
 	active := 0
@@ -163,29 +194,41 @@ func refreshTray(a *App, mStatus, mConns, mStart, mStop, mSysProxy, mTun, mRule,
 		up = ov.Rate.Upload
 		down = ov.Rate.Download
 	}
+	activeStr := fmt.Sprintf("%d", active)
 	if st.Running {
-		mStatus.SetTitle(fmt.Sprintf("↓ %s  ↑ %s", trayRate(down), trayRate(up)))
-		systray.SetTooltip(fmt.Sprintf("YellowSocks · ↓ %s ↑ %s · %d 连接", trayRate(down), trayRate(up), active))
+		m.status.SetTitle(fmt.Sprintf("↓ %s  ↑ %s", trayRate(down), trayRate(up)))
+		systray.SetTooltip(text("tray.tooltipRate", map[string]string{
+			"down": trayRate(down), "up": trayRate(up), "n": activeStr,
+		}))
 	} else {
-		mStatus.SetTitle("代理已停止")
-		systray.SetTooltip("YellowSocks · 已停止")
+		m.status.SetTitle(text("tray.stopped", nil))
+		systray.SetTooltip(text("tray.tooltipStopped", nil))
 	}
-	mConns.SetTitle(fmt.Sprintf("连接: %d", active))
+	m.conns.SetTitle(text("tray.conns", map[string]string{"n": activeStr}))
+
+	m.show.SetTitle(text("tray.show", nil))
+	m.start.SetTitle(text("tray.start", nil))
+	m.stop.SetTitle(text("tray.stop", nil))
+	m.mode.SetTitle(text("tray.mode", nil))
+	m.rule.SetTitle(text("tray.modeRule", nil))
+	m.global.SetTitle(text("tray.modeGlobal", nil))
+	m.direct.SetTitle(text("tray.modeDirect", nil))
+	m.quit.SetTitle(text("tray.quit", nil))
 
 	if st.SystemProxy {
-		mSysProxy.SetTitle("系统代理: 开")
+		m.sysProxy.SetTitle(text("tray.systemProxyOn", nil))
 	} else {
-		mSysProxy.SetTitle("系统代理: 关")
+		m.sysProxy.SetTitle(text("tray.systemProxyOff", nil))
 	}
 	switch {
 	case st.Tun:
-		mTun.SetTitle("TUN 模式: 开")
+		m.tun.SetTitle(text("tray.tunOn", nil))
 	case st.TunError != "":
-		mTun.SetTitle("TUN 模式: 失败")
+		m.tun.SetTitle(text("tray.tunFailed", nil))
 	default:
-		mTun.SetTitle("TUN 模式: 关")
+		m.tun.SetTitle(text("tray.tunOff", nil))
 	}
-	applyModeChecks(st.ProxyMode, mRule, mGlobal, mDirect)
+	applyModeChecks(st.ProxyMode, m)
 }
 
 // trayRate is the compact form used in the tooltip: one decimal is noise at a

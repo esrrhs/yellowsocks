@@ -238,8 +238,10 @@ func (m *tunManager) enable(params TunParams) (err error) {
 		// it listens on now. Re-pointing the stack means restarting it,
 		// which cannot be done safely in-process, so refuse instead of
 		// risking an exit or a silently dead pipeline.
-		return fmt.Errorf("TUN 引擎已在运行且上游 SOCKS5 端口已改变 (%s → %s)；请退出应用后重新开启 TUN",
-			m.stackProxy, params.Socks5Addr)
+		return uiErr("err.tunPortChanged", map[string]string{
+			"from": m.stackProxy,
+			"to":   params.Socks5Addr,
+		})
 	}
 
 	// 3. The adapter now exists: grab its LUID for the routing config.
@@ -577,7 +579,7 @@ func (m *tunManager) forceTeardown(reason string) {
 	// 4. Tell the UI why the adapter vanished so the user is not left with a
 	// silent "TUN on" indicator and no connectivity.
 	if fn, ok := m.rollbackFn.Load().(func(string)); ok && fn != nil {
-		go fn("TUN 已强制回滚: " + reason)
+		go fn("watchdog rollback: " + reason)
 	}
 }
 

@@ -25,7 +25,7 @@ import {
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { guiapp, stats } from "../../wailsjs/go/models";
 import { fmtBytes, fmtBps, fmtUptime } from "../format";
-import { t } from "../i18n";
+import { errText, t, type MsgKey } from "../i18n";
 
 const status = ref(new guiapp.EngineStatus());
 const overview = ref<stats.Overview | null>(null);
@@ -108,7 +108,7 @@ async function toggle() {
       await StartEngine();
     }
   } catch (e: any) {
-    actionError.value = String(e?.message ?? e);
+    actionError.value = errText(e);
   } finally {
     busy.value = false;
     await refresh();
@@ -125,7 +125,7 @@ async function toggleSystemProxy() {
     // "the button does nothing"). Ask the backend what it actually applied.
     status.value.system_proxy = await GetSystemProxy();
   } catch (e: any) {
-    actionError.value = String(e?.message ?? e);
+    actionError.value = errText(e);
   }
 }
 
@@ -135,7 +135,7 @@ async function toggleAutoStart() {
     await SetAutoStartCore(!autoStart.value);
     autoStart.value = await GetAutoStartCore();
   } catch (e: any) {
-    actionError.value = String(e?.message ?? e);
+    actionError.value = errText(e);
   }
 }
 
@@ -146,7 +146,7 @@ async function toggleLaunchAtLogin() {
     // The OS registry is the source of truth for this one.
     launchAtLogin.value = await GetLaunchAtLogin();
   } catch (e: any) {
-    actionError.value = String(e?.message ?? e);
+    actionError.value = errText(e);
   }
 }
 
@@ -157,7 +157,7 @@ async function toggleTunMode() {
     await SetTunMode(next);
     tunMode.value = next;
   } catch (e: any) {
-    actionError.value = String(e?.message ?? e);
+    actionError.value = errText(e);
   }
 }
 
@@ -167,7 +167,7 @@ async function resetLifetime() {
     await ResetLifetimeStats();
     lifetime.value = await GetLifetimeStats();
   } catch (e: any) {
-    actionError.value = String(e?.message ?? e);
+    actionError.value = errText(e);
   }
 }
 
@@ -177,7 +177,7 @@ async function toggleProxyGuard() {
     await SetProxyGuard(!proxyGuard.value);
     proxyGuard.value = await GetProxyGuard();
   } catch (e: any) {
-    actionError.value = String(e?.message ?? e);
+    actionError.value = errText(e);
   }
 }
 
@@ -190,7 +190,7 @@ async function setMode(mode: string) {
     proxyMode.value = await GetProxyMode();
     proxyGuard.value = await GetProxyGuard();
   } catch (e: any) {
-    actionError.value = String(e?.message ?? e);
+    actionError.value = errText(e);
   }
 }
 
@@ -200,10 +200,37 @@ async function runProbe() {
   try {
     probe.value = await TestConnectivity();
   } catch (e: any) {
-    actionError.value = String(e?.message ?? e);
+    actionError.value = errText(e);
   } finally {
     probing.value = false;
   }
+}
+
+// The probe report carries no display text: Go reports which row it is (key)
+// and which sentence applies (detail_key), and the wording lives here, in both
+// languages. Raw details (a Go net error, an HTTP status) are shown verbatim
+// because they are diagnostics, not copy.
+const probeNames: Record<string, MsgKey> = {
+  direct: "probe.item.direct",
+  proxied: "probe.item.proxied",
+  upstream: "probe.item.upstream",
+  exitip: "probe.item.exitip",
+  engine: "probe.item.engine",
+};
+const probeDetails: Record<string, MsgKey> = {
+  engine_stopped: "probe.detail.engineStopped",
+  not_configured: "probe.detail.notConfigured",
+  tcp_ok: "probe.detail.tcpOk",
+};
+
+function probeName(it: guiapp.ProbeItem): string {
+  const key = probeNames[it.key];
+  return key ? t(key) : it.key;
+}
+
+function probeDetail(it: guiapp.ProbeItem): string {
+  const key = it.detail_key ? probeDetails[it.detail_key] : undefined;
+  return key ? t(key) : it.detail || "";
 }
 
 function lifetimeTotal(c?: stats.Counters | null): number {
@@ -465,14 +492,14 @@ const chart = computed(() => {
       <div v-if="probe" class="probe-list">
         <div v-for="it in probe.items" :key="it.key" class="probe-row">
           <span class="dot" :class="it.ok ? 'on' : 'off'"></span>
-          <span class="probe-name">{{ it.name }}</span>
+          <span class="probe-name">{{ probeName(it) }}</span>
           <span class="probe-ms" :class="{ dim: !it.ok }">
             {{ it.ok ? `${it.ms}ms` : t("probe.fail") }}
           </span>
-          <span class="probe-detail">{{ it.detail }}</span>
+          <span class="probe-detail">{{ probeDetail(it) }}</span>
         </div>
         <div class="probe-exit" v-if="probe.exit_ip">
-          {{ t("probe.exitIP") }}:{{ probe.exit_ip }}
+          {{ t("probe.exitIPValue", { ip: probe.exit_ip }) }}
         </div>
       </div>
       <p v-else class="hint">

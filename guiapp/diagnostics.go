@@ -25,14 +25,20 @@ const (
 )
 
 // ProbeItem is one line of the report.
+//
+// The report carries no display text: the row's label is looked up from Key
+// ("direct", "proxied", ...) in the frontend catalogue, and DetailKey covers
+// the outcomes the app itself words ("no upstream configured", ...). Detail
+// stays raw -- a Go error string or an HTTP status -- because it is diagnostic
+// output, not a sentence we can translate meaningfully.
 type ProbeItem struct {
-	Key    string `json:"key"`
-	Name   string `json:"name"`
-	Target string `json:"target"`
-	OK     bool   `json:"ok"`
-	Ms     int64  `json:"ms"`
-	Status int    `json:"status"`
-	Detail string `json:"detail"`
+	Key       string `json:"key"`
+	Target    string `json:"target"`
+	OK        bool   `json:"ok"`
+	Ms        int64  `json:"ms"`
+	Status    int    `json:"status"`
+	DetailKey string `json:"detail_key,omitempty"`
+	Detail    string `json:"detail"`
 }
 
 // ProbeReport is what the UI renders: the individual legs plus the exit IP,
@@ -55,8 +61,7 @@ func (a *App) TestConnectivity() ProbeReport {
 	report := ProbeReport{At: time.Now().Unix()}
 	if !running {
 		report.Items = []ProbeItem{{
-			Key: "engine", Name: "引擎", OK: false,
-			Detail: "代理未运行,先启动代理再测",
+			Key: "engine", OK: false, DetailKey: "engine_stopped",
 		}}
 		return report
 	}
@@ -67,11 +72,11 @@ func (a *App) TestConnectivity() ProbeReport {
 
 	go func() {
 		defer wg.Done()
-		items[0] = probeHTTPGet("direct", "国内直连", "https://www.baidu.com", "", nil)
+		items[0] = probeHTTPGet("direct", "https://www.baidu.com", "", nil)
 	}()
 	go func() {
 		defer wg.Done()
-		items[1] = probeHTTPGet("proxied", "国外(经代理)", "https://www.google.com", httpAddr, nil)
+		items[1] = probeHTTPGet("proxied", "https://www.google.com", httpAddr, nil)
 	}()
 	go func() {
 		defer wg.Done()
@@ -80,7 +85,7 @@ func (a *App) TestConnectivity() ProbeReport {
 	go func() {
 		defer wg.Done()
 		body := ""
-		item := probeHTTPGet("exitip", "出口 IP", "https://api.ipify.org?format=json", httpAddr, &body)
+		item := probeHTTPGet("exitip", "https://api.ipify.org?format=json", httpAddr, &body)
 		items[3] = item
 		if item.OK {
 			if ip := parseIPify(body); ip != "" {
@@ -98,8 +103,8 @@ func (a *App) TestConnectivity() ProbeReport {
 // probeHTTPGet performs one GET and reports status and elapsed time. proxyAddr is
 // the local HTTP proxy ("host:port"), empty for a direct request. When body is
 // non-nil up to 4KB of the response is stored in it.
-func probeHTTPGet(key, name, rawURL, proxyAddr string, body *string) ProbeItem {
-	item := ProbeItem{Key: key, Name: name, Target: rawURL}
+func probeHTTPGet(key, rawURL, proxyAddr string, body *string) ProbeItem {
+	item := ProbeItem{Key: key, Target: rawURL}
 	tr := &http.Transport{
 		// No keep-alives: a reused connection would report the handshake of a
 		// previous probe instead of this one.
@@ -136,9 +141,9 @@ func probeHTTPGet(key, name, rawURL, proxyAddr string, body *string) ProbeItem {
 // connection. A refused connection here explains every other failure, and it
 // is the fastest way to tell "upstream is down" from "rules are wrong".
 func probeUpstream(addr string) ProbeItem {
-	item := ProbeItem{Key: "upstream", Name: "上游 SOCKS5", Target: addr}
+	item := ProbeItem{Key: "upstream", Target: addr}
 	if strings.TrimSpace(addr) == "" {
-		item.Detail = "未配置上游服务器"
+		item.DetailKey = "not_configured"
 		return item
 	}
 	start := time.Now()
@@ -150,7 +155,7 @@ func probeUpstream(addr string) ProbeItem {
 	}
 	_ = conn.Close()
 	item.OK = true
-	item.Detail = "TCP 连接成功"
+	item.DetailKey = "tcp_ok"
 	return item
 }
 

@@ -1,13 +1,14 @@
 <script lang="ts" setup>
-import { computed, onMounted, onUnmounted, ref, type Component } from "vue";
+import { computed, onMounted, onUnmounted, ref, watch, type Component } from "vue";
 import Home from "./views/Home.vue";
 import Connections from "./views/Connections.vue";
 import Logs from "./views/Logs.vue";
 import Settings from "./views/Settings.vue";
 import About from "./views/About.vue";
-import { locale, setLocale, t, type Locale } from "./i18n";
+import { GetLanguage, SetLanguage } from "../wailsjs/go/guiapp/App";
+import { locale, setLocale, t, type Locale, type MsgKey } from "./i18n";
 
-const pages = [
+const pages: { id: string; key: MsgKey; icon: string }[] = [
   { id: "home", key: "nav.home", icon: "⌂" },
   { id: "connections", key: "nav.connections", icon: "⇄" },
   { id: "logs", key: "nav.logs", icon: "☰" },
@@ -39,10 +40,10 @@ const themeMode = ref<ThemeMode>(
   (localStorage.getItem("ys-theme") as ThemeMode) || "system",
 );
 
-const themes: { id: ThemeMode; label: string }[] = [
-  { id: "system", label: "跟" },
-  { id: "dark", label: "暗" },
-  { id: "light", label: "亮" },
+const themes: { id: ThemeMode; key: MsgKey }[] = [
+  { id: "system", key: "theme.system" },
+  { id: "dark", key: "theme.dark" },
+  { id: "light", key: "theme.light" },
 ];
 
 const mq = window.matchMedia("(prefers-color-scheme: dark)");
@@ -67,12 +68,27 @@ const langs: { id: Locale; label: string }[] = [
   { id: "en", label: "EN" },
 ];
 
+// The persisted choice lives in settings.json (readable by the tray before the
+// WebView even loads); localStorage is only the cache that gets the first paint
+// right. Reading it back here is what keeps the two stores from drifting: if
+// they disagree, settings.json wins, and an empty answer ("never chosen") is
+// answered with the language the window is already showing.
+watch(locale, (l) => {
+  void SetLanguage(l).catch(() => {});
+});
+
 // Applied during setup, not onMounted: the first paint must already have the
 // right theme or a light-theme user sees a dark flash on every launch.
 applyTheme();
 
-onMounted(() => {
+onMounted(async () => {
   mq.addEventListener("change", applyTheme);
+  const saved = await GetLanguage().catch(() => "");
+  if ((saved === "zh" || saved === "en") && saved !== locale.value) {
+    setLocale(saved);
+  } else if (saved !== "zh" && saved !== "en") {
+    void SetLanguage(locale.value).catch(() => {});
+  }
 });
 
 onUnmounted(() => {
@@ -104,10 +120,10 @@ onUnmounted(() => {
             v-for="th in themes"
             :key="th.id"
             :class="{ active: themeMode === th.id }"
-            :title="th.id"
+            :title="t(th.key)"
             @click="setTheme(th.id)"
           >
-            {{ th.label }}
+            {{ t(th.key) }}
           </button>
         </div>
         <div class="mini-switch">

@@ -2,11 +2,17 @@
 import { computed, onMounted, ref } from "vue";
 import { load as yamlLoad, dump as yamlDump } from "js-yaml";
 import { GetConfig, SaveConfig } from "../../wailsjs/go/guiapp/App";
+import { errText, t } from "../i18n";
 
 // The form edits the same flat keys as the CLI config file (FileConfig in
 // core/config). Every field not covered by a form section is still editable
 // through the YAML source mode, and unknown keys survive form saves because
 // saving merges onto the freshly parsed document.
+//
+// Labels are translated; the config key is shown next to them as code. That is
+// the one piece of English that belongs in both languages: it is the literal
+// key in config.yaml, not a gloss, so translating it would only hide which
+// line of the file the field writes.
 
 const mode = ref<"form" | "yaml">("form");
 const raw = ref(""); // authoritative YAML text (source of truth)
@@ -63,7 +69,7 @@ async function load() {
     raw.value = await GetConfig();
     parseDoc();
   } catch (e: any) {
-    error.value = String(e?.message ?? e);
+    error.value = errText(e);
   }
 }
 
@@ -71,7 +77,7 @@ function parseDoc() {
   try {
     doc.value = (yamlLoad(raw.value) as Record<string, unknown>) ?? {};
   } catch (e: any) {
-    error.value = `YAML 解析失败: ${String(e?.message ?? e)}`;
+    error.value = t("settings.yamlParseFailed", { msg: String(e?.message ?? e) });
     doc.value = {};
   }
   const d = doc.value;
@@ -196,17 +202,17 @@ async function save() {
     try {
       content = applyForm();
     } catch (e: any) {
-      error.value = `生成 YAML 失败: ${String(e?.message ?? e)}`;
+      error.value = t("settings.yamlBuildFailed", { msg: String(e?.message ?? e) });
       return;
     }
   }
   try {
     await SaveConfig(content);
-    message.value = "已保存,启动或重启引擎后生效";
+    message.value = t("settings.saved");
     raw.value = content;
     doc.value = (yamlLoad(content) as Record<string, unknown>) ?? {};
   } catch (e: any) {
-    error.value = String(e?.message ?? e);
+    error.value = errText(e);
   }
 }
 
@@ -218,7 +224,7 @@ function switchMode(m: "form" | "yaml") {
     try {
       raw.value = applyForm();
     } catch (e: any) {
-      error.value = `生成 YAML 失败: ${String(e?.message ?? e)}`;
+      error.value = t("settings.yamlBuildFailed", { msg: String(e?.message ?? e) });
       return;
     }
   } else {
@@ -233,59 +239,59 @@ onMounted(load);
 <template>
   <section class="page">
     <div class="settings-head">
-      <h2>设置</h2>
+      <h2>{{ t("settings.title") }}</h2>
       <div class="mode-switch">
-        <button class="btn small" :class="{ active: mode === 'form' }" @click="switchMode('form')">表单</button>
-        <button class="btn small" :class="{ active: mode === 'yaml' }" @click="switchMode('yaml')">YAML 源码</button>
+        <button class="btn small" :class="{ active: mode === 'form' }" @click="switchMode('form')">
+          {{ t("settings.form") }}
+        </button>
+        <button class="btn small" :class="{ active: mode === 'yaml' }" @click="switchMode('yaml')">
+          {{ t("settings.yaml") }}
+        </button>
       </div>
     </div>
-    <p class="hint">
-      配置与 CLI 的 config.yaml 完全同格式,可互相拷贝。表单模式保存时会合并回原文档,
-      未在表单中出现的高级字段(nodes、api_origins 等)不会丢失;YAML 源码模式保留注释。
-      全部字段说明见仓库根目录 config.example.yaml。
-    </p>
+    <p class="hint">{{ t("settings.hint") }}</p>
 
     <template v-if="mode === 'form'">
       <div class="card section">
-        <h3>上游服务器</h3>
+        <h3>{{ t("settings.sectionUpstream") }}</h3>
         <div class="form-grid">
-          <label>协议 spp_proto</label>
+          <label>{{ t("settings.sppProto") }} <code>spp_proto</code></label>
           <select v-model="form.spp_proto">
             <option v-for="p in sppProtos" :key="p" :value="p">{{ p }}</option>
           </select>
 
-          <label>地址 spp_server</label>
+          <label>{{ t("settings.sppServer") }} <code>spp_server</code></label>
           <input v-model="form.spp_server" :placeholder="isSocks5 ? '192.168.0.105:1080' : '1.2.3.4:8888'" />
 
           <template v-if="isSocks5">
-            <label>用户名 spp_username</label>
-            <input v-model="form.spp_username" placeholder="无认证则留空" />
-            <label>密码 spp_password</label>
-            <input v-model="form.spp_password" type="password" placeholder="无认证则留空" />
+            <label>{{ t("settings.sppUsername") }} <code>spp_username</code></label>
+            <input v-model="form.spp_username" :placeholder="t('settings.ph.authOptional')" />
+            <label>{{ t("settings.sppPassword") }} <code>spp_password</code></label>
+            <input v-model="form.spp_password" type="password" :placeholder="t('settings.ph.authOptional')" />
           </template>
 
           <template v-if="!isSocks5">
-            <label>密钥 spp_key</label>
+            <label>{{ t("settings.sppKey") }} <code>spp_key</code></label>
             <input v-model="form.spp_key" />
           </template>
 
           <template v-if="isSPP">
-            <label>加密 spp_encrypt</label>
+            <label>{{ t("settings.sppEncrypt") }} <code>spp_encrypt</code></label>
             <input v-model="form.spp_encrypt" placeholder="default" />
-            <label>压缩 spp_compress</label>
+            <label>{{ t("settings.sppCompress") }} <code>spp_compress</code></label>
             <input v-model="form.spp_compress" type="number" placeholder="128" />
           </template>
 
           <template v-if="isRdns">
-            <label>隧道域名 spp_rdnsdomain</label>
+            <label>{{ t("settings.rdnsDomain") }} <code>spp_rdnsdomain</code></label>
             <input v-model="form.spp_rdnsdomain" placeholder="tunnel.example.com" />
-            <label>上游 DNS spp_rdnsupstream</label>
+            <label>{{ t("settings.rdnsUpstream") }} <code>spp_rdnsupstream</code></label>
             <input v-model="form.spp_rdnsupstream" />
-            <label>PSK spp_rdnspsk</label>
+            <label>{{ t("settings.rdnsPsk") }} <code>spp_rdnspsk</code></label>
             <input v-model="form.spp_rdnspsk" />
-            <label>查询类型 spp_rdnsquerytype</label>
+            <label>{{ t("settings.rdnsQueryType") }} <code>spp_rdnsquerytype</code></label>
             <select v-model="form.spp_rdnsquerytype">
-              <option value="">默认 (TXT)</option>
+              <option value="">{{ t("settings.queryDefault") }}</option>
               <option value="TXT">TXT</option>
               <option value="NULL">NULL</option>
             </select>
@@ -294,91 +300,88 @@ onMounted(load);
       </div>
 
       <div class="card section">
-        <h3>本地监听</h3>
+        <h3>{{ t("settings.sectionListen") }}</h3>
         <div class="form-grid">
-          <label>允许局域网访问</label>
+          <label>{{ t("settings.allowLan") }}</label>
           <label class="check-line">
             <input type="checkbox" v-model="allowLAN" />
-            <span class="check-note">
-              把所有监听地址在 127.0.0.1 与 0.0.0.0 之间切换(手机等设备可共用)。
-              同网段的任何人都能用你的代理,Windows 防火墙可能还需要放行。
-            </span>
+            <span class="check-note">{{ t("settings.allowLanHint") }}</span>
           </label>
-          <label>SOCKS5 socks5_listen</label>
+          <label>{{ t("settings.socks5Listen") }} <code>socks5_listen</code></label>
           <input v-model="form.socks5_listen" placeholder="127.0.0.1:10808" />
-          <label>HTTP http_listen</label>
+          <label>{{ t("settings.httpListen") }} <code>http_listen</code></label>
           <input v-model="form.http_listen" placeholder="127.0.0.1:8080" />
-          <label>DNS dns_listen</label>
+          <label>{{ t("settings.dnsListen") }} <code>dns_listen</code></label>
           <input v-model="form.dns_listen" placeholder="127.0.0.1:1053" />
-          <label>DoH doh_listen</label>
-          <input v-model="form.doh_listen" placeholder="留空禁用" />
-          <label>DoT dot_listen</label>
-          <input v-model="form.dot_listen" placeholder="留空禁用,如 :853" />
-          <label>IPv6 出站 ipv6</label>
+          <label>{{ t("settings.dohListen") }} <code>doh_listen</code></label>
+          <input v-model="form.doh_listen" :placeholder="t('settings.ph.disabled')" />
+          <label>{{ t("settings.dotListen") }} <code>dot_listen</code></label>
+          <input v-model="form.dot_listen" :placeholder="t('settings.ph.dotPort')" />
+          <label>{{ t("settings.ipv6") }} <code>ipv6</code></label>
           <input type="checkbox" v-model="form.ipv6" />
         </div>
       </div>
 
       <div class="card section">
-        <h3>DNS 上游</h3>
+        <h3>{{ t("settings.sectionDns") }}</h3>
         <div class="form-grid">
-          <label>直连 DNS direct_dns</label>
+          <label>{{ t("settings.directDns") }} <code>direct_dns</code></label>
           <input v-model="form.direct_dns" placeholder="1.1.1.1:53" />
-          <label>远程 DoH doh_url</label>
+          <label>{{ t("settings.dohUrl") }} <code>doh_url</code></label>
           <input v-model="form.doh_url" placeholder="https://1.1.1.1/dns-query" />
         </div>
       </div>
 
       <div class="card section">
-        <h3>路由分流</h3>
+        <h3>{{ t("settings.sectionRouting") }}</h3>
         <div class="form-grid">
-          <label>直连域名 direct_domains</label>
-          <textarea v-model="form.direct_domains" class="mini-editor" placeholder="每行一个域名,如 cn.example.com"></textarea>
-          <label>直连网段 direct_cidrs</label>
-          <textarea v-model="form.direct_cidrs" class="mini-editor" placeholder="每行一个 CIDR,如 192.168.0.0/16"></textarea>
-          <label>跳过国家 skip_country</label>
-          <input v-model="form.skip_country" placeholder="CN, US 或 none" />
-          <label>GeoIP 数据库 geoip_file</label>
-          <input v-model="form.geoip_file" placeholder="GeoLite2-Country.mmdb 路径" />
-          <label>国内域名表 china_domains</label>
+          <label>{{ t("settings.directDomains") }} <code>direct_domains</code></label>
+          <textarea v-model="form.direct_domains" class="mini-editor" :placeholder="t('settings.ph.domains')"></textarea>
+          <label>{{ t("settings.directCidrs") }} <code>direct_cidrs</code></label>
+          <textarea v-model="form.direct_cidrs" class="mini-editor" :placeholder="t('settings.ph.cidrs')"></textarea>
+          <label>{{ t("settings.skipCountry") }} <code>skip_country</code></label>
+          <input v-model="form.skip_country" :placeholder="t('settings.ph.skipCountry')" />
+          <label>{{ t("settings.geoipFile") }} <code>geoip_file</code></label>
+          <input v-model="form.geoip_file" :placeholder="t('settings.ph.geoipPath')" />
+          <label>{{ t("settings.chinaDomains") }} <code>china_domains</code></label>
           <input v-model="form.china_domains" />
-          <label>GFW 域名表 gfw_domains</label>
+          <label>{{ t("settings.gfwDomains") }} <code>gfw_domains</code></label>
           <input v-model="form.gfw_domains" />
         </div>
       </div>
 
       <div class="card section">
-        <h3>认证与 TLS</h3>
+        <h3>{{ t("settings.sectionTls") }}</h3>
         <div class="form-grid">
-          <label>代理用户名 proxy_username</label>
-          <input v-model="form.proxy_username" placeholder="入站认证,留空禁用" />
-          <label>代理密码 proxy_password</label>
+          <label>{{ t("settings.proxyUsername") }} <code>proxy_username</code></label>
+          <input v-model="form.proxy_username" :placeholder="t('settings.ph.authOptional')" />
+          <label>{{ t("settings.proxyPassword") }} <code>proxy_password</code></label>
           <input v-model="form.proxy_password" type="password" />
-          <label>DoT 证书 tls_cert</label>
+          <label>{{ t("settings.tlsCert") }} <code>tls_cert</code></label>
           <input v-model="form.tls_cert" />
-          <label>DoT 私钥 tls_key</label>
+          <label>{{ t("settings.tlsKey") }} <code>tls_key</code></label>
           <input v-model="form.tls_key" />
         </div>
       </div>
 
       <div class="card section">
-        <h3>API 与统计</h3>
+        <h3>{{ t("settings.sectionApi") }}</h3>
         <div class="form-grid">
-          <label>API 监听 api_listen</label>
-          <input v-model="form.api_listen" placeholder="留空禁用,如 127.0.0.1:9090" />
-          <label>API Token api_token</label>
-          <input v-model="form.api_token" placeholder="none 表示信任网络下免认证" />
-          <label>只读 Token api_readonly_token</label>
+          <label>{{ t("settings.apiListen") }} <code>api_listen</code></label>
+          <input v-model="form.api_listen" :placeholder="t('settings.ph.apiListen')" />
+          <label>{{ t("settings.apiToken") }} <code>api_token</code></label>
+          <input v-model="form.api_token" :placeholder="t('settings.ph.apiToken')" />
+          <label>{{ t("settings.apiReadonlyToken") }} <code>api_readonly_token</code></label>
           <input v-model="form.api_readonly_token" />
-          <label>内嵌面板 api_dashboard</label>
+          <label>{{ t("settings.apiDashboard") }} <code>api_dashboard</code></label>
           <input type="checkbox" v-model="form.api_dashboard" />
-          <label>pprof api_pprof</label>
+          <label>{{ t("settings.apiPprof") }} <code>api_pprof</code></label>
           <input type="checkbox" v-model="form.api_pprof" />
-          <label>统计文件 stats_file</label>
+          <label>{{ t("settings.statsFile") }} <code>stats_file</code></label>
           <input v-model="form.stats_file" placeholder="stats.json" />
-          <label>历史时长(时) stats_history_hours</label>
+          <label>{{ t("settings.statsHistoryHours") }} <code>stats_history_hours</code></label>
           <input v-model="form.stats_history_hours" type="number" />
-          <label>日志级别 loglevel</label>
+          <label>{{ t("settings.loglevel") }} <code>loglevel</code></label>
           <select v-model="form.loglevel">
             <option v-for="l in loglevels" :key="l" :value="l">{{ l }}</option>
           </select>
@@ -387,12 +390,17 @@ onMounted(load);
     </template>
 
     <template v-else>
-      <textarea v-model="raw" class="editor" spellcheck="false" aria-label="配置内容"></textarea>
+      <textarea
+        v-model="raw"
+        class="editor"
+        spellcheck="false"
+        :aria-label="t('settings.editorLabel')"
+      ></textarea>
     </template>
 
     <div class="actions">
-      <button class="btn primary" @click="save">保存</button>
-      <button class="btn" @click="load">重新加载</button>
+      <button class="btn primary" @click="save">{{ t("settings.save") }}</button>
+      <button class="btn" @click="load">{{ t("settings.reload") }}</button>
       <span v-if="message" class="msg ok">{{ message }}</span>
       <span v-if="error" class="msg err">{{ error }}</span>
     </div>

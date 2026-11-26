@@ -22,6 +22,10 @@ export function GetErrors() {
   return window['go']['guiapp']['App']['GetErrors']();
 }
 
+export function GetLanguage() {
+  return window['go']['guiapp']['App']['GetLanguage']();
+}
+
 export function GetLaunchAtLogin() {
   return window['go']['guiapp']['App']['GetLaunchAtLogin']();
 }
@@ -84,6 +88,10 @@ export function SaveConfig(arg1) {
 
 export function SetAutoStartCore(arg1) {
   return window['go']['guiapp']['App']['SetAutoStartCore'](arg1);
+}
+
+export function SetLanguage(arg1) {
+  return window['go']['guiapp']['App']['SetLanguage'](arg1);
 }
 
 export function SetLaunchAtLogin(arg1) {

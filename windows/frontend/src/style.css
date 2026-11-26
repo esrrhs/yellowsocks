@@ -482,6 +482,16 @@ body {
     text-align: right;
 }
 
+/* The config key next to a translated label: the one string that stays English
+   in both languages, because it is the literal key in config.yaml. */
+.form-grid label code {
+    font-family: var(--mono, ui-monospace, Consolas, monospace);
+    font-size: 11px;
+    color: var(--text);
+    opacity: 0.42;
+    margin-left: 4px;
+}
+
 .form-grid input[type="text"],
 .form-grid input[type="password"],
 .form-grid input[type="number"],

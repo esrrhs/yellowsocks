@@ -14,6 +14,8 @@ export function GetConfig():Promise<string>;
 
 export function GetErrors():Promise<Array<stats.ErrorEntry>>;
 
+export function GetLanguage():Promise<string>;
+
 export function GetLaunchAtLogin():Promise<boolean>;
 
 export function GetLifetimeStats():Promise<stats.LifetimeStats>;
@@ -45,6 +47,8 @@ export function ResetLifetimeStats():Promise<void>;
 export function SaveConfig(arg1:string):Promise<void>;
 
 export function SetAutoStartCore(arg1:boolean):Promise<void>;
+
+export function SetLanguage(arg1:string):Promise<void>;
 
 export function SetLaunchAtLogin(arg1:boolean):Promise<void>;
 
