@@ -898,7 +898,11 @@ func (a *App) GetSessions() []stats.SessionView {
 	if !a.running || a.engine == nil {
 		return nil
 	}
-	return a.engine.Stats().ActiveSessions(stats.ActiveOptions{Limit: 200})
+	// The list is capped so a burst of short-lived connections cannot make the
+	// one-second poll expensive; the overview still reports the true total, and
+	// the connections page shows it, so a capped list is visible rather than
+	// silently short.
+	return a.engine.Stats().ActiveSessions(stats.ActiveOptions{Limit: 1000})
 }
 
 // GetNodes returns per-upstream-node traffic and health.

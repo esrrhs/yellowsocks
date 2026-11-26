@@ -81,6 +81,7 @@
   "conn.all": "全部",
   "conn.proxy": "代理",
   "conn.direct": "直连",
+  "conn.udp": "UDP",
   "conn.count": "{n} / {m} 条",
   "conn.colHost": "域名",
   "conn.colClient": "客户端",

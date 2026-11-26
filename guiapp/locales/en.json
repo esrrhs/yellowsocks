@@ -81,6 +81,7 @@
   "conn.all": "All",
   "conn.proxy": "Proxy",
   "conn.direct": "Direct",
+  "conn.udp": "UDP",
   "conn.count": "{n} / {m}",
   "conn.colHost": "Host",
   "conn.colClient": "Client",

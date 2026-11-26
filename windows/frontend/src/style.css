@@ -997,6 +997,7 @@ body {
 
 .toolbar {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     gap: 12px;
     margin-bottom: 12px;
@@ -1038,6 +1039,15 @@ body {
     background: var(--card-hover);
     color: var(--text);
     border-color: var(--accent);
+}
+
+/* The count on each filter chip is what lets "all" visibly add up:
+   130 = proxy 41 + direct 5 + UDP 84. */
+.seg-count {
+    margin-left: 6px;
+    font-size: 11px;
+    opacity: 0.7;
+    font-variant-numeric: tabular-nums;
 }
 
 .toolbar-meta {
@@ -1182,6 +1192,9 @@ body {
     line-height: 16px;
     background: var(--tag-bg);
     color: var(--text-dim);
+    /* A two-character label must stay on one line: the fixed table squeezes
+       the decision column, and "代 / 理" stacked reads like a different tag. */
+    white-space: nowrap;
 }
 
 .tag.proxy {

@@ -1,6 +1,6 @@
 <script lang="ts" setup>
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from "vue";
-import { GetErrors, GetNodes, GetSessions } from "../../wailsjs/go/guiapp/App";
+import { GetErrors, GetNodes, GetOverview, GetSessions } from "../../wailsjs/go/guiapp/App";
 import { stats } from "../../wailsjs/go/models";
 import { fmtBps, fmtBytes, fmtAge, fmtClock } from "../format";
 import { t } from "../i18n";
@@ -9,10 +9,17 @@ type Tab = "conns" | "nodes" | "errors";
 
 const tab = ref<Tab>("conns");
 const sessions = ref<stats.SessionView[]>([]);
+// The list comes back capped, so this is the collector's own count. Showing it
+// as the denominator keeps "200 / 320" honest instead of pretending the table
+// holds everything.
+const liveTotal = ref(0);
 const nodes = ref<stats.NodeStat[]>([]);
 const errors = ref<stats.ErrorEntry[]>([]);
 const query = ref("");
-const decision = ref<"all" | "proxy" | "direct">("all");
+// "udp" is not a decision, it is the absence of one: a SOCKS5 UDP association
+// is routed per datagram, so it belongs to neither the proxy nor the direct
+// bucket. Without naming it here the counts simply would not add up.
+const decision = ref<"all" | "proxy" | "direct" | "udp">("all");
 
 // Sorting is by the live rate (that is the number the cell leads with), with the
 // cumulative total as the tiebreaker so rows with an idle connection still land
@@ -38,7 +45,9 @@ async function refresh() {
   // empty list looks like here, so the tables just go blank.
   try {
     if (tab.value === "conns") {
-      sessions.value = (await GetSessions()) ?? [];
+      const [list, ov] = await Promise.all([GetSessions(), GetOverview()]);
+      sessions.value = list ?? [];
+      liveTotal.value = ov?.active_conns ?? sessions.value.length;
     } else if (tab.value === "nodes") {
       nodes.value = (await GetNodes()) ?? [];
     } else {
@@ -55,10 +64,33 @@ function switchTab(next: Tab) {
   void refresh();
 }
 
+// Per-filter totals, so the four chips visibly add up to "all". A list that
+// says 130 while proxy+direct only reach 46 reads like a broken filter.
+const counts = computed(() => {
+  let proxy = 0;
+  let direct = 0;
+  let udp = 0;
+  for (const s of sessions.value) {
+    if (s.proto === "udp") udp++;
+    else if (s.decision === "proxy") proxy++;
+    else if (s.decision === "direct") direct++;
+    else udp++;
+  }
+  return { all: sessions.value.length, proxy, direct, udp };
+});
+
+// Never below the rows we actually hold: a stale overview must not make the
+// denominator smaller than the visible list.
+const totalCount = computed(() => Math.max(sessions.value.length, liveTotal.value));
+
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase();
   return sessions.value.filter((s) => {
-    if (decision.value !== "all" && s.decision !== decision.value) return false;
+    if (decision.value === "udp") {
+      if (s.proto !== "udp" && s.decision) return false;
+    } else if (decision.value !== "all" && s.decision !== decision.value) {
+      return false;
+    }
     if (!q) return true;
     return (
       (s.host ?? "").toLowerCase().includes(q) ||
@@ -105,7 +137,8 @@ const nodeTotals = computed(() => {
 function decisionLabel(d: string): string {
   if (d === "proxy") return t("conn.proxy");
   if (d === "direct") return t("conn.direct");
-  return "?";
+  // No single decision: a UDP association routes each datagram on its own.
+  return t("conn.udp");
 }
 
 // Kept alive across tab switches (see App.vue), so polling pauses while the
@@ -156,7 +189,7 @@ onUnmounted(() => {
         @click="switchTab('conns')"
       >
         {{ t("conn.tabConns") }}
-        <span class="badge" v-if="sessions.length">{{ sessions.length }}</span>
+        <span class="badge" v-if="totalCount">{{ totalCount }}</span>
       </button>
       <button
         class="tab"
@@ -180,33 +213,39 @@ onUnmounted(() => {
         <input v-model="query" class="search" :placeholder="t('conn.search')" />
         <div class="seg">
           <button :class="{ active: decision === 'all' }" @click="decision = 'all'">
-            {{ t("conn.all") }}
+            {{ t("conn.all") }}<span class="seg-count">{{ counts.all }}</span>
           </button>
           <button
             :class="{ active: decision === 'proxy' }"
             @click="decision = 'proxy'"
           >
-            {{ t("conn.proxy") }}
+            {{ t("conn.proxy") }}<span class="seg-count">{{ counts.proxy }}</span>
           </button>
           <button
             :class="{ active: decision === 'direct' }"
             @click="decision = 'direct'"
           >
-            {{ t("conn.direct") }}
+            {{ t("conn.direct") }}<span class="seg-count">{{ counts.direct }}</span>
+          </button>
+          <button
+            :class="{ active: decision === 'udp' }"
+            @click="decision = 'udp'"
+          >
+            {{ t("conn.udp") }}<span class="seg-count">{{ counts.udp }}</span>
           </button>
         </div>
         <span class="toolbar-meta">
-          {{ t("conn.count", { n: filtered.length, m: sessions.length }) }}
+          {{ t("conn.count", { n: filtered.length, m: totalCount }) }}
         </span>
       </div>
 
       <div class="card table-card">
         <table class="tbl tbl-fixed">
           <colgroup>
-            <col style="width: 23%" />
+            <col style="width: 22%" />
             <col style="width: 13%" />
-            <col style="width: 8%" />
-            <col style="width: 16%" />
+            <col style="width: 10%" />
+            <col style="width: 15%" />
             <col style="width: 15%" />
             <col style="width: 15%" />
             <col style="width: 10%" />
@@ -240,11 +279,11 @@ onUnmounted(() => {
           <tbody>
             <tr v-for="s in visible" :key="s.id">
               <td class="mono wrap">
-                {{ s.host || "—" }}<span class="dim">:{{ s.port }}</span>
+                {{ s.host || "—" }}<span v-if="s.port" class="dim">:{{ s.port }}</span>
               </td>
               <td class="dim mono wrap">{{ s.client || "—" }}</td>
               <td>
-                <span class="tag" :class="s.decision || 'none'">
+                <span class="tag" :class="s.decision || 'udp'">
                   {{ decisionLabel(s.decision) }}
                 </span>
               </td>
