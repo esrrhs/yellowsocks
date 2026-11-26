@@ -12,6 +12,9 @@ export namespace guiapp {
 	    spp_proto: string;
 	    proxy_mode: string;
 	    error: string;
+	    auto_start_core: boolean;
+	    launch_at_login: boolean;
+	    proxy_guard: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new EngineStatus(source);
@@ -30,6 +33,9 @@ export namespace guiapp {
 	        this.spp_proto = source["spp_proto"];
 	        this.proxy_mode = source["proxy_mode"];
 	        this.error = source["error"];
+	        this.auto_start_core = source["auto_start_core"];
+	        this.launch_at_login = source["launch_at_login"];
+	        this.proxy_guard = source["proxy_guard"];
 	    }
 	}
 	export class ProbeItem {

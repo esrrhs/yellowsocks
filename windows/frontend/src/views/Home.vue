@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from "vue";
 import {
   EngineStatus,
   GetAutoStartCore,
@@ -42,22 +42,60 @@ const probing = ref(false);
 const proxyGuard = ref(false);
 
 let timer: number | undefined;
-// Unsubscribing matters: this view is re-mounted on every tab switch, and a
-// listener left behind would keep replacing the state of an unmounted view
-// (and pile up one more copy each time).
+// The view is kept alive across tab switches, so this listener is installed
+// once and stays for the life of the window: the chips and the status line
+// keep tracking the engine even while another page is on screen.
 let offStatus: (() => void) | undefined;
 
+// The three live calls go out together. Awaited in turn they cost three round
+// trips per tick and, worse, the counters on screen lag the tick that just
+// fired; in parallel the page has all of them by the time the tick ends.
 async function refresh() {
-  try {
-    overview.value = await GetOverview();
-    series.value = (await GetSeries(1800)) ?? [];
-  } catch {
-    // Engine stopped: bindings return null and the next engine:status event
-    // refreshes the UI state.
-  }
+  const [ov, pts, life] = await Promise.all([
+    GetOverview().catch(() => null),
+    GetSeries(1800).catch(() => [] as stats.SeriesPoint[]),
+    GetLifetimeStats().catch(() => null),
+  ]);
+  if (ov) overview.value = ov;
+  // A nil overview while the engine is not running is "no data", not "keep the
+  // last numbers"; when it is running, a failed read means the engine is
+  // restarting and the previous sample is still the best thing to show.
+  else if (!status.value.running) overview.value = null;
+  if (status.value.running) series.value = pts ?? [];
+  else series.value = [];
   // The lifetime record is served from a cache on the Go side, so it stays
   // readable even while the engine is stopped.
-  lifetime.value = await GetLifetimeStats();
+  if (life) lifetime.value = life;
+}
+
+// One round trip per fact, all in flight at once. Serially awaited this was a
+// visible cascade: the status dot, then the proxy chip, then 开机启动 (which
+// shells out to PowerShell and took ~1s on its own), then the traffic.
+async function bootstrap() {
+  const [st, sysProxy, auto, login, tun, mode, guard] = await Promise.all([
+    EngineStatus().catch(() => null),
+    GetSystemProxy().catch(() => null),
+    GetAutoStartCore().catch(() => null),
+    GetLaunchAtLogin().catch(() => null),
+    GetTunMode().catch(() => null),
+    GetProxyMode().catch(() => null),
+    GetProxyGuard().catch(() => null),
+  ]);
+  if (st) {
+    status.value = new guiapp.EngineStatus(st);
+    tunMode.value = !!(st.tun ?? tun);
+    if (st.proxy_mode) proxyMode.value = st.proxy_mode;
+    autoStart.value = !!(st.auto_start_core ?? auto);
+    launchAtLogin.value = !!(st.launch_at_login ?? login);
+    proxyGuard.value = !!(st.proxy_guard ?? guard);
+  }
+  if (sysProxy !== null) status.value.system_proxy = sysProxy;
+  if (auto !== null) autoStart.value = auto;
+  if (login !== null) launchAtLogin.value = login;
+  if (tun !== null && !st) tunMode.value = tun;
+  if (mode) proxyMode.value = mode;
+  if (guard !== null) proxyGuard.value = guard;
+  await refresh();
 }
 
 async function toggle() {
@@ -173,32 +211,62 @@ function lifetimeTotal(c?: stats.Counters | null): number {
   return (c.upload_bytes ?? 0) + (c.download_bytes ?? 0);
 }
 
+// Set once the first snapshot has landed, so the activation that coincides
+// with the first mount does not race the bootstrap with an early read.
+let booted = false;
+
+function startPolling() {
+  if (timer) return;
+  timer = window.setInterval(refresh, 1000);
+}
+
+function stopPolling() {
+  if (timer) window.clearInterval(timer);
+  timer = undefined;
+}
+
+// WebView2 throttles timers while the window sits hidden in the tray, so the
+// first tick after it is shown again can be up to a second late and the
+// counters would sit on the stale sample. Re-poll the moment the page is
+// visible instead of waiting for that tick.
+function onVisibility() {
+  if (document.visibilityState === "visible") void refresh();
+}
+
 onMounted(async () => {
   offStatus = EventsOn("engine:status", (st: guiapp.EngineStatus) => {
     status.value = new guiapp.EngineStatus(st);
     tunMode.value = !!st.tun;
     if (st.proxy_mode) proxyMode.value = st.proxy_mode;
+    // The option chips ride along on the event now, so nothing has to ask for
+    // them again: each ask was a round trip, and the launch-at-login one was a
+    // PowerShell launch -- that is what kept the chip dark for a second.
+    autoStart.value = !!st.auto_start_core;
+    launchAtLogin.value = !!st.launch_at_login;
+    proxyGuard.value = !!st.proxy_guard;
     if (!st.running) {
       overview.value = null;
       series.value = [];
     }
   });
-  status.value = new guiapp.EngineStatus(await EngineStatus());
-  try {
-    status.value.system_proxy = await GetSystemProxy();
-    autoStart.value = await GetAutoStartCore();
-    launchAtLogin.value = await GetLaunchAtLogin();
-    tunMode.value = await GetTunMode();
-    proxyMode.value = await GetProxyMode();
-  } catch {
-    // binding unavailable; keep default
-  }
-  await refresh();
-  timer = window.setInterval(refresh, 1000);
+  document.addEventListener("visibilitychange", onVisibility);
+  await bootstrap();
+  booted = true;
 });
 
+// The view is kept alive across tab switches, so polling has to be paused on
+// the way out (no point sampling a page nobody is looking at) and resumed with
+// an immediate sample on the way in, rather than a one-second-old one.
+onActivated(() => {
+  if (booted) void refresh();
+  startPolling();
+});
+
+onDeactivated(stopPolling);
+
 onUnmounted(() => {
-  if (timer) window.clearInterval(timer);
+  stopPolling();
+  document.removeEventListener("visibilitychange", onVisibility);
   offStatus?.();
   offStatus = undefined;
 });

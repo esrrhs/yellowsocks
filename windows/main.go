@@ -19,48 +19,56 @@ var assets embed.FS
 // only wires the Wails app for Windows. Build with `wails build` in this
 // directory.
 func main() {
-	// Portable mode: keep logs next to the exe (or the per-user fallback
-	// when that is not writable) and adopt any per-user data into a fresh
-	// portable directory. loggo writes into the CWD and panics when it
-	// cannot, so this must run before logging starts.
-	logWritable, startHidden := guiapp.Boot()
-	loggo.Ini(loggo.Config{
-		Level:     loggo.NameToLevel("info"),
-		Prefix:    "yellowsocks-gui",
-		NoLogFile: !logWritable,
-	})
+	// `wails build` compiles this package once more with the "bindings" tag and
+	// runs the result to dump the TypeScript models. That copy must not touch
+	// the live installation -- claiming the single-instance mutex would make it
+	// exit before wails.Run ever writes the bindings (which is exactly what
+	// happened: the build said "Done" and the model file stayed stale).
+	logWritable, startHidden := true, false
+	if !runningBindingsGeneration {
+		// Portable mode: keep logs next to the exe (or the per-user fallback
+		// when that is not writable) and adopt any per-user data into a fresh
+		// portable directory. loggo writes into the CWD and panics when it
+		// cannot, so this must run before logging starts.
+		logWritable, startHidden = guiapp.Boot()
+		loggo.Ini(loggo.Config{
+			Level:     loggo.NameToLevel("info"),
+			Prefix:    "yellowsocks-gui",
+			NoLogFile: !logWritable,
+		})
 
-	// A previous instance may have been hard-killed while the system proxy
-	// was registered; clear that stale registration before WebView2 starts,
-	// because a proxy pointing at a dead port would block the WebView2
-	// subprocess itself from launching.
-	guiapp.CleanupStaleSystemProxy()
+		// A previous instance may have been hard-killed while the system proxy
+		// was registered; clear that stale registration before WebView2 starts,
+		// because a proxy pointing at a dead port would block the WebView2
+		// subprocess itself from launching.
+		guiapp.CleanupStaleSystemProxy()
 
-	// The TUN-mode elevated relaunch hands over to this copy: give the old
-	// instance a moment to release its listen ports, then confirm we are
-	// alive so the old instance can quit. The logon task starts us elevated
-	// with no predecessor, so it opts out of both waits.
-	//
-	// This has to run before the single-instance claim below: the old copy is
-	// still alive precisely until it sees the handshake, so claiming first
-	// would wait out the whole timeout and quit.
-	if guiapp.ElevatedRequested() && !guiapp.ElevatedDirect() {
-		time.Sleep(2 * time.Second)
-		guiapp.WriteElevatedHandshake()
-	}
+		// The TUN-mode elevated relaunch hands over to this copy: give the old
+		// instance a moment to release its listen ports, then confirm we are
+		// alive so the old instance can quit. The logon task starts us elevated
+		// with no predecessor, so it opts out of both waits.
+		//
+		// This has to run before the single-instance claim below: the old copy is
+		// still alive precisely until it sees the handshake, so claiming first
+		// would wait out the whole timeout and quit.
+		if guiapp.ElevatedRequested() && !guiapp.ElevatedDirect() {
+			time.Sleep(2 * time.Second)
+			guiapp.WriteElevatedHandshake()
+		}
 
-	// Only one copy may run: a second one cannot bind the engine ports and
-	// would tear down the live TUN session's routes on its way out. Two
-	// timeouts, because the wait means different things: a plain start just
-	// wants the running copy's window brought forward (be quick about it),
-	// while a handover successor genuinely has to outlast the predecessor's
-	// TUN teardown, which is much slower than an empty shutdown.
-	instanceWait := time.Second
-	if (guiapp.ElevatedRequested() && !guiapp.ElevatedDirect()) || guiapp.Restarted() {
-		instanceWait = 25 * time.Second
-	}
-	if !guiapp.AcquireSingleInstance(instanceWait) {
-		return
+		// Only one copy may run: a second one cannot bind the engine ports and
+		// would tear down the live TUN session's routes on its way out. Two
+		// timeouts, because the wait means different things: a plain start just
+		// wants the running copy's window brought forward (be quick about it),
+		// while a handover successor genuinely has to outlast the predecessor's
+		// TUN teardown, which is much slower than an empty shutdown.
+		instanceWait := time.Second
+		if (guiapp.ElevatedRequested() && !guiapp.ElevatedDirect()) || guiapp.Restarted() {
+			instanceWait = 25 * time.Second
+		}
+		if !guiapp.AcquireSingleInstance(instanceWait) {
+			return
+		}
 	}
 
 	app := guiapp.NewApp()

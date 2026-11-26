@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
+import { computed, nextTick, onActivated, onDeactivated, onMounted, onUnmounted, ref } from "vue";
 import { GetLogs, GetLogPath } from "../../wailsjs/go/guiapp/App";
 import { t } from "../i18n";
 
@@ -82,18 +82,47 @@ function levelClass(lv: string): string {
   return "lv-info";
 }
 
+// Kept alive across tab switches (see App.vue): the file is re-read while the
+// page is visible and paused while it is not, then read again the moment the
+// page comes back so the tail is current instead of a second (or a tray
+// session) out of date.
+let booted = false;
+
+function startPolling() {
+  if (timer) return;
+  timer = window.setInterval(load, 1000);
+}
+
+function stopPolling() {
+  if (timer) window.clearInterval(timer);
+  timer = undefined;
+}
+
+function onVisibility() {
+  if (document.visibilityState === "visible") void load();
+}
+
 onMounted(async () => {
+  document.addEventListener("visibilitychange", onVisibility);
   try {
     logDir.value = await GetLogPath();
   } catch {
     logDir.value = "";
   }
   await load();
-  timer = window.setInterval(load, 1000);
+  booted = true;
 });
 
+onActivated(() => {
+  if (booted) void load();
+  startPolling();
+});
+
+onDeactivated(stopPolling);
+
 onUnmounted(() => {
-  if (timer) window.clearInterval(timer);
+  stopPolling();
+  document.removeEventListener("visibilitychange", onVisibility);
 });
 </script>
 

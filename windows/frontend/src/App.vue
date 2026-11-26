@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { onMounted, onUnmounted, ref } from "vue";
+import { computed, onMounted, onUnmounted, ref, type Component } from "vue";
 import Home from "./views/Home.vue";
 import Connections from "./views/Connections.vue";
 import Logs from "./views/Logs.vue";
@@ -15,6 +15,21 @@ const pages = [
   { id: "about", key: "nav.about", icon: "ⓘ" },
 ];
 const current = ref("home");
+
+// One instance per page, kept alive across tab switches. The old v-if chain
+// tore the view down and rebuilt it on every switch, so the page came back
+// with its state reset -- traffic counters at 0 until the first poll, the
+// option chips dark until each getter had answered in turn. KeepAlive keeps
+// the state (and the scroll position, the search box, the selected
+// sub-tab) and the views refresh themselves through onActivated.
+const views: Record<string, Component> = {
+  home: Home,
+  connections: Connections,
+  logs: Logs,
+  settings: Settings,
+  about: About,
+};
+const view = computed<Component>(() => views[current.value] ?? About);
 
 // Theme: the preference is stored, the resolved value comes from the OS when
 // the preference is "system". WebView2 reports the OS setting through
@@ -108,11 +123,9 @@ onUnmounted(() => {
       </div>
     </aside>
     <main class="content">
-      <Home v-if="current === 'home'" />
-      <Connections v-else-if="current === 'connections'" />
-      <Logs v-else-if="current === 'logs'" />
-      <Settings v-else-if="current === 'settings'" />
-      <About v-else />
+      <KeepAlive>
+        <component :is="view" />
+      </KeepAlive>
     </main>
   </div>
 </template>

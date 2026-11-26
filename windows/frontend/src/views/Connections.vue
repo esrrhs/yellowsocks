@@ -1,5 +1,5 @@
 <script lang="ts" setup>
-import { computed, onMounted, onUnmounted, ref } from "vue";
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from "vue";
 import { GetErrors, GetNodes, GetSessions } from "../../wailsjs/go/guiapp/App";
 import { stats } from "../../wailsjs/go/models";
 import { fmtBps, fmtBytes, fmtAge, fmtClock } from "../format";
@@ -108,13 +108,42 @@ function decisionLabel(d: string): string {
   return "?";
 }
 
-onMounted(async () => {
-  await refresh();
+// Kept alive across tab switches (see App.vue), so polling pauses while the
+// page is hidden and resumes with a fresh sample the moment it is shown --
+// otherwise the table would come back with a one-second-old (or, after a
+// tray-hidden window, much older) set of rows.
+let booted = false;
+
+function startPolling() {
+  if (timer) return;
   timer = window.setInterval(refresh, 1000);
+}
+
+function stopPolling() {
+  if (timer) window.clearInterval(timer);
+  timer = undefined;
+}
+
+function onVisibility() {
+  if (document.visibilityState === "visible") void refresh();
+}
+
+onMounted(async () => {
+  document.addEventListener("visibilitychange", onVisibility);
+  await refresh();
+  booted = true;
 });
 
+onActivated(() => {
+  if (booted) void refresh();
+  startPolling();
+});
+
+onDeactivated(stopPolling);
+
 onUnmounted(() => {
-  if (timer) window.clearInterval(timer);
+  stopPolling();
+  document.removeEventListener("visibilitychange", onVisibility);
 });
 </script>
 

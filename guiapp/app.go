@@ -76,6 +76,14 @@ type EngineStatus struct {
 	SPPProto    string `json:"spp_proto"`
 	ProxyMode   string `json:"proxy_mode"`
 	Error       string `json:"error"`
+	// The option chips are part of the pushed state, not separate calls: the
+	// window paints them from the snapshot it already has and keeps them
+	// current from this event, so nothing has to be re-fetched on a tab
+	// switch (which used to leave the chips dark until their own getter
+	// answered).
+	AutoStartCore bool `json:"auto_start_core"`
+	LaunchAtLogin bool `json:"launch_at_login"`
+	ProxyGuard    bool `json:"proxy_guard"`
 }
 
 // App is the structure bound to the Wails frontend. Every exported method
@@ -92,6 +100,11 @@ type App struct {
 	sysProxyActive bool   // we registered the OS proxy and must undo it
 	autoStartCore  bool   // start the engine when the app launches
 	launchAtLogin  bool   // register the app to start with the OS login
+	// launchAtLoginChecked marks the cache above as authoritative (the OS has
+	// been asked at least once); probing keeps concurrent callers from each
+	// spawning their own PowerShell query.
+	launchAtLoginChecked bool
+	launchAtLoginProbing bool
 	tunWanted      bool   // TUN mode intent, persisted in settings.json
 	tunActive      bool   // the virtual adapter is up and capturing traffic
 	tunErr         string // last TUN failure, surfaced in the UI
@@ -153,8 +166,12 @@ func (a *App) Startup(ctx context.Context) {
 	// Keep the OS launch-at-login entry pointing at the current exe (the
 	// binary may have been moved since it was registered). Off the startup
 	// path: repairing the logon task costs a PowerShell launch, and nothing
-	// waits for it.
-	go syncLaunchAtLogin(st)
+	// waits for it. The probe right after it primes the cache the window
+	// reads, so the "开机启动" chip is lit on the first paint.
+	go func() {
+		syncLaunchAtLogin(st)
+		a.refreshLaunchAtLogin()
+	}()
 	a.loadLifetimeStats()
 	go runTray(a)
 	// A logon start is tray-only, so a double-click on the icon has to be able
@@ -607,15 +624,46 @@ func (a *App) GetAutoStartCore() bool {
 // SetAutoStartCore toggles engine auto-start. Takes effect on next launch.
 func (a *App) SetAutoStartCore(on bool) error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.autoStartCore = on
-	return a.persistSettingsLocked()
+	err := a.persistSettingsLocked()
+	a.mu.Unlock()
+	if err != nil {
+		loggo.Warn("[GUI] persist settings: %s", err.Error())
+	}
+	a.emitStatus()
+	return err
 }
 
 // GetLaunchAtLogin reports whether the app is registered to start with the
-// OS login. The OS registry is the source of truth.
+// OS login.
+//
+// The registry/task scheduler is the source of truth, but reading it on
+// Windows means a PowerShell launch -- the better part of a second. The window
+// asks for this every time it is opened or switched back to, so the answer is
+// served from a cache that Startup fills right after launch and every toggle
+// updates. Until that first probe lands, the persisted intent is the estimate,
+// and the status event the probe emits corrects it.
 func (a *App) GetLaunchAtLogin() bool {
-	return launchAtLoginEnabled()
+	a.mu.Lock()
+	if !a.launchAtLoginChecked && !a.launchAtLoginProbing {
+		a.launchAtLoginProbing = true
+		go a.refreshLaunchAtLogin()
+	}
+	on := a.launchAtLogin
+	a.mu.Unlock()
+	return on
+}
+
+// refreshLaunchAtLogin asks the OS where the registration actually stands and
+// publishes the answer to the window.
+func (a *App) refreshLaunchAtLogin() {
+	on := launchAtLoginEnabled()
+	a.mu.Lock()
+	a.launchAtLogin = on
+	a.launchAtLoginChecked = true
+	a.launchAtLoginProbing = false
+	a.mu.Unlock()
+	a.emitStatus()
 }
 
 // SetLaunchAtLogin registers or removes the launch-at-login entry. On Windows
@@ -623,6 +671,8 @@ func (a *App) GetLaunchAtLogin() bool {
 // together with 自动连接 and 系统代理 this gives the full boot-time transparent
 // proxy. The intent is persisted so a moved exe can be re-registered.
 func (a *App) SetLaunchAtLogin(on bool) error {
+	// Registered/removed first: if the OS refuses, the intent must not claim
+	// success (the chip would then lie until the next probe).
 	if on {
 		if err := enableLaunchAtLogin(); err != nil {
 			return err
@@ -631,9 +681,17 @@ func (a *App) SetLaunchAtLogin(on bool) error {
 		return err
 	}
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.launchAtLogin = on
-	return a.persistSettingsLocked()
+	// We just wrote the truth ourselves; no need to pay for a PowerShell
+	// query to learn what we did.
+	a.launchAtLoginChecked = true
+	err := a.persistSettingsLocked()
+	a.mu.Unlock()
+	if err != nil {
+		loggo.Warn("[GUI] persist settings: %s", err.Error())
+	}
+	a.emitStatus()
+	return err
 }
 
 // persistSettingsLocked writes the current GUI settings to disk. Callers
@@ -942,12 +1000,15 @@ func (a *App) loadEngineConfig() (core.EngineConfig, error) {
 
 func (a *App) statusLocked() EngineStatus {
 	st := EngineStatus{
-		Running:     a.running,
-		SystemProxy: a.sysProxyActive || a.sysProxyWanted,
-		Tun:         a.tunActive,
-		TunError:    a.tunErr,
-		ProxyMode:   a.proxyMode,
-		Error:       "",
+		Running:       a.running,
+		SystemProxy:   a.sysProxyActive || a.sysProxyWanted,
+		Tun:           a.tunActive,
+		TunError:      a.tunErr,
+		ProxyMode:     a.proxyMode,
+		Error:         "",
+		AutoStartCore: a.autoStartCore,
+		LaunchAtLogin: a.launchAtLogin,
+		ProxyGuard:    a.proxyGuard,
 	}
 	if a.running {
 		st.Socks5 = a.lastCfg.Socks5Listen
