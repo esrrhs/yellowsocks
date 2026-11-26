@@ -66,6 +66,39 @@ func TestSessionAccounting(t *testing.T) {
 	}
 }
 
+// The live connection count gets the same domestic/foreign split as the
+// traffic counters: a session is counted once, under the decision the router
+// made for it, and drops out of both when it ends.
+func TestActiveConnsSplitByDecision(t *testing.T) {
+	c := newTestCollector()
+
+	direct := c.Begin(ProtoHTTP, "127.0.0.1:1", "cn.test", 80, DecisionDirect, "")
+	proxy := c.Begin(ProtoSOCKS5, "127.0.0.1:2", "us.test", 443, DecisionProxy, "node-a")
+	// A UDP association carries no single decision until its first datagram.
+	udp := c.Begin(ProtoUDP, "127.0.0.1:3", "", 53, DecisionNone, "")
+
+	ov := c.Overview()
+	if ov.ActiveConns != 3 || ov.ActiveDirect != 1 || ov.ActiveProxy != 1 {
+		t.Fatalf("active = %d (direct %d, proxy %d), want 3/1/1",
+			ov.ActiveConns, ov.ActiveDirect, ov.ActiveProxy)
+	}
+
+	proxy.End(nil)
+	ov = c.Overview()
+	if ov.ActiveConns != 2 || ov.ActiveDirect != 1 || ov.ActiveProxy != 0 {
+		t.Fatalf("after proxy end: active = %d (direct %d, proxy %d), want 2/1/0",
+			ov.ActiveConns, ov.ActiveDirect, ov.ActiveProxy)
+	}
+
+	direct.End(nil)
+	udp.End(nil)
+	ov = c.Overview()
+	if ov.ActiveConns != 0 || ov.ActiveDirect != 0 || ov.ActiveProxy != 0 {
+		t.Fatalf("after all end: %+v, want zeroed split",
+			[]int{ov.ActiveConns, ov.ActiveDirect, ov.ActiveProxy})
+	}
+}
+
 func TestSessionIsIdempotentAndNilSafe(t *testing.T) {
 	c := newTestCollector()
 	s := c.Begin(ProtoHTTP, "1.2.3.4:1", "a.com", 80, DecisionDirect, "")

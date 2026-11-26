@@ -44,6 +44,7 @@
   "stat.upTotal": "本次上传",
   "stat.downTotal": "本次下载",
   "stat.uptime": "运行时长",
+  "stat.connsUdp": "UDP 关联",
 
   "probe.title": "网络自检",
   "probe.run": "开始检测",

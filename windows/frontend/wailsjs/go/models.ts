@@ -295,6 +295,8 @@ export namespace stats {
 	    start_time: number;
 	    uptime_seconds: number;
 	    active_conns: number;
+	    active_direct: number;
+	    active_proxy: number;
 	    totals: Counters;
 	    direct: Counters;
 	    proxy: Counters;
@@ -317,6 +319,8 @@ export namespace stats {
 	        this.start_time = source["start_time"];
 	        this.uptime_seconds = source["uptime_seconds"];
 	        this.active_conns = source["active_conns"];
+	        this.active_direct = source["active_direct"];
+	        this.active_proxy = source["active_proxy"];
 	        this.totals = this.convertValues(source["totals"], Counters);
 	        this.direct = this.convertValues(source["direct"], Counters);
 	        this.proxy = this.convertValues(source["proxy"], Counters);

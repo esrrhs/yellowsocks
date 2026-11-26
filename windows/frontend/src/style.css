@@ -336,6 +336,17 @@ body {
     opacity: 0.35;
 }
 
+/* Connections are neither upload nor download, so this bar stays neutral:
+   tinting it blue or purple would say "traffic" instead of "sessions". */
+.split-bar.conns .seg.direct {
+    background: var(--text-dim);
+}
+
+.split-bar.conns .seg.proxy {
+    background: var(--text-dim);
+    opacity: 0.35;
+}
+
 /* Idle: show the empty track instead of a bar that looks all-foreign. */
 .split-bar.idle .seg {
     display: none;
@@ -343,8 +354,9 @@ body {
 
 .split-line {
     display: flex;
+    flex-wrap: wrap;
     justify-content: space-between;
-    gap: 8px;
+    gap: 6px 8px;
     margin-top: 6px;
     color: var(--text-dim);
     font-size: 11px;

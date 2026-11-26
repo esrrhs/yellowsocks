@@ -253,8 +253,23 @@ const upShare = computed(() =>
 const downShare = computed(() =>
   share(overview.value?.rate?.direct_download_bps, overview.value?.rate?.proxy_download_bps),
 );
+const connShare = computed(() =>
+  share(overview.value?.active_direct, overview.value?.active_proxy),
+);
+// UDP associations carry no single decision (each datagram is routed on its
+// own), so they show up in the total but in neither half. Naming the
+// remainder keeps "104 connections" from looking like broken arithmetic
+// next to "domestic 9 / foreign 43".
+const connOther = computed(() => {
+  const total = overview.value?.active_conns ?? 0;
+  const split = (overview.value?.active_direct ?? 0) + (overview.value?.active_proxy ?? 0);
+  return Math.max(0, total - split);
+});
 
-function hasRate(direct?: number | null, proxy?: number | null): boolean {
+// True when a domestic/foreign pair carries any value at all. Shared by the
+// speed cards and the connection card: an empty pair must render the plain
+// track, never a full-width bar that reads as "everything is foreign".
+function hasSplit(direct?: number | null, proxy?: number | null): boolean {
   return (direct ?? 0) + (proxy ?? 0) > 0;
 }
 
@@ -572,13 +587,25 @@ const chart = computed(() => {
       <div class="card stat">
         <div class="stat-label">{{ t("stat.conns") }}</div>
         <div class="stat-value">{{ overview?.active_conns ?? 0 }}</div>
+        <div
+          class="split-bar conns"
+          :class="{ idle: !hasSplit(overview?.active_direct, overview?.active_proxy) }"
+        >
+          <i class="seg direct" :style="{ width: connShare + '%' }"></i>
+          <i class="seg proxy"></i>
+        </div>
+        <div class="split-line">
+          <span>{{ t("lifetime.direct") }} {{ overview?.active_direct ?? 0 }}</span>
+          <span>{{ t("lifetime.proxy") }} {{ overview?.active_proxy ?? 0 }}</span>
+          <span v-if="connOther > 0">{{ t("stat.connsUdp") }} {{ connOther }}</span>
+        </div>
       </div>
       <div class="card stat">
         <div class="stat-label">{{ t("stat.upRate") }}</div>
         <div class="stat-value up">{{ fmtBps(overview?.rate?.upload_bps) }}</div>
         <div
           class="split-bar up"
-          :class="{ idle: !hasRate(overview?.rate?.direct_upload_bps, overview?.rate?.proxy_upload_bps) }"
+          :class="{ idle: !hasSplit(overview?.rate?.direct_upload_bps, overview?.rate?.proxy_upload_bps) }"
         >
           <i class="seg direct" :style="{ width: upShare + '%' }"></i>
           <i class="seg proxy"></i>
@@ -595,7 +622,7 @@ const chart = computed(() => {
         </div>
         <div
           class="split-bar down"
-          :class="{ idle: !hasRate(overview?.rate?.direct_download_bps, overview?.rate?.proxy_download_bps) }"
+          :class="{ idle: !hasSplit(overview?.rate?.direct_download_bps, overview?.rate?.proxy_download_bps) }"
         >
           <i class="seg direct" :style="{ width: downShare + '%' }"></i>
           <i class="seg proxy"></i>

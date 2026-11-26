@@ -44,6 +44,7 @@
   "stat.upTotal": "Session upload",
   "stat.downTotal": "Session download",
   "stat.uptime": "Uptime",
+  "stat.connsUdp": "UDP",
 
   "probe.title": "Connectivity check",
   "probe.run": "Run check",

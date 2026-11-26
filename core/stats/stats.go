@@ -884,11 +884,18 @@ func (c *Collector) pruneLocked(m map[string]*DomainStat) {
 }
 
 // Overview is the live summary returned by the API.
+//
+// ActiveDirect and ActiveProxy split the live sessions by the router's
+// decision, the same domestic/foreign axis the traffic counters use. A UDP
+// association is decided per datagram (DecisionNone) and lands in neither
+// bucket, so the two may sum to less than ActiveConns.
 type Overview struct {
 	Now            int64        `json:"now"`
 	StartTime      int64        `json:"start_time"`
 	UptimeSeconds  int64        `json:"uptime_seconds"`
 	ActiveConns    int          `json:"active_conns"`
+	ActiveDirect   int          `json:"active_direct"`
+	ActiveProxy    int          `json:"active_proxy"`
 	Totals         Counters     `json:"totals"`
 	Direct         Counters     `json:"direct"`
 	Proxy          Counters     `json:"proxy"`
@@ -920,11 +927,25 @@ func (c *Collector) Overview() Overview {
 	defer c.mu.Unlock()
 	c.rotateLocked(now)
 
+	// One pass over the live sessions gives the domestic/foreign split of the
+	// connection count, mirroring how every byte is attributed to a decision.
+	activeDirect, activeProxy := 0, 0
+	for _, s := range c.active {
+		switch s.decision {
+		case DecisionDirect:
+			activeDirect++
+		case DecisionProxy:
+			activeProxy++
+		}
+	}
+
 	o := Overview{
 		Now:            nowSec,
 		StartTime:      c.start.Unix(),
 		UptimeSeconds:  int64(now.Sub(c.start) / time.Second),
 		ActiveConns:    len(c.active),
+		ActiveDirect:   activeDirect,
+		ActiveProxy:    activeProxy,
 		Totals:         c.totals,
 		Direct:         c.direct,
 		Proxy:          c.proxy,
