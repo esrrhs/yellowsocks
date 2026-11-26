@@ -154,9 +154,21 @@ type SessionView struct {
 }
 
 // Rate is a transfer speed sample in bytes per second.
+//
+// The split fields carry the same speed divided by routing decision: Direct is
+// the domestic share, Proxy the foreign one. Every byte is attributed to
+// exactly one decision, so the pairs add up to the totals (minus rounding).
+// They exist because "how fast" and "how much of it is going abroad" are two
+// different questions, and the second one is why a 4 MB/s line can still feel
+// slow.
 type Rate struct {
 	Upload   int64 `json:"upload_bps"`
 	Download int64 `json:"download_bps"`
+
+	DirectUpload   int64 `json:"direct_upload_bps"`
+	DirectDownload int64 `json:"direct_download_bps"`
+	ProxyUpload    int64 `json:"proxy_upload_bps"`
+	ProxyDownload  int64 `json:"proxy_download_bps"`
 }
 
 // Config configures a Collector. Zero values select the defaults.
@@ -203,12 +215,18 @@ type Collector struct {
 	head    int
 	cur     Bucket
 
-	// One-second rate slots, indexed by unix second modulo rateSlots.
-	rateSec  int64
-	rateUp   [rateSlots]int64
-	rateDown [rateSlots]int64
-	peakUp   int64
-	peakDown int64
+	// One-second rate slots, indexed by unix second modulo rateSlots. The
+	// total slots stay the single source for "speed"; the per-decision slots
+	// are the same samples split, so a reader never has to add them up.
+	rateSec        int64
+	rateUp         [rateSlots]int64
+	rateDown       [rateSlots]int64
+	rateUpDirect   [rateSlots]int64
+	rateDownDirect [rateSlots]int64
+	rateUpProxy    [rateSlots]int64
+	rateDownProxy  [rateSlots]int64
+	peakUp         int64
+	peakDown       int64
 
 	nextID atomic.Int64
 
@@ -588,7 +606,7 @@ func (c *Collector) addTraffic(up, down int64, d Decision) {
 		c.cur.ProxyUpload += up
 		c.cur.ProxyDownload += down
 	}
-	c.addRateLocked(nowSec, up, down)
+	c.addRateLocked(nowSec, up, down, d)
 	c.mu.Unlock()
 }
 
@@ -605,18 +623,32 @@ func (c *Collector) bumpConnLocked(d Decision, now time.Time) {
 	}
 }
 
-func (c *Collector) addRateLocked(nowSec, up, down int64) {
+// clearRateSlot zeroes one second of samples. All six arrays are cleared
+// together: a slot that kept a stale split while its total was reset would
+// report a share larger than the total for one second.
+func (c *Collector) clearRateSlot(idx int) {
+	c.rateUp[idx] = 0
+	c.rateDown[idx] = 0
+	c.rateUpDirect[idx] = 0
+	c.rateDownDirect[idx] = 0
+	c.rateUpProxy[idx] = 0
+	c.rateDownProxy[idx] = 0
+}
+
+func (c *Collector) addRateLocked(nowSec, up, down int64, d Decision) {
 	if c.rateSec != nowSec {
 		if nowSec > c.rateSec {
 			gap := nowSec - c.rateSec
 			if gap >= rateSlots {
 				c.rateUp = [rateSlots]int64{}
 				c.rateDown = [rateSlots]int64{}
+				c.rateUpDirect = [rateSlots]int64{}
+				c.rateDownDirect = [rateSlots]int64{}
+				c.rateUpProxy = [rateSlots]int64{}
+				c.rateDownProxy = [rateSlots]int64{}
 			} else {
 				for i := int64(1); i <= gap; i++ {
-					idx := int((c.rateSec + i) % rateSlots)
-					c.rateUp[idx] = 0
-					c.rateDown[idx] = 0
+					c.clearRateSlot(int((c.rateSec + i) % rateSlots))
 				}
 			}
 		}
@@ -625,6 +657,14 @@ func (c *Collector) addRateLocked(nowSec, up, down int64) {
 	idx := int(nowSec % rateSlots)
 	c.rateUp[idx] += up
 	c.rateDown[idx] += down
+	switch d {
+	case DecisionDirect:
+		c.rateUpDirect[idx] += up
+		c.rateDownDirect[idx] += down
+	case DecisionProxy:
+		c.rateUpProxy[idx] += up
+		c.rateDownProxy[idx] += down
+	}
 	if c.rateUp[idx] > c.peakUp {
 		c.peakUp = c.rateUp[idx]
 	}
@@ -639,7 +679,7 @@ func (c *Collector) rateLocked(nowSec int64, window int) Rate {
 	if window <= 0 || window >= rateSlots {
 		window = rateSlots - 1
 	}
-	var up, down int64
+	var up, down, upDirect, downDirect, upProxy, downProxy int64
 	for i := 1; i <= window; i++ {
 		idx := int((nowSec - int64(i)) % rateSlots)
 		if idx < 0 {
@@ -647,9 +687,20 @@ func (c *Collector) rateLocked(nowSec int64, window int) Rate {
 		}
 		up += c.rateUp[idx]
 		down += c.rateDown[idx]
+		upDirect += c.rateUpDirect[idx]
+		downDirect += c.rateDownDirect[idx]
+		upProxy += c.rateUpProxy[idx]
+		downProxy += c.rateDownProxy[idx]
 	}
 	w := int64(window)
-	return Rate{Upload: up / w, Download: down / w}
+	return Rate{
+		Upload:         up / w,
+		Download:       down / w,
+		DirectUpload:   upDirect / w,
+		DirectDownload: downDirect / w,
+		ProxyUpload:    upProxy / w,
+		ProxyDownload:  downProxy / w,
+	}
 }
 
 // rotateLocked closes history buckets that have elapsed and opens the one
@@ -1195,6 +1246,10 @@ func (c *Collector) Reset() {
 	c.cur = Bucket{T: alignUnix(now.Unix(), c.cfg.BucketInterval)}
 	c.rateUp = [rateSlots]int64{}
 	c.rateDown = [rateSlots]int64{}
+	c.rateUpDirect = [rateSlots]int64{}
+	c.rateDownDirect = [rateSlots]int64{}
+	c.rateUpProxy = [rateSlots]int64{}
+	c.rateDownProxy = [rateSlots]int64{}
 	c.peakUp = 0
 	c.peakDown = 0
 	c.start = now

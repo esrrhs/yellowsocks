@@ -236,6 +236,28 @@ const exitPlace = computed(() => {
   return country || city;
 });
 
+// How much of the current speed is domestic, in percent. The bar is a split
+// of one direction, so both halves are the same hue and the foreign part is
+// just dimmer -- purple here never means "download", which is what the colour
+// means everywhere else on this page.
+function share(direct?: number | null, proxy?: number | null): number {
+  const d = direct ?? 0;
+  const p = proxy ?? 0;
+  if (d + p <= 0) return 0;
+  return Math.round((d / (d + p)) * 100);
+}
+
+const upShare = computed(() =>
+  share(overview.value?.rate?.direct_upload_bps, overview.value?.rate?.proxy_upload_bps),
+);
+const downShare = computed(() =>
+  share(overview.value?.rate?.direct_download_bps, overview.value?.rate?.proxy_download_bps),
+);
+
+function hasRate(direct?: number | null, proxy?: number | null): boolean {
+  return (direct ?? 0) + (proxy ?? 0) > 0;
+}
+
 function probeName(it: guiapp.ProbeItem): string {
   const key = probeNames[it.key];
   return key ? t(key) : it.key;
@@ -311,11 +333,16 @@ onUnmounted(() => {
   offStatus = undefined;
 });
 
-// Traffic chart: two SVG polylines (upload/download) normalised against the
-// same peak, drawn in a 0..100 viewBox and stretched by CSS.
+// Traffic chart: four SVG polylines normalised against one shared peak, drawn
+// in a 0..100 viewBox and stretched by CSS. Colour stays "direction" (upload
+// is blue, download is purple, as in the stat cards); the dashed line is the
+// foreign share of the same direction. Keeping one peak for all four makes
+// the dashed line exactly comparable to its solid twin.
 const chart = computed(() => {
   const pts = series.value;
-  if (!pts.length) return { up: "", down: "", has: false };
+  if (!pts.length) {
+    return { up: "", upIntl: "", down: "", downIntl: "", has: false };
+  }
   const peak = Math.max(
     1,
     ...pts.map((p) => Math.max(p.upload_bytes, p.download_bytes)),
@@ -325,13 +352,15 @@ const chart = computed(() => {
       .map(
         (p, i) =>
           `${(i / Math.max(1, pts.length - 1)) * 100},${
-            100 - (pick(p) / peak) * 100
+            100 - (Math.min(pick(p), peak) / peak) * 100
           }`,
       )
       .join(" ");
   return {
-    up: toPath((p) => p.upload_bytes),
-    down: toPath((p) => p.download_bytes),
+    up: toPath((p) => p.direct_upload_bytes ?? 0),
+    upIntl: toPath((p) => p.proxy_upload_bytes ?? 0),
+    down: toPath((p) => p.direct_download_bytes ?? 0),
+    downIntl: toPath((p) => p.proxy_download_bytes ?? 0),
     has: true,
   };
 });
@@ -470,11 +499,33 @@ const chart = computed(() => {
       <div class="card stat">
         <div class="stat-label">{{ t("stat.upRate") }}</div>
         <div class="stat-value up">{{ fmtBps(overview?.rate?.upload_bps) }}</div>
+        <div
+          class="split-bar up"
+          :class="{ idle: !hasRate(overview?.rate?.direct_upload_bps, overview?.rate?.proxy_upload_bps) }"
+        >
+          <i class="seg direct" :style="{ width: upShare + '%' }"></i>
+          <i class="seg proxy"></i>
+        </div>
+        <div class="split-line">
+          <span>{{ t("lifetime.direct") }} {{ fmtBps(overview?.rate?.direct_upload_bps) }}</span>
+          <span>{{ t("lifetime.proxy") }} {{ fmtBps(overview?.rate?.proxy_upload_bps) }}</span>
+        </div>
       </div>
       <div class="card stat">
         <div class="stat-label">{{ t("stat.downRate") }}</div>
         <div class="stat-value down">
           {{ fmtBps(overview?.rate?.download_bps) }}
+        </div>
+        <div
+          class="split-bar down"
+          :class="{ idle: !hasRate(overview?.rate?.direct_download_bps, overview?.rate?.proxy_download_bps) }"
+        >
+          <i class="seg direct" :style="{ width: downShare + '%' }"></i>
+          <i class="seg proxy"></i>
+        </div>
+        <div class="split-line">
+          <span>{{ t("lifetime.direct") }} {{ fmtBps(overview?.rate?.direct_download_bps) }}</span>
+          <span>{{ t("lifetime.proxy") }} {{ fmtBps(overview?.rate?.proxy_download_bps) }}</span>
         </div>
       </div>
       <div class="card stat">
@@ -558,11 +609,25 @@ const chart = computed(() => {
       <div class="chart-head">
         <span>{{ t("chart.title") }}</span>
         <span class="legend">
-          <i class="sw up"></i>{{ t("chart.up") }}
-          <i class="sw down"></i>{{ t("chart.down") }}
+          <span class="lg"><i class="sw up"></i>{{ t("chart.up") }} · {{ t("lifetime.direct") }}</span>
+          <span class="lg"><i class="sw up intl"></i>{{ t("chart.up") }} · {{ t("lifetime.proxy") }}</span>
+          <span class="lg"><i class="sw down"></i>{{ t("chart.down") }} · {{ t("lifetime.direct") }}</span>
+          <span class="lg"><i class="sw down intl"></i>{{ t("chart.down") }} · {{ t("lifetime.proxy") }}</span>
         </span>
       </div>
       <svg class="chart" preserveAspectRatio="none" viewBox="0 0 100 100">
+        <polyline
+          v-if="chart.has"
+          class="line-up intl"
+          :points="chart.upIntl"
+          fill="none"
+        />
+        <polyline
+          v-if="chart.has"
+          class="line-down intl"
+          :points="chart.downIntl"
+          fill="none"
+        />
         <polyline
           v-if="chart.has"
           class="line-up"

@@ -271,6 +271,10 @@ export namespace stats {
 	export class Rate {
 	    upload_bps: number;
 	    download_bps: number;
+	    direct_upload_bps: number;
+	    direct_download_bps: number;
+	    proxy_upload_bps: number;
+	    proxy_download_bps: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new Rate(source);
@@ -280,6 +284,10 @@ export namespace stats {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.upload_bps = source["upload_bps"];
 	        this.download_bps = source["download_bps"];
+	        this.direct_upload_bps = source["direct_upload_bps"];
+	        this.direct_download_bps = source["direct_download_bps"];
+	        this.proxy_upload_bps = source["proxy_upload_bps"];
+	        this.proxy_download_bps = source["proxy_download_bps"];
 	    }
 	}
 	export class Overview {

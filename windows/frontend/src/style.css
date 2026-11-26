@@ -297,6 +297,60 @@ body {
     color: var(--down);
 }
 
+/* Split of one direction: the solid part is domestic, the dimmed part is
+   foreign. Both halves keep the direction's hue, so a bar in the upload card
+   is never mistaken for a download share. */
+.split-bar {
+    display: flex;
+    height: 4px;
+    margin-top: 8px;
+    border-radius: 2px;
+    overflow: hidden;
+    background: var(--hairline);
+}
+
+.split-bar .seg {
+    display: block;
+    height: 100%;
+}
+
+.split-bar .seg.proxy {
+    flex: 1;
+}
+
+.split-bar.up .seg.direct {
+    background: var(--up);
+}
+
+.split-bar.up .seg.proxy {
+    background: var(--up);
+    opacity: 0.35;
+}
+
+.split-bar.down .seg.direct {
+    background: var(--down);
+}
+
+.split-bar.down .seg.proxy {
+    background: var(--down);
+    opacity: 0.35;
+}
+
+/* Idle: show the empty track instead of a bar that looks all-foreign. */
+.split-bar.idle .seg {
+    display: none;
+}
+
+.split-line {
+    display: flex;
+    justify-content: space-between;
+    gap: 8px;
+    margin-top: 6px;
+    color: var(--text-dim);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+
 .chart-card {
     margin-bottom: 16px;
 }
@@ -312,7 +366,18 @@ body {
 .legend {
     display: flex;
     align-items: center;
-    gap: 6px;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 12px;
+}
+
+/* One legend entry: swatch + label. The extra wrapper is what keeps the
+   swatch glued to its own text when the row wraps. */
+.lg {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
 }
 
 .sw {
@@ -323,12 +388,28 @@ body {
     margin-right: 4px;
 }
 
+.lg .sw {
+    margin-right: 0;
+}
+
 .sw.up {
     background: var(--up);
+    color: var(--up);
 }
 
 .sw.down {
     background: var(--down);
+    color: var(--down);
+}
+
+/* Foreign share: same hue, dashed like the line it stands for. currentColor
+   makes the gradient follow the .up/.down rule above. */
+.sw.intl {
+    background: repeating-linear-gradient(
+        90deg,
+        currentColor 0 3px,
+        transparent 3px 6px
+    );
 }
 
 .chart {
@@ -347,6 +428,15 @@ body {
     stroke: var(--down);
     stroke-width: 1.5;
     vector-effect: non-scaling-stroke;
+}
+
+/* The foreign share of the same direction: dashed and lighter, so the pair
+   reads as one quantity split in two rather than four unrelated lines. */
+.line-up.intl,
+.line-down.intl {
+    stroke-dasharray: 4 3;
+    stroke-width: 1.2;
+    opacity: 0.6;
 }
 
 .empty {

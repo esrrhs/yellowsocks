@@ -410,3 +410,73 @@ func TestSessionInstantaneousRate(t *testing.T) {
 		t.Fatalf("rapid sample = %d, want previous 0", down2)
 	}
 }
+
+func TestRateSplitByDecision(t *testing.T) {
+	c := newTestCollector()
+	now := time.Now().Unix()
+
+	// Drive the sampling slots directly: the wall clock is not something a
+	// test can wait for at one-second resolution.
+	c.mu.Lock()
+	c.addRateLocked(now-1, 600, 1200, DecisionDirect)
+	c.addRateLocked(now-1, 400, 800, DecisionProxy)
+	c.mu.Unlock()
+
+	// Five-second window, so the sample is divided by five.
+	r := c.rateLocked(now, 5)
+	want := Rate{
+		Upload: 200, Download: 400,
+		DirectUpload: 120, DirectDownload: 240,
+		ProxyUpload: 80, ProxyDownload: 160,
+	}
+	if r != want {
+		t.Fatalf("rate = %+v, want %+v", r, want)
+	}
+	if r.DirectUpload+r.ProxyUpload != r.Upload || r.DirectDownload+r.ProxyDownload != r.Download {
+		t.Fatalf("split does not add up: %+v", r)
+	}
+
+	// A gap clears the whole slot, split included: a stale share would read
+	// as more traffic than the total it belongs to.
+	c.mu.Lock()
+	c.addRateLocked(now+10, 500, 0, DecisionProxy)
+	c.mu.Unlock()
+	if r := c.rateLocked(now+10, 5); r.Upload != 0 || r.DirectUpload != 0 || r.ProxyUpload != 0 {
+		t.Fatalf("stale slots survived the gap: %+v", r)
+	}
+	if r := c.rateLocked(now+11, 5); r.Upload != 100 || r.ProxyUpload != 100 || r.DirectUpload != 0 {
+		t.Fatalf("second after the gap = %+v", r)
+	}
+
+	c.Reset()
+	if r := c.rateLocked(now+11, 5); r != (Rate{}) {
+		t.Fatalf("rate survived Reset: %+v", r)
+	}
+}
+
+// The chart reads the per-minute buckets, which already carried the split;
+// this pins the aggregation so a refactor cannot silently drop it.
+func TestSeriesKeepsDecisionSplit(t *testing.T) {
+	c := newTestCollector()
+	a := c.Begin(ProtoSOCKS5, "1.1.1.1:1", "cn.test", 80, DecisionDirect, "")
+	a.AddUpload(100)
+	a.AddDownload(200)
+	b := c.Begin(ProtoSOCKS5, "1.1.1.1:2", "us.test", 80, DecisionProxy, "node")
+	b.AddUpload(10)
+	b.AddDownload(30)
+
+	pts := c.Series(time.Now().Add(-time.Minute), time.Second)
+	if len(pts) == 0 {
+		t.Fatal("no series points")
+	}
+	var du, dd, pu, pd int64
+	for _, p := range pts {
+		du += p.DirectUpload
+		dd += p.DirectDownload
+		pu += p.ProxyUpload
+		pd += p.ProxyDownload
+	}
+	if du != 100 || dd != 200 || pu != 10 || pd != 30 {
+		t.Fatalf("split = %d/%d/%d/%d, want 100/200/10/30", du, dd, pu, pd)
+	}
+}
