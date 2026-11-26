@@ -34,7 +34,7 @@ onMounted(async () => {
           </tr>
           <tr>
             <td>{{ t("about.env") }}</td>
-            <td>{{ info.os }}/{{ info.arch }} · Go {{ info.go_version }}</td>
+            <td>{{ info.os }}/{{ info.arch }} · {{ info.go_version }}</td>
           </tr>
         </tbody>
       </table>
