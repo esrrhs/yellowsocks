@@ -59,6 +59,7 @@
   "probe.detail.engineStopped": "Proxy is not running — start it first",
   "probe.detail.notConfigured": "No upstream server configured",
   "probe.detail.tcpOk": "TCP connected",
+  "probe.detail.unparsed": "Unrecognised response",
 
   "lifetime.title": "Lifetime traffic (kept across restarts and resets)",
   "lifetime.reset": "Reset",

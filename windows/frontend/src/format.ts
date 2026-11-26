@@ -49,6 +49,31 @@ export function fmtUptime(seconds?: number | null): string {
   return t("fmt.uptimeS", { s });
 }
 
+// fmtCountry turns an ISO 3166-1 alpha-2 code into the country name in the
+// current UI language. The mapping comes from Intl.DisplayNames, which the
+// Chromium runtime ships: a 250-entry table in the catalogue would be a second
+// source of truth that goes stale every time a country renames itself.
+const regionNames = new Map<string, Intl.DisplayNames>();
+
+export function fmtCountry(code?: string | null): string {
+  const cc = (code ?? "").trim().toUpperCase();
+  if (!/^[A-Z]{2}$/.test(cc)) return "";
+  try {
+    let dn = regionNames.get(locale.value);
+    if (!dn) {
+      dn = new Intl.DisplayNames([locale.value === "en" ? "en" : "zh-CN"], {
+        type: "region",
+      });
+      regionNames.set(locale.value, dn);
+    }
+    return dn.of(cc) ?? cc;
+  } catch {
+    // Runtime without Intl.DisplayNames, or a code ICU does not know: the
+    // code itself still tells the user more than an empty line.
+    return cc;
+  }
+}
+
 // fmtClock renders a unix timestamp as HH:MM:SS, which is what all three
 // tables want for "when". The locale decides the format (en-GB keeps the
 // 24-hour clock that a dense table needs, unlike en-US).

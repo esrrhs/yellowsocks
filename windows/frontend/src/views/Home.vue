@@ -24,7 +24,7 @@ import {
 } from "../../wailsjs/go/guiapp/App";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { guiapp, stats } from "../../wailsjs/go/models";
-import { fmtBytes, fmtBps, fmtUptime } from "../format";
+import { fmtBytes, fmtBps, fmtCountry, fmtUptime } from "../format";
 import { errText, t, type MsgKey } from "../i18n";
 
 const status = ref(new guiapp.EngineStatus());
@@ -221,7 +221,20 @@ const probeDetails: Record<string, MsgKey> = {
   engine_stopped: "probe.detail.engineStopped",
   not_configured: "probe.detail.notConfigured",
   tcp_ok: "probe.detail.tcpOk",
+  unparsed: "probe.detail.unparsed",
 };
+
+// "United States · Los Angeles" / "美国 · 洛杉矶". The country is localised
+// from the code the probe returned; the city is the provider's own spelling
+// and stays untranslated, like the address next to it.
+const exitPlace = computed(() => {
+  const p = probe.value;
+  if (!p) return "";
+  const country = fmtCountry(p.exit_country);
+  const city = (p.exit_city ?? "").trim();
+  if (country && city) return `${country} · ${city}`;
+  return country || city;
+});
 
 function probeName(it: guiapp.ProbeItem): string {
   const key = probeNames[it.key];
@@ -500,6 +513,7 @@ const chart = computed(() => {
         </div>
         <div class="probe-exit" v-if="probe.exit_ip">
           {{ t("probe.exitIPValue", { ip: probe.exit_ip }) }}
+          <span v-if="exitPlace" class="probe-exit-place"> · {{ exitPlace }}</span>
         </div>
       </div>
       <p v-else class="hint">

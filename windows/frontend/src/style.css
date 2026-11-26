@@ -754,6 +754,12 @@ body {
     user-select: text;
 }
 
+/* The address stays accent-coloured; where it resolves to is read-only context
+   and should not compete with it. */
+.probe-exit-place {
+    color: var(--text-dim);
+}
+
 /* ---------- connections / nodes / errors ---------- */
 .tabs {
     display: flex;

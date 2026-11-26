@@ -65,6 +65,8 @@ export namespace guiapp {
 	export class ProbeReport {
 	    at: number;
 	    exit_ip: string;
+	    exit_country: string;
+	    exit_city: string;
 	    items: ProbeItem[];
 	
 	    static createFrom(source: any = {}) {
@@ -75,6 +77,8 @@ export namespace guiapp {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.at = source["at"];
 	        this.exit_ip = source["exit_ip"];
+	        this.exit_country = source["exit_country"];
+	        this.exit_city = source["exit_city"];
 	        this.items = this.convertValues(source["items"], ProbeItem);
 	    }
 	

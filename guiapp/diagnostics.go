@@ -22,6 +22,12 @@ import (
 const (
 	probeTimeout = 8 * time.Second
 	dialTimeout  = 5 * time.Second
+
+	// The exit-IP lookup falls through several providers (see geoSources).
+	// Each leg is quick and short-lived, and the chain has an overall budget,
+	// so a rate-limited provider costs one leg instead of the whole report.
+	geoLegTimeout = 5 * time.Second
+	geoBudget     = 9 * time.Second
 )
 
 // ProbeItem is one line of the report.
@@ -41,13 +47,20 @@ type ProbeItem struct {
 	Detail    string `json:"detail"`
 }
 
-// ProbeReport is what the UI renders: the individual legs plus the exit IP,
-// which is the only way to tell "the proxy works" from "the proxy works but
-// egresses from somewhere useless".
+// ProbeReport is what the UI renders: the individual legs plus the exit
+// address, which is the only way to tell "the proxy works" from "the proxy
+// works but egresses from somewhere useless".
+//
+// The location is reported as an ISO 3166-1 alpha-2 code and the provider's
+// own city string, never as a sentence: the window turns the code into a
+// country name in the user's language (Intl.DisplayNames), and a city name has
+// no translation in either catalogue.
 type ProbeReport struct {
-	At     int64       `json:"at"`
-	ExitIP string      `json:"exit_ip"`
-	Items  []ProbeItem `json:"items"`
+	At          int64       `json:"at"`
+	ExitIP      string      `json:"exit_ip"`
+	ExitCountry string      `json:"exit_country"`
+	ExitCity    string      `json:"exit_city"`
+	Items       []ProbeItem `json:"items"`
 }
 
 // TestConnectivity runs the probe set against the current configuration.
@@ -84,15 +97,11 @@ func (a *App) TestConnectivity() ProbeReport {
 	}()
 	go func() {
 		defer wg.Done()
-		body := ""
-		item := probeHTTPGet("exitip", "https://api.ipify.org?format=json", httpAddr, &body)
+		item, geo := probeExit(httpAddr)
 		items[3] = item
-		if item.OK {
-			if ip := parseIPify(body); ip != "" {
-				report.ExitIP = ip
-				items[3].Detail = ip
-			}
-		}
+		report.ExitIP = geo.ip
+		report.ExitCountry = geo.country
+		report.ExitCity = geo.city
 	}()
 
 	wg.Wait()
@@ -104,12 +113,16 @@ func (a *App) TestConnectivity() ProbeReport {
 // the local HTTP proxy ("host:port"), empty for a direct request. When body is
 // non-nil up to 4KB of the response is stored in it.
 func probeHTTPGet(key, rawURL, proxyAddr string, body *string) ProbeItem {
+	return probeHTTPGetWithin(key, rawURL, proxyAddr, body, probeTimeout)
+}
+
+func probeHTTPGetWithin(key, rawURL, proxyAddr string, body *string, timeout time.Duration) ProbeItem {
 	item := ProbeItem{Key: key, Target: rawURL}
 	tr := &http.Transport{
 		// No keep-alives: a reused connection would report the handshake of a
 		// previous probe instead of this one.
 		DisableKeepAlives:   true,
-		TLSHandshakeTimeout: probeTimeout,
+		TLSHandshakeTimeout: timeout,
 		DialContext:         (&net.Dialer{Timeout: dialTimeout}).DialContext,
 	}
 	if proxyAddr != "" {
@@ -117,7 +130,7 @@ func probeHTTPGet(key, rawURL, proxyAddr string, body *string) ProbeItem {
 			tr.Proxy = http.ProxyURL(pu)
 		}
 	}
-	client := &http.Client{Transport: tr, Timeout: probeTimeout}
+	client := &http.Client{Transport: tr, Timeout: timeout}
 
 	start := time.Now()
 	resp, err := client.Get(rawURL)
@@ -135,6 +148,142 @@ func probeHTTPGet(key, rawURL, proxyAddr string, body *string) ProbeItem {
 		*body = string(buf)
 	}
 	return item
+}
+
+// exitGeo is what an exit lookup managed to learn. Any field may be empty:
+// the address alone is still worth showing, and the country is what the extra
+// lookups are for.
+type exitGeo struct {
+	ip      string
+	country string // ISO 3166-1 alpha-2, upper case
+	city    string // provider's own spelling, not translated
+}
+
+// geoSources are tried in order. Each one fails differently: ipinfo is the
+// richest but rate-limits by egress IP (a shared proxy exit answers 429),
+// ipwho.is is generous and key-free, Cloudflare answers from every edge but
+// only knows the country, and ipify only knows the address -- which is still
+// exactly what the row showed before location was added, so the worst case is
+// the old behaviour rather than a failure.
+var geoSources = []struct {
+	url   string
+	parse func(string) exitGeo
+}{
+	{"https://ipinfo.io/json", parseIPInfo},
+	{"https://ipwho.is/", parseIPWho},
+	{"https://www.cloudflare.com/cdn-cgi/trace", parseCloudflareTrace},
+	{"https://api.ipify.org?format=json", parseIPOnly},
+}
+
+// probeExit resolves the address the traffic actually leaves from, plus where
+// that address is registered.
+//
+// The legs run one after another, so the wait is bounded by geoBudget: the
+// report is only as fast as its slowest row, and one dead provider must not
+// stall the other three.
+func probeExit(proxyAddr string) (ProbeItem, exitGeo) {
+	deadline := time.Now().Add(geoBudget)
+	var (
+		item ProbeItem
+		geo  exitGeo
+		got  bool // an address has been resolved
+	)
+	for i, src := range geoSources {
+		if i > 0 && time.Now().After(deadline) {
+			break
+		}
+		body := ""
+		leg := probeHTTPGetWithin("exitip", src.url, proxyAddr, &body, geoLegTimeout)
+		if leg.OK {
+			if g := src.parse(body); g.ip != "" {
+				g.city = strings.TrimSpace(g.city)
+				geo, got = g, true
+				leg.Detail = g.ip
+				item = leg
+				// A provider that also knows the country is the last one we
+				// need; an address-only answer keeps the chain going.
+				if g.country != "" {
+					break
+				}
+				continue
+			}
+			// 2xx but nothing we understand: a captive portal or an error
+			// page served with a 200. Treat it as a failed leg.
+			leg.OK = false
+			leg.Detail = ""
+			leg.DetailKey = "unparsed"
+		}
+		if !got {
+			item = leg
+		}
+	}
+	if item.Key == "" {
+		// Unreachable in practice (the table is non-empty), but the row must
+		// never render blank.
+		item = ProbeItem{Key: "exitip"}
+	}
+	return item, geo
+}
+
+// normCountry keeps only codes worth showing: two letters, upper case. "XX"
+// (unknown) and "T1" (Tor) come back from public lookups and would render as
+// a nonexistent country name.
+func normCountry(s string) string {
+	s = strings.ToUpper(strings.TrimSpace(s))
+	if len(s) != 2 || s[0] < 'A' || s[0] > 'Z' || s[1] < 'A' || s[1] > 'Z' {
+		return ""
+	}
+	if s == "XX" || s == "T1" {
+		return ""
+	}
+	return s
+}
+
+func parseIPInfo(body string) exitGeo {
+	var v struct {
+		IP      string `json:"ip"`
+		Country string `json:"country"`
+		City    string `json:"city"`
+	}
+	if json.Unmarshal([]byte(body), &v) != nil {
+		return exitGeo{}
+	}
+	return exitGeo{ip: v.IP, country: normCountry(v.Country), city: v.City}
+}
+
+func parseIPWho(body string) exitGeo {
+	var v struct {
+		Success     bool   `json:"success"`
+		IP          string `json:"ip"`
+		CountryCode string `json:"country_code"`
+		City        string `json:"city"`
+	}
+	if json.Unmarshal([]byte(body), &v) != nil || !v.Success {
+		return exitGeo{}
+	}
+	return exitGeo{ip: v.IP, country: normCountry(v.CountryCode), city: v.City}
+}
+
+// parseCloudflareTrace reads the plain-text key=value dump of /cdn-cgi/trace.
+func parseCloudflareTrace(body string) exitGeo {
+	var g exitGeo
+	for _, line := range strings.Split(body, "\n") {
+		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
+		if !ok {
+			continue
+		}
+		switch k {
+		case "ip":
+			g.ip = v
+		case "loc":
+			g.country = normCountry(v)
+		}
+	}
+	return g
+}
+
+func parseIPOnly(body string) exitGeo {
+	return exitGeo{ip: parseIPify(body)}
 }
 
 // probeUpstream checks that the configured upstream SOCKS5 port accepts a TCP

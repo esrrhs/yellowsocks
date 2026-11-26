@@ -59,6 +59,7 @@
   "probe.detail.engineStopped": "代理未运行,先启动代理再测",
   "probe.detail.notConfigured": "未配置上游服务器",
   "probe.detail.tcpOk": "TCP 连接成功",
+  "probe.detail.unparsed": "返回内容无法识别",
 
   "lifetime.title": "累计流量(永久记录,重启与重置后仍保留)",
   "lifetime.reset": "清零",
