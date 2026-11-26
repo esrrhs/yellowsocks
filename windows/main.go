@@ -86,7 +86,9 @@ func main() {
 		AssetServer: &assetserver.Options{
 			Assets: assets,
 		},
-		BackgroundColour: &options.RGBA{R: 24, G: 26, B: 32, A: 1},
+		// Painted before the WebView has a DOM: this has to be the page
+		// background or every launch flashes the old blue-black first.
+		BackgroundColour: &options.RGBA{R: 19, G: 17, B: 16, A: 1},
 		OnStartup:        app.Startup,
 		OnBeforeClose:    app.BeforeClose,
 		OnShutdown:       app.Shutdown,

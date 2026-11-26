@@ -1,54 +1,75 @@
-@font-face {
-    font-family: "Nunito";
-    font-style: normal;
-    font-weight: 400;
-    src: local(""),
-    url("assets/fonts/nunito-v16-latin-regular.woff2") format("woff2");
-}
+/* YellowSocks visual system.
+
+   A rack instrument, not a dashboard. Four decisions carry the whole look:
+
+   - Warm graphite instead of blue-black. Blue-grey surfaces plus a saturated
+     accent is the default palette of every generated admin panel; a slightly
+     warm neutral reads like hardware.
+   - Hairlines instead of floating cards. Modules are separated by 1px rules
+     and share edges, so the page reads as one faceplate rather than a pile of
+     rounded rectangles.
+   - Monospace for every number that changes. Figures line up column-wise and
+     the eye can compare them without the digits shifting.
+   - One accent colour, used only for state: the active nav rail, the selected
+     segment, focus, unsaved markers. Data uses exactly two hues (teal for
+     outbound/domestic, clay for inbound/foreign); nothing else is coloured. */
 
 :root {
-    --bg: #181a20;
-    --bg-deep: #12141a;
-    --card: #1e222b;
-    --card-hover: #242936;
-    --border: #2a2f3a;
-    --text: #e8eaf0;
-    --text-dim: #8b93a7;
-    --accent: #f5c518;
-    --accent-soft: rgba(245, 197, 24, 0.15);
-    --green: #3ecf8e;
-    --red: #ff6b6b;
-    --up: #4da3ff;
-    --down: #b98cff;
-    /* Surfaces that sit on top of a card. These were hardcoded white-alpha
-       in a dozen rules; as variables the light theme can flip them to black
-       alpha instead of painting invisible white on white. */
-    --hover: rgba(255, 255, 255, 0.03);
-    --hairline: rgba(255, 255, 255, 0.05);
-    --chip-bg: rgba(255, 255, 255, 0.1);
-    --tag-bg: rgba(255, 255, 255, 0.08);
+    --bg: #131110;
+    --bg-deep: #0d0c0b;
+    --panel: #1a1715;
+    --well: #100e0d;
+    --raise: #211d19;
+    --raise2: #2a251f;
+    --line: #2d2721;
+    --line-soft: #241f1b;
+
+    --text: #e8e3d9;
+    --text-dim: #9a9287;
+    --text-3: #7c756b;
+
+    --accent: #e0a13c;
+    --accent-soft: rgba(224, 161, 60, 0.12);
+    /* Text that sits on an accent fill. The accent is light in the dark theme
+       and dark in the light theme, so a hardcoded ink colour is unreadable on
+       one of the two. */
+    --on-accent: #171008;
+
+    --ok: #4fb3a9;
+    --bad: #d6605a;
+    --up: #4fb3a9;
+    --down: #d98a63;
+
+    --mono: "Cascadia Mono", "Cascadia Code", Consolas, ui-monospace,
+    "SFMono-Regular", "Microsoft YaHei", monospace;
 }
 
 html[data-theme="light"] {
-    --bg: #f4f6f9;
-    --bg-deep: #e9edf3;
-    --card: #ffffff;
-    --card-hover: #eef1f6;
-    --border: #dbe1ea;
-    --text: #1b1f27;
-    --text-dim: #667085;
-    /* The dark theme's yellow is invisible on white; this is the same hue
-       darkened until it carries contrast for both text and fills. */
-    --accent: #b07d00;
-    --accent-soft: rgba(176, 125, 0, 0.13);
-    --green: #0f9d58;
-    --red: #d92d20;
-    --up: #1f6feb;
-    --down: #7c3aed;
-    --hover: rgba(16, 24, 40, 0.035);
-    --hairline: rgba(16, 24, 40, 0.07);
-    --chip-bg: rgba(16, 24, 40, 0.08);
-    --tag-bg: rgba(16, 24, 40, 0.06);
+    --bg: #f0ece4;
+    --bg-deep: #e7e2d9;
+    --panel: #fdfcf9;
+    --well: #f4f1ea;
+    --raise: #ece8de;
+    --raise2: #e0dbcf;
+    --line: #d3cdbf;
+    --line-soft: #e4dfd4;
+
+    --text: #1d1a16;
+    --text-dim: #5d574e;
+    /* Small metadata sits on this colour at 10-11px, so it has to stay above
+       4:1 on the panel rather than being a decorative tint. */
+    --text-3: #786f62;
+
+    /* The dark theme's amber disappears on paper; same hue, darkened until it
+       carries contrast for both text and fills. */
+    --accent: #96650f;
+    --accent-soft: rgba(150, 101, 15, 0.1);
+    --on-accent: #fdfcf9;
+
+    --ok: #12786b;
+    --bad: #b3352c;
+    --up: #0f7a6d;
+    --down: #a1502a;
 }
 
 html {
@@ -58,11 +79,15 @@ html {
 body {
     margin: 0;
     color: var(--text);
-    font-family: "Nunito", -apple-system, BlinkMacSystemFont, "Segoe UI",
-    "Microsoft YaHei", "PingFang SC", sans-serif;
-    font-size: 14px;
+    background: var(--bg);
+    font-family: "Segoe UI Variable Text", "Segoe UI", -apple-system,
+    BlinkMacSystemFont, "Microsoft YaHei UI", "Microsoft YaHei", "PingFang SC",
+    sans-serif;
+    font-size: 13px;
+    line-height: 1.5;
     overflow: hidden;
     user-select: none;
+    -webkit-font-smoothing: antialiased;
 }
 
 #app {
@@ -74,32 +99,69 @@ body {
     height: 100%;
 }
 
+::selection {
+    background: var(--accent-soft);
+    color: var(--text);
+}
+
+/* Thin, dark scrollbars. The default WebView2 bar is a wide light trough that
+   looks pasted on top of a dark UI. Transparent border + background-clip keeps
+   the thumb inset on any surface colour. */
+::-webkit-scrollbar {
+    width: 11px;
+    height: 11px;
+}
+
+::-webkit-scrollbar-track {
+    background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+    background: var(--raise2);
+    border: 3px solid transparent;
+    border-radius: 6px;
+    background-clip: padding-box;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: var(--text-3);
+    border: 3px solid transparent;
+    background-clip: padding-box;
+}
+
+::-webkit-scrollbar-corner {
+    background: transparent;
+}
+
 /* ---------- sidebar ---------- */
 
 .sidebar {
-    width: 200px;
+    width: 186px;
     flex-shrink: 0;
     background: var(--bg-deep);
-    border-right: 1px solid var(--border);
+    border-right: 1px solid var(--line);
     display: flex;
     flex-direction: column;
-    padding: 16px 12px;
+    padding: 16px 10px 12px;
 }
 
 .brand {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 4px 8px 20px;
+    gap: 9px;
+    padding: 0 6px 20px;
 }
 
+/* Flat amber plate, dark mark. The old one was a two-stop gradient square,
+   which is the single most recognisable "generated logo" tell. */
 .logo {
-    width: 34px;
-    height: 34px;
-    border-radius: 9px;
-    background: linear-gradient(135deg, var(--accent), #e0a800);
-    color: #1a1a1a;
-    font-weight: 700;
+    width: 26px;
+    height: 26px;
+    border-radius: 2px;
+    background: var(--accent);
+    color: var(--on-accent);
+    font: 700 11px/1 var(--mono);
+    letter-spacing: 0.06em;
     display: flex;
     align-items: center;
     justify-content: center;
@@ -107,52 +169,85 @@ body {
 }
 
 .logo.big {
-    width: 56px;
-    height: 56px;
-    font-size: 22px;
-    margin: 0 auto 10px;
+    width: 40px;
+    height: 40px;
+    border-radius: 3px;
+    font-size: 14px;
+    margin: 0 auto 14px;
 }
 
 .brand-name {
-    font-weight: 700;
-    font-size: 15px;
-    letter-spacing: 0.3px;
+    font-weight: 600;
+    font-size: 13px;
+    letter-spacing: 0.01em;
 }
 
 .nav {
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 1px;
 }
 
+/* The active page is marked by a lit rail on the left edge, not by a coloured
+   pill: the rail is the only element in the sidebar allowed to be amber. */
 .nav-item {
+    position: relative;
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 10px 12px;
+    gap: 9px;
+    padding: 7px 9px 7px 11px;
     border: none;
-    border-radius: 8px;
+    border-radius: 2px;
     background: transparent;
     color: var(--text-dim);
     font: inherit;
+    font-size: 13px;
     cursor: pointer;
     text-align: left;
-    transition: background 0.15s, color 0.15s;
+    transition: background 0.12s, color 0.12s;
 }
 
 .nav-item:hover {
-    background: var(--card);
+    background: var(--raise);
     color: var(--text);
 }
 
 .nav-item.active {
-    background: var(--accent-soft);
-    color: var(--accent);
+    background: var(--raise);
+    color: var(--text);
+}
+
+.nav-item.active::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 5px;
+    bottom: 5px;
+    width: 2px;
+    background: var(--accent);
 }
 
 .nav-icon {
-    width: 18px;
-    text-align: center;
+    width: 15px;
+    height: 15px;
+    flex-shrink: 0;
+    color: var(--text-3);
+    display: flex;
+}
+
+.nav-item:hover .nav-icon,
+.nav-item.active .nav-icon {
+    color: var(--text);
+}
+
+.nav-item.active .nav-icon {
+    color: var(--accent);
+}
+
+.nav-icon svg {
+    width: 15px;
+    height: 15px;
+    display: block;
 }
 
 /* ---------- sidebar footer (theme + language) ---------- */
@@ -160,39 +255,44 @@ body {
 .sidebar-foot {
     margin-top: auto;
     padding-top: 12px;
-    border-top: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
 }
 
 .mini-switch {
     display: flex;
-    gap: 4px;
+    border: 1px solid var(--line);
+    border-radius: 2px;
+    overflow: hidden;
 }
 
 .mini-switch button {
     flex: 1;
     padding: 5px 0;
-    border: 1px solid var(--border);
-    border-radius: 7px;
+    border: none;
+    border-radius: 0;
     background: transparent;
-    color: var(--text-dim);
+    color: var(--text-3);
     font: inherit;
-    font-size: 12px;
+    font-size: 11px;
     cursor: pointer;
-    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    transition: background 0.12s, color 0.12s;
+}
+
+.mini-switch button + button {
+    border-left: 1px solid var(--line);
 }
 
 .mini-switch button:hover {
     color: var(--text);
-    background: var(--hover);
+    background: var(--raise);
 }
 
 .mini-switch button.active {
-    background: var(--accent-soft);
-    border-color: var(--accent);
-    color: var(--accent);
+    background: var(--raise);
+    color: var(--text);
+    box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 /* ---------- content ---------- */
@@ -200,93 +300,134 @@ body {
 .content {
     flex: 1;
     overflow-y: auto;
-    padding: 24px 28px;
+    padding: 20px 24px 28px;
 }
 
 .page h2 {
-    margin: 0 0 14px;
-    font-size: 18px;
+    margin: 0 0 16px;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
 }
 
 .hint {
     color: var(--text-dim);
-    margin: 0 0 14px;
-    line-height: 1.6;
+    font-size: 12px;
+    margin: 0 0 16px;
+    line-height: 1.7;
+    /* A paragraph that runs the full width of a 1000px window is a wall; the
+       measure is capped so the eye can find the next line. */
+    max-width: 76ch;
     user-select: text;
 }
 
 .card {
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 16px 18px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    padding: 14px 16px;
 }
 
 /* ---------- home ---------- */
 
+/* The status block is the page header, so it has no box of its own: one rule
+   underneath, and the Start button on the right. */
 .status-card {
     display: flex;
     align-items: center;
     justify-content: space-between;
     gap: 16px;
-    margin-bottom: 16px;
+    margin-bottom: 14px;
+    padding: 2px 0 15px;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--line);
+    border-radius: 0;
 }
 
 .status-main {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: 12px;
 }
 
 .dot {
-    width: 12px;
-    height: 12px;
+    width: 7px;
+    height: 7px;
     border-radius: 50%;
+    background: var(--text-3);
     flex-shrink: 0;
 }
 
+/* A halo, not a glow: two hard rings read as an indicator lamp, a blurred
+   box-shadow reads as neon. */
 .dot.on {
-    background: var(--green);
-    box-shadow: 0 0 8px var(--green);
+    background: var(--ok);
+    box-shadow: 0 0 0 3px rgba(79, 179, 169, 0.14);
+}
+
+.status-main .dot {
+    width: 9px;
+    height: 9px;
 }
 
 .dot.off {
-    background: var(--text-dim);
+    background: var(--text-3);
+    box-shadow: none;
 }
 
 .status-title {
-    font-size: 16px;
-    font-weight: 700;
+    font-size: 17px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
 }
 
 .status-sub {
     color: var(--text-dim);
     margin-top: 3px;
+    font-family: var(--mono);
+    font-size: 11.5px;
     user-select: text;
 }
 
+/* Six readings in one faceplate: the gaps are the rules, so the cells do not
+   each need a border. */
 .cards {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 12px;
-    margin-bottom: 16px;
+    gap: 1px;
+    margin-bottom: 14px;
+    background: var(--line);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.cards > .card {
+    border: none;
+    border-radius: 0;
+    padding: 12px 14px 13px;
 }
 
 .stat-label {
-    color: var(--text-dim);
-    font-size: 12px;
-    margin-bottom: 6px;
+    color: var(--text-3);
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    margin-bottom: 7px;
 }
 
 .stat-value {
-    font-size: 20px;
-    font-weight: 700;
+    font-family: var(--mono);
+    font-size: 21px;
+    font-weight: 500;
+    letter-spacing: -0.01em;
+    line-height: 1.15;
     font-variant-numeric: tabular-nums;
 }
 
 .stat-value.small {
-    font-size: 16px;
-    padding-top: 3px;
+    font-size: 15px;
+    padding-top: 4px;
 }
 
 .stat-value.up {
@@ -302,11 +443,11 @@ body {
    is never mistaken for a download share. */
 .split-bar {
     display: flex;
-    height: 4px;
-    margin-top: 8px;
-    border-radius: 2px;
+    height: 3px;
+    margin-top: 9px;
+    border-radius: 1px;
     overflow: hidden;
-    background: var(--hairline);
+    background: var(--line-soft);
 }
 
 .split-bar .seg {
@@ -324,7 +465,7 @@ body {
 
 .split-bar.up .seg.proxy {
     background: var(--up);
-    opacity: 0.35;
+    opacity: 0.34;
 }
 
 .split-bar.down .seg.direct {
@@ -333,18 +474,18 @@ body {
 
 .split-bar.down .seg.proxy {
     background: var(--down);
-    opacity: 0.35;
+    opacity: 0.34;
 }
 
 /* Connections are neither upload nor download, so this bar stays neutral:
-   tinting it blue or purple would say "traffic" instead of "sessions". */
+   tinting it teal or clay would say "traffic" instead of "sessions". */
 .split-bar.conns .seg.direct {
     background: var(--text-dim);
 }
 
 .split-bar.conns .seg.proxy {
     background: var(--text-dim);
-    opacity: 0.35;
+    opacity: 0.34;
 }
 
 /* Idle: show the empty track instead of a bar that looks all-foreign. */
@@ -356,23 +497,33 @@ body {
     display: flex;
     flex-wrap: wrap;
     justify-content: space-between;
-    gap: 6px 8px;
-    margin-top: 6px;
-    color: var(--text-dim);
+    gap: 4px 10px;
+    margin-top: 7px;
+    color: var(--text-3);
+    font-family: var(--mono);
     font-size: 11px;
     font-variant-numeric: tabular-nums;
 }
 
 .chart-card {
-    margin-bottom: 16px;
+    margin-bottom: 14px;
 }
 
 .chart-head {
     display: flex;
+    align-items: center;
     justify-content: space-between;
+    gap: 12px;
+    color: var(--text);
+    font-size: 12.5px;
+    margin-bottom: 12px;
+}
+
+.chart-head > span:first-child {
     color: var(--text-dim);
-    font-size: 12px;
-    margin-bottom: 10px;
+    letter-spacing: 0.05em;
+    font-size: 11px;
+    text-transform: uppercase;
 }
 
 .legend {
@@ -381,6 +532,8 @@ body {
     justify-content: flex-end;
     flex-wrap: wrap;
     gap: 12px;
+    color: var(--text-dim);
+    font-size: 11px;
 }
 
 /* One legend entry: swatch + label. The extra wrapper is what keeps the
@@ -388,15 +541,14 @@ body {
 .lg {
     display: flex;
     align-items: center;
-    gap: 4px;
+    gap: 5px;
     white-space: nowrap;
 }
 
 .sw {
     display: inline-block;
-    width: 10px;
-    height: 3px;
-    border-radius: 2px;
+    width: 14px;
+    height: 2px;
     margin-right: 4px;
 }
 
@@ -431,7 +583,7 @@ body {
 .chart-body {
     display: flex;
     gap: 8px;
-    height: 180px;
+    height: 176px;
 }
 
 .chart-y {
@@ -444,7 +596,8 @@ body {
     position: absolute;
     right: 0;
     transform: translateY(-50%);
-    color: var(--text-dim);
+    color: var(--text-3);
+    font-family: var(--mono);
     font-size: 10px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
@@ -466,13 +619,13 @@ body {
     left: 0;
     right: 0;
     height: 1px;
-    background: var(--hairline);
+    background: var(--line-soft);
 }
 
 /* The baseline is the one line worth seeing: every series is measured
    against it, so it gets the border colour instead of the hairline. */
 .chart-grid i:last-child {
-    background: var(--border);
+    background: var(--line);
 }
 
 .chart {
@@ -489,14 +642,14 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
-    color: var(--text-dim);
+    color: var(--text-3);
     font-size: 12px;
 }
 
 /* Aligned to the plot area, not the card: 58px gutter + the 8px gap. */
 .chart-x {
     position: relative;
-    height: 16px;
+    height: 15px;
     margin-top: 6px;
     margin-left: 66px;
 }
@@ -505,7 +658,8 @@ body {
     position: absolute;
     top: 0;
     transform: translateX(-50%);
-    color: var(--text-dim);
+    color: var(--text-3);
+    font-family: var(--mono);
     font-size: 10px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
@@ -523,13 +677,13 @@ body {
 
 .line-up {
     stroke: var(--up);
-    stroke-width: 1.5;
+    stroke-width: 1.4;
     vector-effect: non-scaling-stroke;
 }
 
 .line-down {
     stroke: var(--down);
-    stroke-width: 1.5;
+    stroke-width: 1.4;
     vector-effect: non-scaling-stroke;
 }
 
@@ -538,83 +692,133 @@ body {
 .line-up.intl,
 .line-down.intl {
     stroke-dasharray: 4 3;
-    stroke-width: 1.2;
-    opacity: 0.6;
+    stroke-width: 1.1;
+    opacity: 0.55;
 }
 
-/* ---------- options row ---------- */
+/* ---------- option bank ---------- */
 
+/* Five switches in one panel, one per row, each with its own rule. Vertical
+   rows fit both languages without the 150px-wide cell that made the old
+   two-column chips wrap their labels. */
 .options-row {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 12px;
-    margin-bottom: 16px;
+    display: flex;
+    flex-direction: column;
+    margin-bottom: 14px;
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    overflow: hidden;
 }
 
-.option-chip {
+.options-row .option-chip {
     display: flex;
     align-items: center;
     gap: 10px;
+    width: 100%;
+    padding: 8px 14px;
+    border: none;
+    border-radius: 0;
+    background: transparent;
     text-align: left;
     font: inherit;
-    color: var(--text);
+    font-size: 12.5px;
+    color: var(--text-dim);
     cursor: pointer;
-    transition: border-color 0.15s;
+    transition: background 0.12s, color 0.12s;
 }
 
-.option-chip:hover {
-    border-color: var(--accent);
+.options-row .option-chip + .option-chip {
+    border-top: 1px solid var(--line-soft);
 }
 
-.option-chip.on {
-    border-color: var(--accent);
-    background: var(--accent-soft);
+.options-row .option-chip:hover {
+    background: var(--raise);
+    color: var(--text);
+}
+
+/* A switch that is on lights the left edge of its row; the row itself keeps
+   the neutral panel colour, so five enabled switches do not turn the panel
+   into a block of amber. Scoped under .options-row to outrank the row colour
+   set above. */
+.options-row .option-chip.on {
+    color: var(--text);
+    box-shadow: inset 2px 0 0 var(--accent);
 }
 
 .chip-title {
-    font-weight: 700;
+    font-weight: 400;
+}
+
+.options-row .option-chip.on .chip-title {
+    font-weight: 600;
 }
 
 .chip-state {
     margin-left: auto;
-    color: var(--text-dim);
-    font-size: 12px;
+    color: var(--text-3);
+    font-family: var(--mono);
+    font-size: 11px;
+}
+
+.options-row .option-chip.on .chip-state {
+    color: var(--accent);
 }
 
 /* ---------- buttons ---------- */
 
 .btn {
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--card-hover);
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    background: var(--raise);
     color: var(--text);
     font: inherit;
-    padding: 9px 18px;
+    font-size: 12.5px;
+    padding: 7px 14px;
     cursor: pointer;
-    transition: filter 0.15s;
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 
 .btn:hover:not(:disabled) {
-    filter: brightness(1.15);
+    background: var(--raise2);
+    border-color: var(--text-3);
+}
+
+.btn:focus-visible {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent-soft);
 }
 
 .btn:disabled {
-    opacity: 0.5;
+    opacity: 0.45;
     cursor: not-allowed;
 }
 
 .btn.primary {
     background: var(--accent);
     border-color: var(--accent);
-    color: #1a1a1a;
-    font-weight: 700;
+    color: var(--on-accent);
+    font-weight: 600;
 }
 
+.btn.primary:hover:not(:disabled) {
+    filter: brightness(1.07);
+    border-color: var(--accent);
+}
+
+/* Stopping the engine is destructive but not an emergency: an outline in the
+   error colour says "this takes it down" without shouting. */
 .btn.danger {
-    background: var(--red);
-    border-color: var(--red);
-    color: #fff;
-    font-weight: 700;
+    background: transparent;
+    border-color: rgba(214, 96, 90, 0.55);
+    color: var(--bad);
+    font-weight: 600;
+}
+
+.btn.danger:hover:not(:disabled) {
+    background: rgba(214, 96, 90, 0.1);
+    border-color: var(--bad);
 }
 
 /* ---------- settings ---------- */
@@ -623,7 +827,8 @@ body {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 14px;
+    gap: 12px;
+    margin-bottom: 12px;
 }
 
 .settings-head h2 {
@@ -632,94 +837,100 @@ body {
 
 .mode-switch {
     display: flex;
-    gap: 8px;
+    gap: 6px;
 }
 
 .btn.small {
-    padding: 6px 14px;
-    font-size: 13px;
+    padding: 4px 10px;
+    font-size: 11.5px;
 }
 
 .btn.active {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: #1a1a1a;
-    font-weight: 700;
+    background: var(--raise2);
+    border-color: rgba(224, 161, 60, 0.5);
+    color: var(--accent);
 }
 
 .section {
     margin-bottom: 14px;
 }
 
-/* Category tabs above the settings form. A dot marks a tab whose fields have
-   unsaved edits — with one save button per tab, "did I save that?" has to be
+/* Category tabs: the same underline idiom as the connections page, so the two
+   levels of navigation cannot be confused. A dot marks a tab whose fields have
+   unsaved edits -- with one save button per tab, "did I save that?" has to be
    answerable without opening every tab again. */
 .subtabs {
     display: flex;
     flex-wrap: wrap;
-    gap: 6px;
+    gap: 2px;
     margin-bottom: 14px;
+    border-bottom: 1px solid var(--line);
 }
 
 .subtab {
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 7px 14px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    padding: 7px 12px 8px;
+    border: none;
+    border-radius: 0;
     background: transparent;
     color: var(--text-dim);
     font: inherit;
-    font-size: 13px;
+    font-size: 12.5px;
     cursor: pointer;
+    box-shadow: inset 0 -2px 0 transparent;
+    transition: color 0.12s, background 0.12s;
 }
 
 .subtab:hover {
-    background: var(--hover);
     color: var(--text);
+    background: var(--raise);
 }
 
 .subtab.active {
-    background: var(--card-hover);
     color: var(--text);
-    border-color: var(--accent);
+    box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 .dirty-dot {
-    width: 6px;
-    height: 6px;
+    width: 5px;
+    height: 5px;
     border-radius: 50%;
     background: var(--accent);
 }
 
 .section h3 {
-    margin: 0 0 12px;
-    font-size: 14px;
-    color: var(--accent);
+    margin: 0 0 14px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--line-soft);
+    font-size: 11.5px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    color: var(--text-dim);
 }
 
 .form-grid {
     display: grid;
-    grid-template-columns: 180px 1fr;
-    gap: 10px 14px;
+    grid-template-columns: 172px 1fr;
+    gap: 9px 14px;
     align-items: center;
 }
 
 .form-grid label {
     color: var(--text-dim);
-    font-size: 13px;
+    font-size: 12.5px;
     text-align: right;
 }
 
 /* The config key next to a translated label: the one string that stays English
    in both languages, because it is the literal key in config.yaml. */
 .form-grid label code {
-    font-family: var(--mono, ui-monospace, Consolas, monospace);
-    font-size: 11px;
-    color: var(--text);
-    opacity: 0.42;
-    margin-left: 4px;
+    font-family: var(--mono);
+    font-size: 10.5px;
+    color: var(--text-3);
+    margin-left: 5px;
 }
 
 .form-grid input[type="text"],
@@ -727,12 +938,13 @@ body {
 .form-grid input[type="number"],
 .form-grid input:not([type]),
 .form-grid select {
-    background: var(--bg-deep);
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    background: var(--well);
+    border: 1px solid var(--line);
+    border-radius: 2px;
     color: var(--text);
     font: inherit;
-    padding: 8px 10px;
+    font-size: 12.5px;
+    padding: 6px 9px;
     width: 100%;
     box-sizing: border-box;
     user-select: text;
@@ -742,26 +954,27 @@ body {
 .form-grid select:focus {
     outline: none;
     border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent-soft);
 }
 
 .form-grid input[type="checkbox"] {
-    width: 18px;
-    height: 18px;
+    width: 15px;
+    height: 15px;
     accent-color: var(--accent);
     justify-self: start;
 }
 
 .mini-editor {
-    background: var(--bg-deep);
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    background: var(--well);
+    border: 1px solid var(--line);
+    border-radius: 2px;
     color: var(--text);
-    font-family: Consolas, "JetBrains Mono", monospace;
-    font-size: 13px;
-    line-height: 1.5;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.6;
     padding: 8px 10px;
     width: 100%;
-    height: 72px;
+    height: 74px;
     box-sizing: border-box;
     resize: vertical;
     user-select: text;
@@ -770,12 +983,13 @@ body {
 .mini-editor:focus {
     outline: none;
     border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent-soft);
 }
 
 .check-line {
     display: flex;
     align-items: flex-start;
-    gap: 10px;
+    gap: 9px;
     text-align: left;
     color: var(--text-dim);
     font-size: 12px;
@@ -796,14 +1010,14 @@ body {
     width: 100%;
     height: 46vh;
     box-sizing: border-box;
-    background: var(--bg-deep);
-    border: 1px solid var(--border);
-    border-radius: 10px;
+    background: var(--well);
+    border: 1px solid var(--line);
+    border-radius: 3px;
     color: var(--text);
-    font-family: Consolas, "JetBrains Mono", monospace;
-    font-size: 13px;
-    line-height: 1.6;
-    padding: 14px;
+    font-family: var(--mono);
+    font-size: 12px;
+    line-height: 1.65;
+    padding: 12px 14px;
     resize: vertical;
     user-select: text;
 }
@@ -811,67 +1025,75 @@ body {
 .editor:focus {
     outline: none;
     border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent-soft);
 }
 
 .actions {
     display: flex;
     align-items: center;
-    gap: 12px;
-    margin-top: 12px;
+    gap: 10px;
+    margin-top: 14px;
 }
 
 .msg.ok {
-    color: var(--green);
+    color: var(--ok);
+    font-size: 12px;
 }
 
 .msg.err {
-    color: var(--red);
+    color: var(--bad);
+    font-size: 12px;
     user-select: text;
 }
 
 /* ---------- about ---------- */
 
 .about-card {
-    max-width: 420px;
+    max-width: 380px;
     text-align: center;
-    padding: 28px;
+    padding: 26px 24px;
 }
 
 .app-name {
-    font-size: 18px;
-    font-weight: 700;
+    font-size: 15px;
+    font-weight: 600;
+    letter-spacing: 0.01em;
     margin-bottom: 16px;
 }
 
 .info-table {
-    margin: 0 auto 18px;
+    margin: 0 auto 20px;
     border-collapse: collapse;
     user-select: text;
 }
 
 .info-table td {
-    padding: 5px 14px;
-    color: var(--text-dim);
+    padding: 4px 12px;
+    font-size: 12px;
 }
 
 .info-table td:first-child {
     text-align: right;
+    color: var(--text-3);
+    letter-spacing: 0.04em;
 }
 
 .info-table td:last-child {
-    color: var(--text);
     text-align: left;
+    color: var(--text);
+    font-family: var(--mono);
 }
 
 /* ---------- misc ---------- */
 
 .error-banner {
-    background: rgba(255, 107, 107, 0.12);
-    border: 1px solid rgba(255, 107, 107, 0.4);
-    color: var(--red);
-    border-radius: 10px;
-    padding: 10px 14px;
-    margin-bottom: 16px;
+    background: rgba(214, 96, 90, 0.07);
+    border: 1px solid rgba(214, 96, 90, 0.38);
+    color: var(--bad);
+    border-radius: 3px;
+    padding: 9px 12px;
+    margin-bottom: 14px;
+    font-size: 12.5px;
     user-select: text;
     word-break: break-all;
 }
@@ -881,18 +1103,20 @@ body {
 .lifetime-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);
-    gap: 12px;
+    gap: 10px;
 }
 
 .lt-item {
-    background: var(--hover);
-    border-radius: 10px;
-    padding: 12px 14px;
+    background: var(--well);
+    border: 1px solid var(--line-soft);
+    border-radius: 2px;
+    padding: 10px 12px;
 }
 
 .lt-label {
-    color: var(--text-dim);
-    font-size: 12px;
+    color: var(--text-3);
+    font-size: 10.5px;
+    letter-spacing: 0.05em;
     margin-bottom: 6px;
 }
 
@@ -905,70 +1129,83 @@ body {
 }
 
 .lt-value {
-    font-size: 20px;
-    font-weight: 600;
+    font-family: var(--mono);
+    font-size: 17px;
+    font-weight: 500;
     color: var(--text);
+    letter-spacing: -0.01em;
 }
 
 .lt-sub {
-    color: var(--text-dim);
-    font-size: 11px;
+    color: var(--text-3);
+    font-family: var(--mono);
+    font-size: 10.5px;
     margin-top: 4px;
 }
 
 /* ---------- routing mode + self-test ---------- */
 
+/* Not a card: the mode switch belongs to the header block, so it sits on the
+   page with a single rule under it. */
 .mode-row {
     display: flex;
     align-items: center;
-    gap: 14px;
+    gap: 12px;
     margin-bottom: 16px;
-    padding: 10px 16px;
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: 12px;
+    padding: 0 0 14px;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--line-soft);
 }
 
 .mode-label {
-    color: var(--text-dim);
-    font-size: 13px;
+    color: var(--text-3);
+    font-size: 11px;
+    letter-spacing: 0.05em;
 }
 
 .mode-hint {
     margin-left: auto;
-    color: var(--text-dim);
-    font-size: 12px;
+    color: var(--text-3);
+    font-size: 11.5px;
 }
 
 .probe-list {
     display: flex;
     flex-direction: column;
-    gap: 8px;
 }
 
 .probe-row {
     display: flex;
     align-items: center;
     gap: 10px;
-    font-size: 13px;
+    padding: 6px 0;
+    font-size: 12.5px;
+    border-bottom: 1px solid var(--line-soft);
+}
+
+.probe-row:last-of-type {
+    border-bottom: none;
 }
 
 .probe-name {
-    width: 110px;
+    width: 104px;
     flex-shrink: 0;
     color: var(--text);
 }
 
 .probe-ms {
-    width: 62px;
+    width: 58px;
     flex-shrink: 0;
+    font-family: var(--mono);
+    font-size: 11.5px;
     font-variant-numeric: tabular-nums;
     color: var(--text-dim);
 }
 
 .probe-detail {
-    color: var(--text-dim);
-    font-size: 12px;
+    color: var(--text-3);
+    font-size: 11.5px;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -976,126 +1213,154 @@ body {
 }
 
 .probe-exit {
-    margin-top: 10px;
+    margin-top: 8px;
     padding-top: 10px;
-    border-top: 1px solid var(--border);
-    color: var(--accent);
-    font-size: 13px;
+    border-top: 1px solid var(--line);
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
     user-select: text;
 }
 
-/* The address stays accent-coloured; where it resolves to is read-only context
-   and should not compete with it. */
+/* The address stays bright; where it resolves to is read-only context and
+   should not compete with it. */
 .probe-exit-place {
-    color: var(--text-dim);
+    color: var(--text-3);
 }
 
 /* ---------- connections / nodes / errors ---------- */
+
+/* Underline tabs rather than pills: one level of "which page", one level of
+   "which table", both read the same way. */
 .tabs {
     display: flex;
-    gap: 6px;
+    gap: 2px;
     margin-bottom: 16px;
+    border-bottom: 1px solid var(--line);
 }
 
 .tab {
     display: flex;
     align-items: center;
-    gap: 6px;
-    padding: 8px 16px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
-    background: var(--card);
+    gap: 7px;
+    padding: 7px 12px 8px;
+    border: none;
+    border-radius: 0;
+    background: transparent;
     color: var(--text-dim);
     font: inherit;
+    font-size: 12.5px;
     cursor: pointer;
-    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    box-shadow: inset 0 -2px 0 transparent;
+    transition: background 0.12s, color 0.12s;
 }
 
 .tab:hover {
     color: var(--text);
+    background: var(--raise);
 }
 
 .tab.active {
-    background: var(--accent-soft);
-    border-color: var(--accent);
-    color: var(--accent);
+    color: var(--text);
+    box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 .badge {
-    min-width: 18px;
-    padding: 0 5px;
-    border-radius: 9px;
-    background: var(--chip-bg);
-    color: var(--text);
-    font-size: 11px;
-    line-height: 18px;
+    min-width: 16px;
+    padding: 0 4px;
+    border-radius: 2px;
+    background: var(--raise2);
+    color: var(--text-dim);
+    font-family: var(--mono);
+    font-size: 10px;
+    line-height: 15px;
     text-align: center;
 }
 
 .badge.bad {
-    background: rgba(255, 107, 107, 0.2);
-    color: var(--red);
+    background: rgba(214, 96, 90, 0.16);
+    color: var(--bad);
 }
 
 .toolbar {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
     margin-bottom: 12px;
 }
 
 .search {
     flex: 1;
-    max-width: 320px;
-    background: var(--bg-deep);
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    max-width: 300px;
+    background: var(--well);
+    border: 1px solid var(--line);
+    border-radius: 2px;
     color: var(--text);
     font: inherit;
-    padding: 8px 10px;
+    font-size: 12.5px;
+    padding: 6px 9px;
     user-select: text;
 }
 
 .search:focus {
     outline: none;
     border-color: var(--accent);
+    box-shadow: 0 0 0 1px var(--accent-soft);
 }
 
+/* A segmented control is one object with internal rules, not a row of loose
+   pills: that is what makes "rule / global / direct" read as one setting. */
 .seg {
-    display: flex;
-    gap: 4px;
+    display: inline-flex;
+    border: 1px solid var(--line);
+    border-radius: 3px;
+    background: var(--well);
+    overflow: hidden;
 }
 
 .seg button {
-    padding: 7px 14px;
-    border: 1px solid var(--border);
-    border-radius: 8px;
+    padding: 6px 12px;
+    border: none;
+    border-radius: 0;
     background: transparent;
     color: var(--text-dim);
     font: inherit;
+    font-size: 12px;
     cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+}
+
+.seg button + button {
+    border-left: 1px solid var(--line);
+}
+
+.seg button:hover {
+    background: var(--raise);
+    color: var(--text);
 }
 
 .seg button.active {
-    background: var(--card-hover);
-    color: var(--text);
-    border-color: var(--accent);
+    background: var(--raise2);
+    color: var(--accent);
+    box-shadow: inset 0 -2px 0 var(--accent);
 }
 
 /* The count on each filter chip is what lets "all" visibly add up:
    130 = proxy 41 + direct 5 + UDP 84. */
 .seg-count {
-    margin-left: 6px;
-    font-size: 11px;
-    opacity: 0.7;
+    margin-left: 5px;
+    font-family: var(--mono);
+    font-size: 10px;
+    opacity: 0.65;
     font-variant-numeric: tabular-nums;
 }
 
 .toolbar-meta {
     margin-left: auto;
-    color: var(--text-dim);
-    font-size: 12px;
+    color: var(--text-3);
+    font-family: var(--mono);
+    font-size: 11px;
     font-variant-numeric: tabular-nums;
 }
 
@@ -1107,22 +1372,25 @@ body {
 .tbl {
     width: 100%;
     border-collapse: collapse;
-    font-size: 13px;
+    font-size: 12.5px;
 }
 
 .tbl th {
     text-align: left;
-    font-weight: 600;
-    color: var(--text-dim);
-    font-size: 12px;
-    padding: 11px 14px;
-    border-bottom: 1px solid var(--border);
+    font-weight: 500;
+    color: var(--text-3);
+    font-size: 10.5px;
+    letter-spacing: 0.07em;
+    text-transform: uppercase;
+    padding: 8px 12px;
+    background: var(--well);
+    border-bottom: 1px solid var(--line);
     white-space: nowrap;
 }
 
 .tbl td {
-    padding: 9px 14px;
-    border-bottom: 1px solid var(--hairline);
+    padding: 7px 12px;
+    border-bottom: 1px solid var(--line-soft);
     vertical-align: middle;
 }
 
@@ -1131,7 +1399,7 @@ body {
 }
 
 .tbl tbody tr:hover td {
-    background: var(--hover);
+    background: var(--raise);
 }
 
 .tbl .right {
@@ -1144,17 +1412,19 @@ body {
 }
 
 .num {
+    font-family: var(--mono);
+    font-size: 12px;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;
 }
 
 .mono {
-    font-family: Consolas, "JetBrains Mono", monospace;
+    font-family: var(--mono);
     user-select: text;
 }
 
 .dim {
-    color: var(--text-dim);
+    color: var(--text-3);
 }
 
 .ellipsis {
@@ -1194,8 +1464,8 @@ body {
 
 .tbl-fixed td .total {
     display: block;
-    margin-top: 2px;
-    font-size: 11px;
+    margin-top: 1px;
+    font-size: 10.5px;
 }
 
 .tbl-fixed .up,
@@ -1209,7 +1479,7 @@ body {
 }
 
 .sortable:hover {
-    color: var(--text);
+    color: var(--text-dim);
 }
 
 .sort-mark {
@@ -1226,13 +1496,15 @@ body {
     color: var(--down);
 }
 
+/* Decision tags carry the same two hues as the split bars, because in this app
+   direct *is* domestic and proxy *is* foreign. */
 .tag {
     display: inline-block;
-    padding: 2px 8px;
-    border-radius: 6px;
-    font-size: 11px;
+    padding: 1px 6px;
+    border-radius: 2px;
+    font-size: 10.5px;
     line-height: 16px;
-    background: var(--tag-bg);
+    background: var(--raise2);
     color: var(--text-dim);
     /* A two-character label must stay on one line: the fixed table squeezes
        the decision column, and "代 / 理" stacked reads like a different tag. */
@@ -1240,28 +1512,31 @@ body {
 }
 
 .tag.proxy {
-    background: rgba(185, 140, 255, 0.16);
+    background: rgba(217, 138, 99, 0.15);
     color: var(--down);
 }
 
 .tag.direct {
-    background: rgba(62, 207, 142, 0.14);
-    color: var(--green);
+    background: rgba(79, 179, 169, 0.14);
+    color: var(--up);
 }
 
 .empty-row {
     text-align: center;
-    color: var(--text-dim);
-    padding: 36px 14px !important;
+    color: var(--text-3);
+    padding: 32px 14px !important;
+    font-size: 12.5px;
 }
 
 .sum-row td {
-    background: var(--hover);
+    background: var(--well);
+    border-top: 1px solid var(--line);
     font-weight: 600;
 }
 
 .err-msg {
-    color: var(--red);
+    color: var(--bad);
+    font-size: 12px;
     user-select: text;
     word-break: break-word;
 }
@@ -1271,40 +1546,43 @@ body {
 .log-box {
     height: calc(100vh - 190px);
     overflow-y: auto;
-    padding: 8px 0;
-    font-family: Consolas, "JetBrains Mono", monospace;
-    font-size: 12.5px;
-    line-height: 1.55;
+    padding: 6px 0;
+    background: var(--well);
+    font-family: var(--mono);
+    font-size: 11.5px;
+    line-height: 1.6;
     user-select: text;
 }
 
 .log-line {
     display: flex;
-    gap: 10px;
-    padding: 1px 14px;
+    gap: 9px;
+    padding: 1px 12px;
     white-space: pre-wrap;
     word-break: break-all;
 }
 
 .log-line:hover {
-    background: var(--hover);
+    background: var(--raise);
 }
 
 .log-time {
-    color: var(--text-dim);
+    color: var(--text-3);
     flex-shrink: 0;
     font-variant-numeric: tabular-nums;
 }
 
 .log-level {
-    width: 46px;
+    width: 42px;
     flex-shrink: 0;
-    font-weight: 700;
-    font-size: 11px;
+    font-weight: 600;
+    font-size: 9.5px;
+    letter-spacing: 0.05em;
+    padding-top: 1px;
 }
 
 .lv-info {
-    color: var(--up);
+    color: var(--text-dim);
 }
 
 .lv-warn {
@@ -1312,11 +1590,11 @@ body {
 }
 
 .lv-error {
-    color: var(--red);
+    color: var(--bad);
 }
 
 .lv-debug {
-    color: var(--text-dim);
+    color: var(--text-3);
 }
 
 .log-msg {
@@ -1326,7 +1604,6 @@ body {
 
 .log-hint {
     margin-top: 10px;
-    font-size: 12px;
+    font-size: 11.5px;
+    font-family: var(--mono);
 }
-
-
