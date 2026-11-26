@@ -11,13 +11,63 @@ import (
 
 // useTempConfigDir redirects os.UserConfigDir (AppData on Windows, HOME on
 // darwin) into a fresh temp directory so tests never touch the real
-// %APPDATA%/YellowSocks config.
+// %APPDATA%/YellowSocks config. It also snapshots and restores data files
+// in DataDir: when the test binary's directory is writable, DataDir is that
+// portable exe directory (resolved once per process), so AppData/HOME alone
+// would not isolate config.yaml or settings.json.
 func useTempConfigDir(t *testing.T) {
 	t.Helper()
 	if isWindows() {
 		t.Setenv("AppData", t.TempDir())
 	} else {
 		t.Setenv("HOME", t.TempDir())
+	}
+	isolateDataFiles(t, configName, settingsName, statsName)
+}
+
+type dataFileSnap struct {
+	path    string
+	content []byte
+	existed bool
+}
+
+// isolateDataFiles snapshots the named files in DataDir and restores them
+// when the test ends, so leftovers cannot leak into later tests.
+func isolateDataFiles(t *testing.T, names ...string) {
+	t.Helper()
+	dir := DataDir()
+	snaps := make([]dataFileSnap, 0, len(names))
+	for _, name := range names {
+		path := filepath.Join(dir, name)
+		data, err := os.ReadFile(path)
+		if err == nil {
+			snaps = append(snaps, dataFileSnap{path: path, content: data, existed: true})
+		} else {
+			snaps = append(snaps, dataFileSnap{path: path})
+		}
+	}
+	t.Cleanup(func() {
+		for _, s := range snaps {
+			if s.existed {
+				_ = os.WriteFile(s.path, s.content, 0o644)
+			} else {
+				_ = os.Remove(s.path)
+			}
+		}
+	})
+}
+
+// writeDefaultEngineConfig puts the default listen addresses into DataDir
+// so StartEngine / SetSystemProxy do not depend on whatever a previous
+// test left behind in the portable directory.
+func writeDefaultEngineConfig(t *testing.T) {
+	t.Helper()
+	path, err := configPath()
+	if err != nil {
+		t.Fatalf("configPath: %v", err)
+	}
+	if err := writeDefaultConfig(path); err != nil {
+		t.Fatalf("writeDefaultConfig: %v", err)
 	}
 }
 
@@ -75,6 +125,7 @@ func TestSaveConfigRoundTrip(t *testing.T) {
 
 func TestStartStopEngine(t *testing.T) {
 	useTempConfigDir(t)
+	writeDefaultEngineConfig(t)
 	a := NewApp()
 
 	st := a.EngineStatus()

@@ -93,6 +93,7 @@ func TestSysproxyEnableDisableRoundTrip(t *testing.T) {
 
 func TestSetSystemProxyAppliesWhileEngineRuns(t *testing.T) {
 	useTempConfigDir(t)
+	writeDefaultEngineConfig(t)
 	useInternetSettingsRestore(t)
 
 	a := NewApp()
@@ -124,6 +125,7 @@ func TestSetSystemProxyAppliesWhileEngineRuns(t *testing.T) {
 
 func TestProxyGuardRestoresOverwrittenRegistration(t *testing.T) {
 	useTempConfigDir(t)
+	writeDefaultEngineConfig(t)
 	useInternetSettingsRestore(t)
 
 	a := NewApp()
