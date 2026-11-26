@@ -3,6 +3,7 @@ import { computed, onMounted, ref } from "vue";
 import { load as yamlLoad, dump as yamlDump } from "js-yaml";
 import { GetConfig, SaveConfig } from "../../wailsjs/go/guiapp/App";
 import { errText, t } from "../i18n";
+import type { MsgKey } from "../i18n";
 
 // The form edits the same flat keys as the CLI config file (FileConfig in
 // core/config). Every field not covered by a form section is still editable
@@ -13,11 +14,63 @@ import { errText, t } from "../i18n";
 // the one piece of English that belongs in both languages: it is the literal
 // key in config.yaml, not a gloss, so translating it would only hide which
 // line of the file the field writes.
+//
+// The fields are split into tabs, and a save writes only the active tab's
+// keys. That is deliberate: someone changing the upstream server should not
+// have to read (or silently commit) six other pages of settings, and a
+// half-finished edit on another tab stays in the form instead of being
+// overwritten by a save from this one.
+
+type Form = Record<string, any>;
+type GroupId = "upstream" | "listen" | "dns" | "routing" | "auth" | "api";
+
+interface Group {
+  id: GroupId;
+  titleKey: MsgKey;
+  keys: string[];
+}
+
+const groups: Group[] = [
+  {
+    id: "upstream",
+    titleKey: "settings.sectionUpstream",
+    keys: [
+      "spp_proto", "spp_server", "spp_username", "spp_password", "spp_key",
+      "spp_encrypt", "spp_compress", "spp_rdnsdomain", "spp_rdnsupstream",
+      "spp_rdnspsk", "spp_rdnsquerytype",
+    ],
+  },
+  {
+    id: "listen",
+    titleKey: "settings.sectionListen",
+    keys: ["socks5_listen", "http_listen", "dns_listen", "doh_listen", "dot_listen", "ipv6"],
+  },
+  { id: "dns", titleKey: "settings.sectionDns", keys: ["direct_dns", "doh_url"] },
+  {
+    id: "routing",
+    titleKey: "settings.sectionRouting",
+    keys: ["direct_domains", "direct_cidrs", "skip_country", "geoip_file", "china_domains", "gfw_domains"],
+  },
+  {
+    id: "auth",
+    titleKey: "settings.sectionTls",
+    keys: ["proxy_username", "proxy_password", "tls_cert", "tls_key"],
+  },
+  {
+    id: "api",
+    titleKey: "settings.sectionApi",
+    keys: [
+      "api_listen", "api_token", "api_readonly_token", "api_dashboard",
+      "api_pprof", "stats_file", "stats_history_hours", "loglevel",
+    ],
+  },
+];
 
 const mode = ref<"form" | "yaml">("form");
+const group = ref<GroupId>("upstream");
 const raw = ref(""); // authoritative YAML text (source of truth)
 const doc = ref<Record<string, unknown>>({});
-const form = ref<Record<string, any>>({});
+const form = ref<Form>({});
 const message = ref("");
 const error = ref("");
 
@@ -26,6 +79,8 @@ const sppProtos = [
   "pingtunnel", "socks5",
 ];
 const loglevels = ["debug", "info", "warn", "error"];
+
+const activeGroup = computed(() => groups.find((g) => g.id === group.value) ?? groups[0]);
 
 const proto = computed({
   get: () => (form.value.spp_proto as string) || "tcp",
@@ -73,16 +128,12 @@ async function load() {
   }
 }
 
-function parseDoc() {
-  try {
-    doc.value = (yamlLoad(raw.value) as Record<string, unknown>) ?? {};
-  } catch (e: any) {
-    error.value = t("settings.yamlParseFailed", { msg: String(e?.message ?? e) });
-    doc.value = {};
-  }
-  const d = doc.value;
+// One place maps document -> form, so "has this tab been edited" can be
+// answered by comparing against the same conversion instead of a second,
+// drifting copy of the defaults.
+function formFromDoc(d: Record<string, unknown>): Form {
   const lines = (v: unknown) => (Array.isArray(v) ? v.join("\n") : (v as string) ?? "");
-  form.value = {
+  return {
     spp_proto: (d.spp_proto as string) || "tcp",
     spp_server: (d.spp_server as string) ?? "",
     spp_key: (d.spp_key as string) ?? "",
@@ -123,73 +174,78 @@ function parseDoc() {
   };
 }
 
-// Merge the edited form fields back onto the parsed document: keys not
-// present in the form (nodes, api_origins, ...) survive untouched; emptied
-// form fields are removed from the document.
-function applyForm(): string {
+function parseDoc() {
+  try {
+    doc.value = (yamlLoad(raw.value) as Record<string, unknown>) ?? {};
+  } catch (e: any) {
+    error.value = t("settings.yamlParseFailed", { msg: String(e?.message ?? e) });
+    doc.value = {};
+  }
+  form.value = formFromDoc(doc.value);
+}
+
+// Writers turn one form field into one document key. Only a handful need a
+// conversion (numbers, line lists, switches); everything else is copied as-is
+// and removed when emptied.
+const splitLines = (v: string) =>
+  v.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+
+function setKey(out: Record<string, unknown>, key: string, v: unknown) {
+  const empty =
+    v === "" || v === undefined || v === null ||
+    (Array.isArray(v) && v.length === 0) ||
+    v === false;
+  if (empty) {
+    delete out[key];
+  } else {
+    out[key] = v;
+  }
+}
+
+const writers: Record<string, (out: Record<string, unknown>, f: Form) => void> = {
+  spp_compress: (out, f) => {
+    const v = f.spp_compress;
+    if (v === undefined || v === null || v === "") delete out.spp_compress;
+    else out.spp_compress = Number(v);
+  },
+  stats_history_hours: (out, f) => {
+    const v = f.stats_history_hours;
+    if (v === undefined || v === null || v === "") delete out.stats_history_hours;
+    else out.stats_history_hours = Number(v);
+  },
+  direct_domains: (out, f) => setKey(out, "direct_domains", splitLines(f.direct_domains ?? "")),
+  direct_cidrs: (out, f) => setKey(out, "direct_cidrs", splitLines(f.direct_cidrs ?? "")),
+  ipv6: (out, f) => setKey(out, "ipv6", f.ipv6 === true),
+  api_dashboard: (out, f) => setKey(out, "api_dashboard", f.api_dashboard === true),
+  api_pprof: (out, f) => setKey(out, "api_pprof", f.api_pprof === true),
+};
+
+// Merge the given keys onto the parsed document: keys outside the list (the
+// other tabs' fields, nodes, api_origins, ...) keep the file's current value.
+function applyKeys(keys: string[]): string {
   const out: Record<string, unknown> = { ...doc.value };
-  const f = form.value;
-  const set = (key: string, v: unknown) => {
-    const empty =
-      v === "" || v === undefined || v === null ||
-      (Array.isArray(v) && v.length === 0) ||
-      v === false;
-    if (empty) {
-      delete out[key];
-    } else {
-      out[key] = v;
-    }
-  };
-  const splitLines = (v: string) =>
-    v.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
-
-  set("spp_proto", f.spp_proto);
-  set("spp_server", f.spp_server);
-  set("spp_key", f.spp_key);
-  set("spp_username", f.spp_username);
-  set("spp_password", f.spp_password);
-  set("spp_encrypt", f.spp_encrypt);
-  if (f.spp_compress !== undefined && f.spp_compress !== null && f.spp_compress !== "") {
-    set("spp_compress", Number(f.spp_compress));
-  } else {
-    delete out.spp_compress;
+  for (const key of keys) {
+    const writer = writers[key];
+    if (writer) writer(out, form.value);
+    else setKey(out, key, form.value[key]);
   }
-  set("spp_rdnsdomain", f.spp_rdnsdomain);
-  set("spp_rdnsupstream", f.spp_rdnsupstream);
-  set("spp_rdnspsk", f.spp_rdnspsk);
-  set("spp_rdnsquerytype", f.spp_rdnsquerytype);
-  set("socks5_listen", f.socks5_listen);
-  set("http_listen", f.http_listen);
-  set("dns_listen", f.dns_listen);
-  set("doh_listen", f.doh_listen);
-  set("dot_listen", f.dot_listen);
-  set("ipv6", f.ipv6 === true);
-  set("proxy_username", f.proxy_username);
-  set("proxy_password", f.proxy_password);
-  set("tls_cert", f.tls_cert);
-  set("tls_key", f.tls_key);
-  set("direct_dns", f.direct_dns);
-  set("doh_url", f.doh_url);
-  set("direct_domains", splitLines(f.direct_domains ?? ""));
-  set("direct_cidrs", splitLines(f.direct_cidrs ?? ""));
-  set("skip_country", f.skip_country);
-  set("geoip_file", f.geoip_file);
-  set("china_domains", f.china_domains);
-  set("gfw_domains", f.gfw_domains);
-  set("api_listen", f.api_listen);
-  set("api_token", f.api_token);
-  set("api_readonly_token", f.api_readonly_token);
-  set("api_dashboard", f.api_dashboard === true);
-  set("api_pprof", f.api_pprof === true);
-  set("stats_file", f.stats_file);
-  if (f.stats_history_hours !== undefined && f.stats_history_hours !== null && f.stats_history_hours !== "") {
-    set("stats_history_hours", Number(f.stats_history_hours));
-  } else {
-    delete out.stats_history_hours;
-  }
-  set("loglevel", f.loglevel);
-
   return yamlDump(out, { lineWidth: -1 });
+}
+
+// What the file currently says, in form shape: the baseline for the "unsaved"
+// dot on each tab.
+const pristine = computed(() => formFromDoc(doc.value));
+
+function sameValue(a: unknown, b: unknown): boolean {
+  // An unchecked switch reads as false in one place and undefined (key absent)
+  // in the other; both mean "off".
+  if (typeof a === "boolean" || typeof b === "boolean") return !!a === !!b;
+  return String(a ?? "") === String(b ?? "");
+}
+
+function isDirty(g: Group): boolean {
+  const base = pristine.value;
+  return g.keys.some((k) => !sameValue(base[k], form.value[k]));
 }
 
 async function save() {
@@ -200,7 +256,7 @@ async function save() {
     content = raw.value;
   } else {
     try {
-      content = applyForm();
+      content = applyKeys(activeGroup.value.keys);
     } catch (e: any) {
       error.value = t("settings.yamlBuildFailed", { msg: String(e?.message ?? e) });
       return;
@@ -208,7 +264,10 @@ async function save() {
   }
   try {
     await SaveConfig(content);
-    message.value = t("settings.saved");
+    message.value =
+      mode.value === "yaml"
+        ? t("settings.saved")
+        : t("settings.savedTab", { name: t(activeGroup.value.titleKey) });
     raw.value = content;
     doc.value = (yamlLoad(content) as Record<string, unknown>) ?? {};
   } catch (e: any) {
@@ -220,9 +279,10 @@ function switchMode(m: "form" | "yaml") {
   if (m === mode.value) return;
   error.value = "";
   if (m === "yaml") {
-    // carry current form edits into the raw view
+    // carry the edits of every tab into the raw view: the editor shows the
+    // whole file, so a single tab would be a lie about what is on screen
     try {
-      raw.value = applyForm();
+      raw.value = applyKeys(groups.flatMap((g) => g.keys));
     } catch (e: any) {
       error.value = t("settings.yamlBuildFailed", { msg: String(e?.message ?? e) });
       return;
@@ -252,7 +312,20 @@ onMounted(load);
     <p class="hint">{{ t("settings.hint") }}</p>
 
     <template v-if="mode === 'form'">
-      <div class="card section">
+      <div class="subtabs">
+        <button
+          v-for="g in groups"
+          :key="g.id"
+          class="subtab"
+          :class="{ active: group === g.id }"
+          @click="group = g.id"
+        >
+          {{ t(g.titleKey) }}
+          <span v-if="isDirty(g)" class="dirty-dot"></span>
+        </button>
+      </div>
+
+      <div v-if="group === 'upstream'" class="card section">
         <h3>{{ t("settings.sectionUpstream") }}</h3>
         <div class="form-grid">
           <label>{{ t("settings.sppProto") }} <code>spp_proto</code></label>
@@ -299,7 +372,7 @@ onMounted(load);
         </div>
       </div>
 
-      <div class="card section">
+      <div v-else-if="group === 'listen'" class="card section">
         <h3>{{ t("settings.sectionListen") }}</h3>
         <div class="form-grid">
           <label>{{ t("settings.allowLan") }}</label>
@@ -322,7 +395,7 @@ onMounted(load);
         </div>
       </div>
 
-      <div class="card section">
+      <div v-else-if="group === 'dns'" class="card section">
         <h3>{{ t("settings.sectionDns") }}</h3>
         <div class="form-grid">
           <label>{{ t("settings.directDns") }} <code>direct_dns</code></label>
@@ -332,7 +405,7 @@ onMounted(load);
         </div>
       </div>
 
-      <div class="card section">
+      <div v-else-if="group === 'routing'" class="card section">
         <h3>{{ t("settings.sectionRouting") }}</h3>
         <div class="form-grid">
           <label>{{ t("settings.directDomains") }} <code>direct_domains</code></label>
@@ -350,7 +423,7 @@ onMounted(load);
         </div>
       </div>
 
-      <div class="card section">
+      <div v-else-if="group === 'auth'" class="card section">
         <h3>{{ t("settings.sectionTls") }}</h3>
         <div class="form-grid">
           <label>{{ t("settings.proxyUsername") }} <code>proxy_username</code></label>
@@ -364,7 +437,7 @@ onMounted(load);
         </div>
       </div>
 
-      <div class="card section">
+      <div v-else class="card section">
         <h3>{{ t("settings.sectionApi") }}</h3>
         <div class="form-grid">
           <label>{{ t("settings.apiListen") }} <code>api_listen</code></label>
@@ -399,7 +472,9 @@ onMounted(load);
     </template>
 
     <div class="actions">
-      <button class="btn primary" @click="save">{{ t("settings.save") }}</button>
+      <button class="btn primary" @click="save">
+        {{ mode === "yaml" ? t("settings.save") : t("settings.saveTab") }}
+      </button>
       <button class="btn" @click="load">{{ t("settings.reload") }}</button>
       <span v-if="message" class="msg ok">{{ message }}</span>
       <span v-if="error" class="msg err">{{ error }}</span>

@@ -651,6 +651,48 @@ body {
     margin-bottom: 14px;
 }
 
+/* Category tabs above the settings form. A dot marks a tab whose fields have
+   unsaved edits — with one save button per tab, "did I save that?" has to be
+   answerable without opening every tab again. */
+.subtabs {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 14px;
+}
+
+.subtab {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 7px 14px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: transparent;
+    color: var(--text-dim);
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.subtab:hover {
+    background: var(--hover);
+    color: var(--text);
+}
+
+.subtab.active {
+    background: var(--card-hover);
+    color: var(--text);
+    border-color: var(--accent);
+}
+
+.dirty-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+}
+
 .section h3 {
     margin: 0 0 12px;
     font-size: 14px;
