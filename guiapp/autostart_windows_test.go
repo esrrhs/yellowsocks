@@ -45,6 +45,13 @@ func TestLaunchAtLoginRoundTrip(t *testing.T) {
 // entry is cleared when the intent is off. Like the round trip, it leaves the
 // registry as it found it and never touches the scheduled task.
 func TestSyncLaunchAtLogin(t *testing.T) {
+	// GitHub Actions Windows runners (and any admin session) are elevated.
+	// syncLaunchAtLogin then registers a logon task and deletes the Run key,
+	// so a check of the Run key would fail and leave a leftover task. This
+	// test only exercises the unelevated Run-key repair path.
+	if isElevated() {
+		t.Skip("this process is elevated; syncLaunchAtLogin uses the logon task, not the Run key")
+	}
 	if launchTaskRegistered() {
 		t.Skip("a logon task is registered on this machine; the Run-key path is superseded")
 	}
