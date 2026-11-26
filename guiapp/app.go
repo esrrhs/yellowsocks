@@ -28,10 +28,10 @@ const statsName = "stats.json"
 // guiSettings is the GUI-only state that does not belong in the CLI config
 // file, persisted next to it.
 type guiSettings struct {
-	SystemProxy   bool   `json:"system_proxy"`
-	AutoStartCore bool   `json:"auto_start_core"`
-	LaunchAtLogin bool   `json:"launch_at_login"`
-	TunMode       bool   `json:"tun_mode"`
+	SystemProxy   bool `json:"system_proxy"`
+	AutoStartCore bool `json:"auto_start_core"`
+	LaunchAtLogin bool `json:"launch_at_login"`
+	TunMode       bool `json:"tun_mode"`
 	// ProxyMode is one of "rule" (default), "global" or "direct". Stored as a
 	// string rather than an enum so an older build reading a newer file keeps
 	// the value instead of dropping it.
@@ -644,6 +644,8 @@ func (a *App) persistSettingsLocked() error {
 		AutoStartCore: a.autoStartCore,
 		LaunchAtLogin: a.launchAtLogin,
 		TunMode:       a.tunWanted,
+		ProxyMode:     a.proxyMode,
+		ProxyGuard:    a.proxyGuard,
 		AppliedPorts:  a.appliedPorts,
 	})
 }

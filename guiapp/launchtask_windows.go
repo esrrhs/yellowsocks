@@ -27,7 +27,7 @@ import (
 // schtasks.exe: schtasks is on many endpoint-security program blacklists (it is
 // a classic persistence tool), and a blocked spawn would fail at boot with
 // nothing but a warning in the log.
-const launchTaskName = "YellowSocks"
+var launchTaskName = "YellowSocks"
 
 // launchTaskArgs starts the tray-only copy straight into the elevated path
 // (there is no predecessor to hand over from).
