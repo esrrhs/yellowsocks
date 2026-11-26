@@ -832,7 +832,13 @@ func relayStreamsWithNode(a, b net.Conn, idle time.Duration, sess *stats.Session
 	var openPipes int32 = 2
 	var writeAborted int32
 	wg.Add(2)
-	pipe := func(dst, src net.Conn, count func(int64)) {
+	// Only a session that dialled an IP literal needs the name looked up, and
+	// only once: a request that already carried a name is authoritative.
+	var sniffer *sniSniffer
+	if sess.WantsDomain() {
+		sniffer = &sniSniffer{}
+	}
+	pipe := func(dst, src net.Conn, count func(int64), sniff *sniSniffer) {
 		defer wg.Done()
 		bufp := relayBufPool.Get().(*[relayCopyBufferSize]byte)
 		defer relayBufPool.Put(bufp)
@@ -859,6 +865,17 @@ func relayStreamsWithNode(a, b net.Conn, idle time.Duration, sess *stats.Session
 					break
 				}
 				touch(time.Now().UnixNano())
+				// Sniffing happens after the bytes are on the wire, so it
+				// cannot delay the handshake; the buffer is reused, so the
+				// name has to be parsed from the bytes we just forwarded.
+				if sniff != nil {
+					if name, decided := sniff.feed(buf[:n]); decided {
+						if name != "" {
+							sess.SetDomain(name)
+						}
+						sniff = nil
+					}
+				}
 			}
 			if rerr != nil {
 				// In a long one-way transfer (e.g. a 1 GiB download where the
@@ -897,11 +914,11 @@ func relayStreamsWithNode(a, b net.Conn, idle time.Duration, sess *stats.Session
 	go pipe(a, b, func(n int64) {
 		sess.AddDownload(n)
 		recordNodeTraffic(upstream, nodeName, 0, n)
-	})
+	}, nil)
 	go pipe(b, a, func(n int64) {
 		sess.AddUpload(n)
 		recordNodeTraffic(upstream, nodeName, n, 0)
-	})
+	}, sniffer)
 	wg.Wait()
 	_ = a.Close()
 	_ = b.Close()

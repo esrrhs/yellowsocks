@@ -11,6 +11,7 @@ package stats
 
 import (
 	"fmt"
+	"net"
 	"sort"
 	"strings"
 	"sync"
@@ -138,10 +139,15 @@ type ErrorEntry struct {
 
 // SessionView is a live or finished relay as reported by the API.
 type SessionView struct {
-	ID        int64  `json:"id"`
-	Proto     string `json:"proto"`
-	Client    string `json:"client"`
-	Host      string `json:"host"`
+	ID     int64  `json:"id"`
+	Proto  string `json:"proto"`
+	Client string `json:"client"`
+	Host   string `json:"host"`
+	// Domain is the name recovered from the connection itself (TLS SNI or the
+	// HTTP Host header) when the client dialled an IP literal. Host stays the
+	// address that was actually used, because that is what the router and the
+	// byte counters saw; Domain only answers "where is this going" for a human.
+	Domain    string `json:"domain,omitempty"`
 	Port      int    `json:"port"`
 	Decision  string `json:"decision"`
 	Node      string `json:"node"`
@@ -341,6 +347,11 @@ type Session struct {
 	port     int
 	decision Decision
 	node     atomic.Pointer[string]
+	// domain is filled in later, from the traffic itself, when host is an IP
+	// literal. It is display-only: host keeps naming the destination for the
+	// byte and domain counters, so a sniffed name cannot silently re-attribute
+	// bytes that were already counted under the address.
+	domain   atomic.Pointer[string]
 	start    time.Time
 
 	upload      atomic.Int64
@@ -462,6 +473,43 @@ func (s *Session) SetNode(name string) {
 	s.node.Store(&name)
 }
 
+// SetDomain records the name a client asked for, recovered from the relayed
+// traffic (TLS SNI, HTTP Host). It only applies to a session that dialled an
+// IP literal: a request that named its destination is authoritative and must
+// not be overwritten, and a UDP association has no single destination at all.
+func (s *Session) SetDomain(name string) {
+	if s == nil || name == "" || s.done.Load() {
+		return
+	}
+	if len(name) > 255 || net.ParseIP(s.host) == nil {
+		return
+	}
+	s.domain.Store(&name)
+}
+
+// Domain returns the name learned from the traffic, or "" when the session
+// still only knows an address.
+func (s *Session) Domain() string {
+	if s == nil {
+		return ""
+	}
+	ptr := s.domain.Load()
+	if ptr == nil {
+		return ""
+	}
+	return *ptr
+}
+
+// WantsDomain reports whether this session could use a sniffed name: it was
+// opened against an IP literal and nothing has been learned yet. The relay
+// asks before it starts copying bytes, so a domain request costs nothing.
+func (s *Session) WantsDomain() bool {
+	if s == nil || s.host == "" || s.Domain() != "" {
+		return false
+	}
+	return net.ParseIP(s.host) != nil
+}
+
 // Node returns the name of the SPP node associated with this session.
 func (s *Session) Node() string {
 	if s == nil {
@@ -525,6 +573,7 @@ func (s *Session) view(now time.Time) SessionView {
 		Proto:     string(s.proto),
 		Client:    s.client,
 		Host:      s.host,
+		Domain:    s.Domain(),
 		Port:      s.port,
 		Decision:  string(s.decision),
 		Node:      s.Node(),

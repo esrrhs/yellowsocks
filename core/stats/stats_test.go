@@ -99,6 +99,63 @@ func TestActiveConnsSplitByDecision(t *testing.T) {
 	}
 }
 
+func TestSessionDomainOnlyFillsAddressSessions(t *testing.T) {
+	c := newTestCollector()
+
+	// Dialled by address: the relay can learn the name from the traffic.
+	byAddr := c.Begin(ProtoSOCKS5, "127.0.0.1:1", "112.49.67.179", 443, DecisionProxy, "")
+	if !byAddr.WantsDomain() {
+		t.Fatal("an IP literal session should want a sniffed name")
+	}
+	byAddr.SetDomain("static.zhihu.com")
+	if got := byAddr.Domain(); got != "static.zhihu.com" {
+		t.Fatalf("Domain = %q", got)
+	}
+	if byAddr.WantsDomain() {
+		t.Fatal("a learned name should end the search")
+	}
+
+	// Dialled by name: the request is authoritative and must not be replaced.
+	byName := c.Begin(ProtoSOCKS5, "127.0.0.1:2", "api.example.org", 443, DecisionProxy, "")
+	if byName.WantsDomain() {
+		t.Fatal("a named session needs no sniffing")
+	}
+	byName.SetDomain("wrong.example.net")
+	if got := byName.Domain(); got != "" {
+		t.Fatalf("named session was overwritten: %q", got)
+	}
+
+	// A UDP association multiplexes destinations; one name would be a lie.
+	udp := c.Begin(ProtoUDP, "127.0.0.1:3", "", 53, DecisionNone, "")
+	udp.SetDomain("dns.example.org")
+	if got := udp.Domain(); got != "" {
+		t.Fatalf("UDP association got a domain: %q", got)
+	}
+
+	// The view carries the name next to the address that was really used.
+	found := false
+	for _, v := range c.ActiveSessions(ActiveOptions{Limit: 10}) {
+		if v.Host != "112.49.67.179" {
+			continue
+		}
+		found = true
+		if v.Domain != "static.zhihu.com" {
+			t.Fatalf("view domain = %q, want static.zhihu.com", v.Domain)
+		}
+	}
+	if !found {
+		t.Fatal("session missing from the view")
+	}
+
+	// Once the session is over the name is no longer accepted.
+	byAddr.End(nil)
+	ended := byAddr
+	ended.SetDomain("late.example.com")
+	if got := ended.Domain(); got != "static.zhihu.com" {
+		t.Fatalf("ended session took a late name: %q", got)
+	}
+}
+
 func TestSessionIsIdempotentAndNilSafe(t *testing.T) {
 	c := newTestCollector()
 	s := c.Begin(ProtoHTTP, "1.2.3.4:1", "a.com", 80, DecisionDirect, "")

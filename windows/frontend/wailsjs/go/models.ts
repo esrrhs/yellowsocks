@@ -390,6 +390,7 @@ export namespace stats {
 	    proto: string;
 	    client: string;
 	    host: string;
+	    domain?: string;
 	    port: number;
 	    decision: string;
 	    node: string;
@@ -410,6 +411,7 @@ export namespace stats {
 	        this.proto = source["proto"];
 	        this.client = source["client"];
 	        this.host = source["host"];
+	        this.domain = source["domain"];
 	        this.port = source["port"];
 	        this.decision = source["decision"];
 	        this.node = source["node"];

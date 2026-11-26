@@ -1462,6 +1462,38 @@ body {
     white-space: normal;
 }
 
+/* A connection whose client resolved the name itself dials an address, so the
+   row leads with the name recovered from the TLS handshake and keeps the
+   address underneath, dimmed: the name is what a person recognises, the
+   address is what actually carried the bytes. */
+.tbl-fixed .host-name,
+.tbl-fixed .host-addr {
+    /* Break only where brk() left a zero-width space (after a dot, colon or
+       dash), never inside a label. */
+    overflow-wrap: normal;
+    word-break: normal;
+}
+
+.tbl-fixed .host-name {
+    color: var(--text);
+}
+
+.tbl-fixed .host-addr {
+    color: var(--text-3);
+    font-size: 10.5px;
+    margin-top: 1px;
+}
+
+.tbl-fixed .port {
+    white-space: nowrap;
+}
+
+.tbl-fixed .host-addr {
+    color: var(--text-3);
+    font-size: 10.5px;
+    margin-top: 1px;
+}
+
 .tbl-fixed td .total {
     display: block;
     margin-top: 1px;

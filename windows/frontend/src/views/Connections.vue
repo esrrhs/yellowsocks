@@ -94,6 +94,7 @@ const filtered = computed(() => {
     if (!q) return true;
     return (
       (s.host ?? "").toLowerCase().includes(q) ||
+      (s.domain ?? "").toLowerCase().includes(q) ||
       (s.client ?? "").toLowerCase().includes(q) ||
       (s.node ?? "").toLowerCase().includes(q)
     );
@@ -139,6 +140,13 @@ function decisionLabel(d: string): string {
   if (d === "direct") return t("conn.direct");
   // No single decision: a UDP association routes each datagram on its own.
   return t("conn.udp");
+}
+
+// Hostnames are longer than the column and have no spaces, so the browser
+// used to break them mid-word ("metam ask.io"). A zero-width space after each
+// separator gives it places to break that keep the name readable.
+function brk(s?: string): string {
+  return (s ?? "").replace(/[.:-]/g, (m) => m + "\u200b");
 }
 
 // Kept alive across tab switches (see App.vue), so polling pauses while the
@@ -242,12 +250,12 @@ onUnmounted(() => {
       <div class="card table-card">
         <table class="tbl tbl-fixed">
           <colgroup>
-            <col style="width: 25%" />
-            <col style="width: 18%" />
+            <col style="width: 29%" />
+            <col style="width: 16%" />
             <col style="width: 9%" />
             <col style="width: 8%" />
-            <col style="width: 13%" />
-            <col style="width: 17%" />
+            <col style="width: 12%" />
+            <col style="width: 16%" />
             <col style="width: 10%" />
           </colgroup>
           <thead>
@@ -279,7 +287,16 @@ onUnmounted(() => {
           <tbody>
             <tr v-for="s in visible" :key="s.id">
               <td class="mono wrap">
-                {{ s.host || "—" }}<span v-if="s.port" class="dim">:{{ s.port }}</span>
+                <div
+                  class="host-name"
+                  :title="(s.domain ? s.domain + ' → ' : '') + (s.host || '') + (s.port ? ':' + s.port : '')"
+                >
+                  {{ brk(s.domain || s.host) || "—"
+                  }}<span v-if="!s.domain && s.port" class="port">:{{ s.port }}</span>
+                </div>
+                <div v-if="s.domain && s.host" class="host-addr">
+                  {{ brk(s.host) }}:{{ s.port }}
+                </div>
               </td>
               <td class="dim mono wrap">{{ s.client || "—" }}</td>
               <td>
