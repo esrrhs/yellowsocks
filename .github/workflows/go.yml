@@ -72,6 +72,32 @@ jobs:
           go build -ldflags="$LDFLAGS" -o yellowsocks-cli ./cli
           ./yellowsocks-cli -v
 
+  test-windows:
+    name: Test (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27.3'
+          cache: true
+
+      - name: Run tests
+        run: go test -count=1 -skip 'TestE2E_LargeStream_1GB' ./...
+
+      - name: Build Windows CLI
+        shell: bash
+        run: |
+          VERSION=$(cat VERSION | tr -d '[:space:]')
+          GIT_COMMIT=$(git rev-parse --short HEAD)
+          BUILD_TIME=$(date -u '+%Y-%m-%d %H:%M:%S UTC')
+          LDFLAGS="-s -w -X github.com/esrrhs/yellowsocks/core/version.Version=${VERSION} -X github.com/esrrhs/yellowsocks/core/version.GitCommit=${GIT_COMMIT} -X \"github.com/esrrhs/yellowsocks/core/version.BuildTime=${BUILD_TIME}\""
+          go build -ldflags="$LDFLAGS" -o yellowsocks-cli.exe ./cli
+          ./yellowsocks-cli.exe -v
+
   package:
     name: Package Linux
     runs-on: ubuntu-latest
@@ -159,7 +185,7 @@ jobs:
 
   release:
     name: Publish GitHub Release
-    needs: [check-version, test, package, gui]
+    needs: [check-version, test, test-windows, package, gui]
     if: github.ref == 'refs/heads/master' && needs.check-version.outputs.release_needed == 'true'
     runs-on: ubuntu-latest
     steps:
