@@ -41,8 +41,8 @@
   "stat.conns": "活动连接",
   "stat.upRate": "上传速率",
   "stat.downRate": "下载速率",
-  "stat.upTotal": "上传总量",
-  "stat.downTotal": "下载总量",
+  "stat.upTotal": "本次上传",
+  "stat.downTotal": "本次下载",
   "stat.uptime": "运行时长",
 
   "probe.title": "网络自检",

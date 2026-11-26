@@ -41,8 +41,8 @@
   "stat.conns": "Active connections",
   "stat.upRate": "Upload rate",
   "stat.downRate": "Download rate",
-  "stat.upTotal": "Uploaded",
-  "stat.downTotal": "Downloaded",
+  "stat.upTotal": "Session upload",
+  "stat.downTotal": "Session download",
   "stat.uptime": "Uptime",
 
   "probe.title": "Connectivity check",

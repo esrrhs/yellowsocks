@@ -235,11 +235,14 @@ func TestSaveAndLoad(t *testing.T) {
 
 	loaded := New(Config{HistoryMinutes: 10, BucketInterval: time.Second, File: file, SaveInterval: 0})
 	ov := loaded.Overview()
-	if ov.Totals.Upload != 1234 || ov.Totals.Download != 5678 || ov.Totals.Conns != 1 {
-		t.Fatalf("restored totals = %+v", ov.Totals)
+	// Session counters are per launch: the file carries them for the record,
+	// but a new collector starts at zero. What has to survive is the lifetime
+	// totals (the home page's "本次" cards are the ones that reset).
+	if ov.Totals.Total() != 0 || ov.Totals.Conns != 0 || ov.Proxy.Upload != 0 {
+		t.Fatalf("session counters restored from disk: totals=%+v proxy=%+v", ov.Totals, ov.Proxy)
 	}
-	if ov.Proxy.Upload != 1234 {
-		t.Fatalf("restored proxy split = %+v", ov.Proxy)
+	if ov.Lifetime.Upload != 1234 || ov.Lifetime.Download != 5678 {
+		t.Fatalf("restored lifetime = %+v", ov.Lifetime)
 	}
 	d := loaded.Domains(10, "bytes")
 	if len(d) != 1 || d[0].Domain != "persist.com" || d[0].Download != 5678 {
@@ -492,5 +495,84 @@ func TestBucketIntervalReportsStoredResolution(t *testing.T) {
 	}
 	if got := New(Config{}).BucketInterval(); got != DefaultBucketInterval {
 		t.Fatalf("default BucketInterval = %v, want %v", got, DefaultBucketInterval)
+	}
+}
+
+// The home page's "this session" counters must start at zero: a number that
+// silently carries on from the previous launch is indistinguishable from a
+// number that counts all time, and the all-time figures already have their own
+// card. The chart's history and the lifetime record still come off disk.
+func TestLoadStartsSessionCountersAtZero(t *testing.T) {
+	dir := t.TempDir()
+	cfg := Config{
+		HistoryMinutes: 10,
+		BucketInterval: time.Second,
+		DomainLimit:    100,
+		ErrorLimit:     10,
+		File:           filepath.Join(dir, "stats.json"),
+	}
+
+	first := New(cfg)
+	s := first.Begin(ProtoSOCKS5, "127.0.0.1:5000", "example.com", 443, DecisionDirect, "")
+	s.AddUpload(1024)
+	s.AddDownload(2048)
+	// Let the bucket close, otherwise the traffic only exists in the in-flight
+	// bucket, which is deliberately not persisted.
+	time.Sleep(1100 * time.Millisecond)
+	if ov := first.Overview(); ov.Totals.Upload != 1024 {
+		t.Fatalf("first session totals = %+v", ov.Totals)
+	}
+	if err := first.Save(); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+
+	second := New(cfg)
+	ov := second.Overview()
+	if ov.Totals.Upload != 0 || ov.Totals.Download != 0 {
+		t.Fatalf("session totals restored from disk: %+v", ov.Totals)
+	}
+	if ov.Direct.Upload != 0 || ov.Proxy.Download != 0 {
+		t.Fatalf("split restored from disk: direct=%+v proxy=%+v", ov.Direct, ov.Proxy)
+	}
+	if ov.Peak.Upload != 0 || ov.Peak.Download != 0 {
+		t.Fatalf("peaks restored from disk: %+v", ov.Peak)
+	}
+	if ov.Lifetime.Upload != 1024 || ov.Lifetime.Download != 2048 {
+		t.Fatalf("lifetime lost on reload: %+v", ov.Lifetime)
+	}
+	if pts := second.Series(time.Now().Add(-time.Minute), time.Second); len(pts) == 0 {
+		t.Fatal("history lost on reload")
+	}
+}
+
+// Version-1 files have no lifetime fields, so the lifetime counters are seeded
+// from the totals they do carry. That seeding must read the file's totals, not
+// the collector's (now empty) session counters.
+func TestLoadSeedsLegacyLifetimeFromSnapshotTotals(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "stats.json")
+	legacy := `{"version":1,"totals":{"upload_bytes":500,"download_bytes":700},` +
+		`"direct":{"upload_bytes":400,"download_bytes":600},` +
+		`"proxy":{"upload_bytes":100,"download_bytes":100},"dns":{"by_type":{}},"buckets":[]}`
+	if err := writeFile(path, legacy); err != nil {
+		t.Fatalf("write legacy file: %v", err)
+	}
+
+	c := New(Config{
+		HistoryMinutes: 10,
+		BucketInterval: time.Second,
+		DomainLimit:    100,
+		ErrorLimit:     10,
+		File:           path,
+	})
+	ov := c.Overview()
+	if ov.Lifetime.Upload != 500 || ov.Lifetime.Download != 700 {
+		t.Fatalf("legacy lifetime seed = %+v, want 500/700", ov.Lifetime)
+	}
+	if ov.LifetimeDirect.Upload != 400 || ov.LifetimeProxy.Download != 100 {
+		t.Fatalf("legacy split seed = %+v / %+v", ov.LifetimeDirect, ov.LifetimeProxy)
+	}
+	if ov.Totals.Upload != 0 || ov.Totals.Download != 0 {
+		t.Fatalf("session totals inherited from a legacy file: %+v", ov.Totals)
 	}
 }

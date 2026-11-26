@@ -28,6 +28,11 @@ type persistedDNS struct {
 }
 
 // snapshot is the persisted collector state.
+//
+// Totals, Direct, Proxy and the peak rates are written but never read back:
+// they are this-launch counters, kept in the file as a record of the last
+// session and as the source the version-1 seeding path needs. Everything that
+// has to outlive a restart lives in the Lifetime* fields or in Buckets.
 type snapshot struct {
 	Version        int          `json:"version"`
 	SavedAt        time.Time    `json:"saved_at"`
@@ -129,9 +134,12 @@ func (c *Collector) Load() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	c.totals = snap.Totals
-	c.direct = snap.Direct
-	c.proxy = snap.Proxy
+	// Totals, the direct/proxy split and the peak rates are session counters:
+	// they answer "how much has this launch moved" and start at zero again,
+	// which is what the home page's counters claim to be. All-time numbers
+	// live in the lifetime counters below, and the chart reads the buckets.
+	// (The snapshot still writes the totals: a version-1 file has nothing
+	// else to seed the lifetime counters from.)
 	c.lifetime = snap.Lifetime
 	c.lifetimeDirect = snap.LifetimeDirect
 	c.lifetimeProxy = snap.LifetimeProxy
@@ -139,7 +147,7 @@ func (c *Collector) Load() error {
 	// carry no lifetime fields. Seed them from the accumulated totals so the
 	// all-time numbers do not silently restart from zero. Version 2 files
 	// always carry the fields, including after a deliberate LifetimeReset.
-	if snap.Version < 2 && c.lifetime.Total() == 0 && c.totals.Total() > 0 {
+	if snap.Version < 2 && c.lifetime.Total() == 0 && snap.Totals.Total() > 0 {
 		c.lifetime = snap.Totals
 		c.lifetimeDirect = snap.Direct
 		c.lifetimeProxy = snap.Proxy
@@ -203,8 +211,8 @@ func (c *Collector) Load() error {
 		snap.Errors = snap.Errors[len(snap.Errors)-c.cfg.ErrorLimit:]
 	}
 	c.errs = snap.Errors
-	c.peakUp = snap.PeakUp
-	c.peakDown = snap.PeakDown
+	// Peaks stay with the session too: a "peak rate" that outlives the totals
+	// it was measured against reads as a bug ("2 MB/s peak, 340 MB moved?").
 	return nil
 }
 
