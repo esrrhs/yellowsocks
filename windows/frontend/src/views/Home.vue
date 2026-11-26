@@ -24,7 +24,7 @@ import {
 } from "../../wailsjs/go/guiapp/App";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { guiapp, stats } from "../../wailsjs/go/models";
-import { fmtBytes, fmtBps, fmtCountry, fmtUptime } from "../format";
+import { fmtBytes, fmtBps, fmtCountry, fmtHM, fmtUptime } from "../format";
 import { errText, t, type MsgKey } from "../i18n";
 
 const status = ref(new guiapp.EngineStatus());
@@ -333,35 +333,112 @@ onUnmounted(() => {
   offStatus = undefined;
 });
 
-// Traffic chart: four SVG polylines normalised against one shared peak, drawn
-// in a 0..100 viewBox and stretched by CSS. Colour stays "direction" (upload
-// is blue, download is purple, as in the stat cards); the dashed line is the
-// foreign share of the same direction. Keeping one peak for all four makes
-// the dashed line exactly comparable to its solid twin.
+// Traffic chart. Four polylines normalised against one shared ceiling, drawn
+// in a 0..100 viewBox and stretched by CSS; colour stays "direction" (upload
+// blue, download purple, as in the stat cards) and the dashed line is the
+// foreign share of the same direction, so a pair reads as one quantity split
+// in two. Keeping one ceiling for all four makes the dashed line exactly
+// comparable to its solid twin.
+interface ChartTick {
+  pos: number;
+  label: string;
+}
+
+const Y_DIVS = 4;
+const X_DIVS = 4;
+
+// Axis ceiling rounded up to 1/2/5/10/20/50… × 1024^n. The labels then read
+// "2.00 MB/s, 1.50 MB/s, 1.00 MB/s" instead of "1.37, 1.03, 0.69": an axis
+// whose ticks only differ in the third digit is noise, not a scale.
+function niceRateCeil(v: number): number {
+  if (!(v > 0)) return 1024;
+  const mag = Math.pow(1024, Math.floor(Math.log(v) / Math.log(1024)));
+  const n = v / mag;
+  const step =
+    n <= 1 ? 1
+    : n <= 2 ? 2
+    : n <= 5 ? 5
+    : n <= 10 ? 10
+    : n <= 20 ? 20
+    : n <= 50 ? 50
+    : n <= 100 ? 100
+    : n <= 200 ? 200
+    : n <= 500 ? 500
+    : 1024;
+  return step * mag;
+}
+
 const chart = computed(() => {
   const pts = series.value;
   if (!pts.length) {
-    return { up: "", upIntl: "", down: "", downIntl: "", has: false };
+    return {
+      up: "",
+      upIntl: "",
+      down: "",
+      downIntl: "",
+      has: false,
+      yTicks: [] as ChartTick[],
+      xTicks: [] as ChartTick[],
+    };
   }
-  const peak = Math.max(
-    1,
-    ...pts.map((p) => Math.max(p.upload_bytes, p.download_bytes)),
+
+  // The series is uniform, so the gap between two points is the bucket width.
+  // That is the only thing that turns "bytes in a slot" into the rate the
+  // vertical axis claims to show.
+  const stepSec = pts.length > 1 && pts[1].t > pts[0].t ? pts[1].t - pts[0].t : 60;
+  const rate = (v?: number | null) => (v ?? 0) / stepSec;
+  const peak = niceRateCeil(
+    Math.max(
+      ...pts.map((p) =>
+        Math.max(
+          rate(p.direct_upload_bytes),
+          rate(p.proxy_upload_bytes),
+          rate(p.direct_download_bytes),
+          rate(p.proxy_download_bytes),
+        ),
+      ),
+    ),
   );
+
   const toPath = (pick: (p: stats.SeriesPoint) => number) =>
     pts
       .map(
         (p, i) =>
           `${(i / Math.max(1, pts.length - 1)) * 100},${
-            100 - (Math.min(pick(p), peak) / peak) * 100
+            100 - (Math.min(rate(pick(p)), peak) / peak) * 100
           }`,
       )
       .join(" ");
+
+  // Five labels each way: peak-to-zero down the side, first-to-last sample
+  // along the bottom (naming the window that is actually drawn, which is not
+  // always the full 30 minutes right after a restart).
+  const yTicks: ChartTick[] = Array.from({ length: Y_DIVS + 1 }, (_, i) => ({
+    pos: (i / Y_DIVS) * 100,
+    label: fmtBps(peak * (1 - i / Y_DIVS)),
+  }));
+  const xTicks: ChartTick[] = [];
+  const seenIdx = new Set<number>();
+  for (let i = 0; i <= X_DIVS; i++) {
+    // With only a handful of samples two ticks land on the same point; one
+    // label is enough and five copies at the same offset look like a bug.
+    const idx = Math.round((i / X_DIVS) * (pts.length - 1));
+    if (seenIdx.has(idx)) continue;
+    seenIdx.add(idx);
+    xTicks.push({
+      pos: (idx / Math.max(1, pts.length - 1)) * 100,
+      label: fmtHM(pts[idx].t),
+    });
+  }
+
   return {
     up: toPath((p) => p.direct_upload_bytes ?? 0),
     upIntl: toPath((p) => p.proxy_upload_bytes ?? 0),
     down: toPath((p) => p.direct_download_bytes ?? 0),
     downIntl: toPath((p) => p.proxy_download_bytes ?? 0),
     has: true,
+    yTicks,
+    xTicks,
   };
 });
 </script>
@@ -615,41 +692,59 @@ const chart = computed(() => {
           <span class="lg"><i class="sw down intl"></i>{{ t("chart.down") }} · {{ t("lifetime.proxy") }}</span>
         </span>
       </div>
-      <svg class="chart" preserveAspectRatio="none" viewBox="0 0 100 100">
-        <polyline
-          v-if="chart.has"
-          class="line-up intl"
-          :points="chart.upIntl"
-          fill="none"
-        />
-        <polyline
-          v-if="chart.has"
-          class="line-down intl"
-          :points="chart.downIntl"
-          fill="none"
-        />
-        <polyline
-          v-if="chart.has"
-          class="line-up"
-          :points="chart.up"
-          fill="none"
-        />
-        <polyline
-          v-if="chart.has"
-          class="line-down"
-          :points="chart.down"
-          fill="none"
-        />
-        <text
-          v-if="!chart.has"
-          class="empty"
-          x="50"
-          y="52"
-          text-anchor="middle"
+      <div class="chart-body">
+        <div class="chart-y">
+          <span
+            v-for="tk in chart.yTicks"
+            :key="tk.pos"
+            :style="{ top: `${tk.pos}%` }"
+            >{{ tk.label }}</span
+          >
+        </div>
+        <div class="chart-plot">
+          <div class="chart-grid" aria-hidden="true">
+            <i v-for="g in chart.yTicks" :key="g.pos" :style="{ top: `${g.pos}%` }"></i>
+          </div>
+          <svg class="chart" preserveAspectRatio="none" viewBox="0 0 100 100">
+            <polyline
+              v-if="chart.has"
+              class="line-up intl"
+              :points="chart.upIntl"
+              fill="none"
+            />
+            <polyline
+              v-if="chart.has"
+              class="line-down intl"
+              :points="chart.downIntl"
+              fill="none"
+            />
+            <polyline
+              v-if="chart.has"
+              class="line-up"
+              :points="chart.up"
+              fill="none"
+            />
+            <polyline
+              v-if="chart.has"
+              class="line-down"
+              :points="chart.down"
+              fill="none"
+            />
+          </svg>
+          <div class="chart-empty" v-if="!chart.has">
+            {{ status.running ? t("chart.empty") : t("chart.noEngine") }}
+          </div>
+        </div>
+      </div>
+      <div class="chart-x">
+        <span
+          v-for="tk in chart.xTicks"
+          :key="tk.pos"
+          :class="{ start: tk.pos === 0, end: tk.pos === 100 }"
+          :style="{ left: `${tk.pos}%` }"
+          >{{ tk.label }}</span
         >
-          {{ status.running ? t("chart.empty") : t("chart.noEngine") }}
-        </text>
-      </svg>
+      </div>
     </div>
   </section>
 </template>

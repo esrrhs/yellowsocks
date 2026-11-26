@@ -74,6 +74,19 @@ export function fmtCountry(code?: string | null): string {
   }
 }
 
+// fmtHM is the chart's x axis: hour and minute only. Five labels across a
+// 900px axis have room for "23:05"; seconds would either wrap or force the
+// font down to unreadable.
+export function fmtHM(unix?: number | null): string {
+  if (!unix) return "";
+  const d = new Date(unix * 1000);
+  return d.toLocaleTimeString(locale.value === "en" ? "en-GB" : "zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
+}
+
 // fmtClock renders a unix timestamp as HH:MM:SS, which is what all three
 // tables want for "when". The locale decides the format (en-GB keeps the
 // 24-hour clock that a dense table needs, unlike en-US).

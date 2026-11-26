@@ -480,3 +480,17 @@ func TestSeriesKeepsDecisionSplit(t *testing.T) {
 		t.Fatalf("split = %d/%d/%d/%d, want 100/200/10/30", du, dd, pu, pd)
 	}
 }
+
+// The chart picks its step from this value: asking for slices finer than the
+// stored buckets gives one spike followed by one empty slot, the rate reads
+// double, and the curve turns into a sawtooth. Kept as a test because the
+// getter is easy to delete as "unused" until the chart breaks.
+func TestBucketIntervalReportsStoredResolution(t *testing.T) {
+	c := newTestCollector()
+	if got := c.BucketInterval(); got != time.Second {
+		t.Fatalf("BucketInterval = %v, want %v", got, time.Second)
+	}
+	if got := New(Config{}).BucketInterval(); got != DefaultBucketInterval {
+		t.Fatalf("default BucketInterval = %v, want %v", got, DefaultBucketInterval)
+	}
+}

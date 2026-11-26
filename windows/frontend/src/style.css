@@ -412,10 +412,101 @@ body {
     );
 }
 
-.chart {
-    width: 100%;
+/* Chart with axes: a gutter for the rate labels, the plot, and a row of clock
+   labels underneath. The labels are HTML rather than SVG text because the
+   plot stretches a 0..100 viewBox to whatever width the card has, and text
+   drawn inside it would be stretched into unreadable wide glyphs. */
+.chart-body {
+    display: flex;
+    gap: 8px;
     height: 180px;
+}
+
+.chart-y {
+    position: relative;
+    flex: none;
+    width: 58px;
+}
+
+.chart-y span {
+    position: absolute;
+    right: 0;
+    transform: translateY(-50%);
+    color: var(--text-dim);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.chart-plot {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+}
+
+.chart-grid {
+    position: absolute;
+    inset: 0;
+}
+
+.chart-grid i {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: var(--hairline);
+}
+
+/* The baseline is the one line worth seeing: every series is measured
+   against it, so it gets the border colour instead of the hairline. */
+.chart-grid i:last-child {
+    background: var(--border);
+}
+
+.chart {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
     display: block;
+}
+
+.chart-empty {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    font-size: 12px;
+}
+
+/* Aligned to the plot area, not the card: 58px gutter + the 8px gap. */
+.chart-x {
+    position: relative;
+    height: 16px;
+    margin-top: 6px;
+    margin-left: 66px;
+}
+
+.chart-x span {
+    position: absolute;
+    top: 0;
+    transform: translateX(-50%);
+    color: var(--text-dim);
+    font-size: 10px;
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+/* The end labels hang off the edge of the axis; anchor them inward so they
+   stay inside the card instead of being clipped by it. */
+.chart-x span.start {
+    transform: none;
+}
+
+.chart-x span.end {
+    transform: translateX(-100%);
 }
 
 .line-up {
@@ -437,11 +528,6 @@ body {
     stroke-dasharray: 4 3;
     stroke-width: 1.2;
     opacity: 0.6;
-}
-
-.empty {
-    fill: var(--text-dim);
-    font-size: 5px;
 }
 
 /* ---------- options row ---------- */

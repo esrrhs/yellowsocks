@@ -1138,6 +1138,14 @@ type SeriesPoint struct {
 	DNSQueries     int64  `json:"dns_queries"`
 }
 
+// BucketInterval is the resolution the history is stored at. A caller that
+// asks for a finer step gets an alternating spike/zero series (one bucket's
+// bytes land in one slot, the next slot is empty), so the chart code needs
+// this to pick a step that matches the data it is reading.
+func (c *Collector) BucketInterval() time.Duration {
+	return c.cfg.BucketInterval
+}
+
 // Series returns history aggregated into step-sized intervals covering
 // [since, now]. Missing intervals are filled with zeroes so callers can plot
 // the result directly.

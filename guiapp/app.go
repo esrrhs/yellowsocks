@@ -873,6 +873,20 @@ func (a *App) GetSeries(spanSeconds int) []stats.SeriesPoint {
 	if step < time.Second {
 		step = time.Second
 	}
+	// Never sample finer than the stored history: one bucket of traffic landing
+	// in one slot of a step that is half its width reads as a spike followed by
+	// a zero, and the plotted rate is doubled. Round up to a whole number of
+	// buckets so every step owns exact, complete buckets.
+	bucket := a.engine.Stats().BucketInterval()
+	if bucket <= 0 {
+		bucket = time.Minute
+	}
+	if step < bucket {
+		step = bucket
+	}
+	if rem := step % bucket; rem != 0 {
+		step += bucket - rem
+	}
 	now := time.Now()
 	return a.engine.Stats().Series(now.Add(-time.Duration(spanSeconds)*time.Second), step)
 }
