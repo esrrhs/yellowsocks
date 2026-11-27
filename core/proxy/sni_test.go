@@ -2,7 +2,14 @@ package proxy
 
 import (
 	"bytes"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
 	"testing"
+	"time"
 )
 
 // clientHello builds a minimal but well-formed TLS 1.2 ClientHello record
@@ -124,4 +131,113 @@ func TestSnifferCapsBuffer(t *testing.T) {
 		}
 	}
 	t.Fatal("sniffer never gave up")
+}
+
+// ---- server certificate sniffer ----
+
+// selfSignedCert builds a throwaway TLS certificate carrying the given SANs,
+// with whatever common name the test wants to see ignored.
+func selfSignedCert(t *testing.T, dnsNames []string) []byte {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	tpl := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: dnsNames[0]},
+		DNSNames:     dnsNames,
+		NotBefore:    time.Now().Add(-time.Hour),
+		NotAfter:     time.Now().Add(time.Hour),
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tpl, tpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create certificate: %v", err)
+	}
+	return der
+}
+
+// tlsHandshakeBytes wraps handshake messages in TLS records the way a server
+// flight looks on the wire.
+func tlsHandshakeBytes(msgs ...[]byte) []byte {
+	var stream []byte
+	for _, m := range msgs {
+		stream = append(stream, m...)
+	}
+	rec := []byte{0x16, 0x03, 0x03,
+		byte(len(stream) >> 8), byte(len(stream))}
+	return append(rec, stream...)
+}
+
+func tlsServerHello() []byte {
+	msg := []byte{0x02, 0x00, 0x00, 0x28} // ServerHello, 40 bytes
+	msg = append(msg, 0x03, 0x03)         // legacy version
+	msg = append(msg, make([]byte, 32)...) // random
+	msg = append(msg, 0x00)               // session id len
+	msg = append(msg, 0x13, 0x01)         // cipher
+	msg = append(msg, 0x00)               // compression
+	msg = append(msg, 0x00, 0x00)         // extensions len
+	return msg
+}
+
+func tlsCertificateMsg(der []byte) []byte {
+	entry := []byte{byte(len(der) >> 16), byte(len(der) >> 8), byte(len(der))}
+	entry = append(entry, der...)
+	body := []byte{byte(len(entry) >> 16), byte(len(entry) >> 8), byte(len(entry))}
+	body = append(body, entry...)
+	msg := append([]byte{0x0b, byte(len(body) >> 16), byte(len(body) >> 8), byte(len(body))}, body...)
+	return msg
+}
+
+func TestServerCertSnifferRecoversSAN(t *testing.T) {
+	der := selfSignedCert(t, []string{"*.ftn.qq.com", "ftn.qq.com"})
+	wire := tlsHandshakeBytes(tlsServerHello(), tlsCertificateMsg(der))
+
+	var s serverCertSniffer
+	var name string
+	var decided bool
+	for i := 0; i < len(wire); i++ {
+		name, decided = s.feed(wire[i : i+1])
+		if decided {
+			break
+		}
+	}
+	if !decided {
+		t.Fatal("sniffer never decided on a complete flight")
+	}
+	if name != "ftn.qq.com" {
+		t.Fatalf("recovered name = %q, want the exact SAN entry ftn.qq.com", name)
+	}
+}
+
+func TestServerCertSnifferPrefersExactOverWildcard(t *testing.T) {
+	der := selfSignedCert(t, []string{"*.weiyun.com"})
+	wire := tlsHandshakeBytes(tlsServerHello(), tlsCertificateMsg(der))
+
+	var s serverCertSniffer
+	name, decided := s.feed(wire)
+	if !decided || name != "weiyun.com" {
+		t.Fatalf("recovered = %q decided=%v, want wildcard stripped to weiyun.com", name, decided)
+	}
+}
+
+func TestServerCertSnifferGivesUpOnEncryptedFlight(t *testing.T) {
+	// TLS 1.3: EncryptedExtensions (0x08) follows the ServerHello; the
+	// certificate is unreadable and the sniffer must stop with no name.
+	msg := append([]byte{0x08, 0x00, 0x00, 0x04}, []byte{0x00, 0x02, 0x00, 0x00}...)
+	wire := tlsHandshakeBytes(tlsServerHello(), msg)
+
+	var s serverCertSniffer
+	name, decided := s.feed(wire)
+	if !decided || name != "" {
+		t.Fatalf("recovered = %q decided=%v, want a quiet give-up on TLS 1.3", name, decided)
+	}
+}
+
+func TestServerCertSnifferNonTLS(t *testing.T) {
+	var s serverCertSniffer
+	name, decided := s.feed([]byte("HTTP/1.1 200 OK\r\n"))
+	if !decided || name != "" {
+		t.Fatalf("recovered = %q decided=%v, want an immediate give-up on non-TLS", name, decided)
+	}
 }

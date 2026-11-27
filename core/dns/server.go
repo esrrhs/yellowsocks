@@ -822,3 +822,31 @@ func (s *Server) LookupDomainByIP(ip string) (string, bool) {
 	}
 	return m.domain, true
 }
+
+// learnedIPMappingTTL bounds how long a name picked up by the relay's
+// sniffers (client SNI, server certificate) keeps naming its address. It is
+// deliberately shorter than the resolver's own mapping TTL: sniffed names
+// are observations, not answers, and a CDN edge can serve a different
+// tenant an hour later.
+const learnedIPMappingTTL = 10 * time.Minute
+
+// LearnIPDomain records an IP→domain mapping discovered outside the
+// resolver: the relay sniffed it off a connection whose client dialled the
+// address without naming it. Existing entries are never overwritten — the
+// resolver's own answers and fake-ip allocations are authoritative, and a
+// first-learned name on a shared edge must hold until expiry.
+func (s *Server) LearnIPDomain(ip, domain string) {
+	parsed := net.ParseIP(ip)
+	if parsed == nil || domain == "" || net.ParseIP(domain) != nil {
+		return
+	}
+	if v4 := parsed.To4(); v4 != nil {
+		ip = v4.String()
+	} else {
+		ip = parsed.String()
+	}
+	if _, exists := s.ipToDomain.Load(ip); exists {
+		return
+	}
+	s.ipToDomain.Store(ip, ipMapping{domain: domain, expires: time.Now().Add(learnedIPMappingTTL)})
+}

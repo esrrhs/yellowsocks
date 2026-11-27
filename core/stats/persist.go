@@ -196,6 +196,23 @@ func (c *Collector) Load() error {
 		if d.Domain == "" {
 			continue
 		}
+		// Snapshots written before the byte split existed carry totals with
+		// no split (or a split that only covers bytes written by a newer
+		// build after it loaded the same file); recover the unknown remainder
+		// from the connection counts, which have been recorded all along.
+		// Entries with no connection to infer from (UDP-only datagram rows)
+		// keep what they have: they stay in the table but on neither side,
+		// rather than being guessed.
+		if total := d.Upload + d.Download; total > 0 {
+			if unknown := total - (d.DirectBytes + d.ProxyBytes); unknown > 0 {
+				if d.DirectConns > 0 || d.ProxyConns > 0 {
+					share := float64(d.DirectConns) / float64(d.DirectConns+d.ProxyConns)
+					add := int64(float64(unknown)*share + 0.5)
+					d.DirectBytes += add
+					d.ProxyBytes += unknown - add
+				}
+			}
+		}
 		cp := d
 		c.domains[d.Domain] = &cp
 	}
@@ -242,6 +259,22 @@ func LifetimeTotals(path string) (all, direct, proxy Counters) {
 		return snap.Totals, snap.Direct, snap.Proxy
 	}
 	return snap.Lifetime, snap.LifetimeDirect, snap.LifetimeProxy
+}
+
+// DomainTable reads the persisted per-destination table straight from a
+// snapshot file, ordered the way it was written (unsorted). Companion to
+// LifetimeTotals: the destination breakdown keeps its numbers while the
+// engine is stopped. Missing or unreadable files yield nil.
+func DomainTable(path string) []DomainStat {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var snap snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return nil
+	}
+	return snap.Domains
 }
 
 func allNodesLocked(m map[string]*NodeStat) []NodeStat {

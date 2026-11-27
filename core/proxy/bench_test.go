@@ -104,7 +104,7 @@ func BenchmarkRelayStreams(b *testing.B) {
 
 		done := make(chan struct{})
 		go func() {
-			relayStreams(clientLocal, target, defaultIdleTimeout, nil)
+			relayStreams(clientLocal, target, defaultIdleTimeout, nil, nil)
 			close(done)
 		}()
 

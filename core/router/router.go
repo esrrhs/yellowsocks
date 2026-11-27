@@ -215,7 +215,15 @@ func NewRouterWithOptions(opt Options) *Router {
 		if err := r.geoDB.Open("GeoLite2-Country.mmdb"); err == nil {
 			r.geoipLoaded = true
 			loggo.Info("[Router] Loaded default GeoIP file: GeoLite2-Country.mmdb")
+		} else {
+			loggo.Warn("[Router] Failed to load default GeoIP file: %v", err)
 		}
+	} else if len(r.skipCountries) > 0 {
+		// Silent here used to hide a broken install for good: with skip-country
+		// configured but no database, every IP-only connection falls through to
+		// Proxy and half the traffic rides the upstream with nothing in the UI
+		// to say why. Say it once, at startup, where it is visible.
+		loggo.Warn("[Router] GeoIP database missing (GeoLite2-Country.mmdb); country-based direct routing is disabled and unmatched IPs go through the proxy")
 	}
 
 	// Initialize reserved subnets and configured domains.

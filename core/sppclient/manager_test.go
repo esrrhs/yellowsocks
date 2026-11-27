@@ -168,7 +168,7 @@ func TestNewManagerAllNodesUnreachable(t *testing.T) {
 			t.Fatalf("channel %s still has a resident client while unreachable", rt.node.Name)
 		}
 	}
-	addr, name, release := m.PickNode()
+	addr, _, _, name, release := m.PickNode()
 	if addr != "" || name != "" || release != nil {
 		t.Fatalf("PickNode=%q,%q,release_set=%t, want empty when all nodes are down", addr, name, release != nil)
 	}
@@ -485,7 +485,7 @@ func TestSmartMultiPathBalancing(t *testing.T) {
 	chosenCounts := make(map[string]int)
 	var releases []func()
 	for i := 0; i < 9; i++ {
-		_, name, release := m.PickNode()
+		_, _, _, name, release := m.PickNode()
 		chosenCounts[name]++
 		releases = append(releases, release)
 	}

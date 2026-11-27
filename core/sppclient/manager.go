@@ -15,24 +15,50 @@ import (
 
 // Node is one upstream SPP channel/server configuration.
 type Node struct {
-	Name          string `json:"name" yaml:"name"`
-	Server        string `json:"server" yaml:"server"`
-	ServerProto   string `json:"server_proto" yaml:"server_proto"` // tcp, udp, rudp, kcp, quic, pingtunnel, rdns
-	Key           string `json:"key" yaml:"key"`
-	Encrypt       string `json:"encrypt" yaml:"encrypt"`
-	Compress      int    `json:"compress" yaml:"compress"`
-	Priority      int    `json:"priority" yaml:"priority"`         // 优先级: 1 级 > 2 级 (数值越小优先级越高，默认 10)
-	Bandwidth     int    `json:"bandwidth" yaml:"bandwidth"`       // 标称带宽权重 (Mbps)，同优先级下越大越优先，默认 100
-	KcpFecData    int    `json:"kcpfecdata" yaml:"kcpfecdata"`     // KCP FEC 数据分片 (如 10)
-	KcpFecParity  int    `json:"kcpfecparity" yaml:"kcpfecparity"` // KCP FEC 校验分片 (如 3)
-	RdnsDomain    string `json:"rdnsdomain,omitempty" yaml:"rdnsdomain,omitempty"`
-	RdnsUpstream  string `json:"rdnsupstream,omitempty" yaml:"rdnsupstream,omitempty"`
-	RdnsPsk       string `json:"rdnspsk,omitempty" yaml:"rdnspsk,omitempty"`
+	Name        string `json:"name" yaml:"name"`
+	// Type selects what this node dials: "" / "spp" (default) is an SPP
+	// channel with the fields below, "socks5" is a plain RFC 1928 SOCKS5
+	// server reached directly (server + port + username/password). Both
+	// kinds live in the same priority pool: a socks5 backup can sit at
+	// priority 2 behind an SPP channel at 1.
+	Type         string `json:"type,omitempty" yaml:"type,omitempty"`
+	Server       string `json:"server" yaml:"server"`
+	// Port is only meaningful for socks5 nodes, whose config splits host and
+	// port the way every socks5 client does.
+	Port         int    `json:"port,omitempty" yaml:"port,omitempty"`
+	ServerProto  string `json:"server_proto" yaml:"server_proto"` // tcp, udp, rudp, kcp, quic, pingtunnel, rdns
+	Key          string `json:"key" yaml:"key"`
+	Username     string `json:"username,omitempty" yaml:"username,omitempty"`
+	Password     string `json:"password,omitempty" yaml:"password,omitempty"`
+	Encrypt      string `json:"encrypt" yaml:"encrypt"`
+	Compress     int    `json:"compress" yaml:"compress"`
+	Priority     int    `json:"priority" yaml:"priority"`         // 优先级: 1 级 > 2 级 (数值越小优先级越高，默认 10)
+	Bandwidth    int    `json:"bandwidth" yaml:"bandwidth"`       // 标称带宽权重 (Mbps)，同优先级下越大越优先，默认 100
+	KcpFecData   int    `json:"kcpfecdata" yaml:"kcpfecdata"`     // KCP FEC 数据分片 (如 10)
+	KcpFecParity int    `json:"kcpfecparity" yaml:"kcpfecparity"` // KCP FEC 校验分片 (如 3)
+	RdnsDomain   string `json:"rdnsdomain,omitempty" yaml:"rdnsdomain,omitempty"`
+	RdnsUpstream string `json:"rdnsupstream,omitempty" yaml:"rdnsupstream,omitempty"`
+	RdnsPsk      string `json:"rdnspsk,omitempty" yaml:"rdnspsk,omitempty"`
 	RdnsQueryType string `json:"rdnsquerytype,omitempty" yaml:"rdnsquerytype,omitempty"`
 	// Alive is a configuration/status hint carried in JSON. Runtime liveness
 	// is tracked atomically inside Manager (see Manager.NodeAlive); this field
 	// is never read by failover logic.
 	Alive bool `json:"alive"`
+}
+
+// IsSocks5 reports whether this node dials a plain SOCKS5 upstream instead of
+// an SPP channel.
+func (n *Node) IsSocks5() bool {
+	return strings.EqualFold(strings.TrimSpace(n.Type), "socks5")
+}
+
+// DialAddr is the address an upstream connection goes to. socks5 nodes split
+// host and port across server+port; SPP channels carry both in server.
+func (n *Node) DialAddr() string {
+	if n.IsSocks5() && n.Port > 0 {
+		return net.JoinHostPort(strings.TrimSpace(n.Server), strconv.Itoa(n.Port))
+	}
+	return n.Server
 }
 
 // getEffectivePriority returns the configured priority, defaulting to 10 if <= 0.
@@ -108,6 +134,12 @@ func probeUDPAddr(addr string, timeout time.Duration) (bool, time.Duration) {
 // TCP/rhttp: real TCP connect. PingTunnel: dedicated ICMP probe.
 // udp/rudp/kcp/quic/rdns: lightweight UDP only (see probeUDPAddr).
 func probeNodeWithRTT(node *Node, timeout time.Duration) (bool, time.Duration) {
+	// A socks5 node is a plain TCP endpoint: reachability is a connect to
+	// its dial address, and the SOCKS5 handshake itself is exercised on
+	// first use by the proxy caller.
+	if node.IsSocks5() {
+		return probeTCP(node.DialAddr(), timeout)
+	}
 	if isPingTunnelProto(node.ServerProto) {
 		return probePingTunnel(node, timeout)
 	}
@@ -531,10 +563,15 @@ func (m *Manager) getAliveCandidatesLocked() []*nodeRuntime {
 	return out
 }
 
-// ensureClientRunningLocked starts the SPP client for a node if not already running.
+// ensureClientRunningLocked starts the SPP client for a node if not already
+// running. socks5 nodes need no client: the node's dial address and
+// credentials are used directly by the proxy caller.
 func (m *Manager) ensureClientRunningLocked(rt *nodeRuntime) error {
 	if m.closed.Load() {
 		return fmt.Errorf("spp manager is closed")
+	}
+	if rt.node.IsSocks5() {
+		return nil
 	}
 	if rt.client != nil {
 		return nil
@@ -572,19 +609,23 @@ func (m *Manager) ensureClientRunningLocked(rt *nodeRuntime) error {
 	return nil
 }
 
-// PickNode dynamically and intelligently selects an upstream node from the active priority tier.
-// Returns (localSocks5Addr, nodeName, releaseFunc). When no node is alive it returns
-// empty strings so the proxy fails fast instead of dialing a dead local client.
-func (m *Manager) PickNode() (string, string, func()) {
+// PickNode dynamically and intelligently selects an upstream node from the
+// active priority tier. Returns (dialAddr, user, pass, nodeName, release).
+// SPP nodes dial their local client listener with no credentials; socks5
+// nodes dial the real server with the credentials configured on the node,
+// so each node in the pool carries its own auth. When no node is alive the
+// address comes back empty so the proxy fails fast instead of dialing a
+// dead upstream.
+func (m *Manager) PickNode() (string, string, string, string, func()) {
 	if m.closed.Load() {
-		return "", "", nil
+		return "", "", "", "", nil
 	}
 
 	m.mu.Lock()
 	candidates := m.getAliveCandidatesLocked()
 	if len(candidates) == 0 {
 		m.mu.Unlock()
-		return "", "", nil
+		return "", "", "", "", nil
 	}
 
 	chosen := m.pickCandidateLocked(candidates)
@@ -594,7 +635,7 @@ func (m *Manager) PickNode() (string, string, func()) {
 
 	if err := m.ensureClientRunningLocked(chosen); err != nil {
 		m.mu.Unlock()
-		return "", "", nil
+		return "", "", "", "", nil
 	}
 	m.mu.Unlock()
 
@@ -605,7 +646,11 @@ func (m *Manager) PickNode() (string, string, func()) {
 			chosen.activeConns.Add(-1)
 		})
 	}
-	return chosen.localSocks5, chosen.node.Name, release
+	n := chosen.node
+	if n.IsSocks5() {
+		return n.DialAddr(), n.Username, n.Password, n.Name, release
+	}
+	return chosen.localSocks5, "", "", n.Name, release
 }
 
 // switchNode starts the client at index and sets it as the activeIndex for backward compatibility.
@@ -870,7 +915,7 @@ func (m *Manager) NodeAlive(index int) bool {
 
 // Socks5Addr is the local SOCKS5 address exposed by the SPP client.
 func (m *Manager) Socks5Addr() string {
-	addr, _, release := m.PickNode()
+	addr, _, _, _, release := m.PickNode()
 	if release != nil {
 		release()
 	}

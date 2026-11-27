@@ -449,7 +449,7 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 		if _, err := clientConn.Write([]byte(http200)); err != nil {
 			return
 		}
-		relayStreams(tunnelConn, targetConn, s.cfg.IdleTimeout, sess)
+		relayStreams(tunnelConn, targetConn, s.cfg.IdleTimeout, sess, domainLearner(s.cfg.DNS, targetHost))
 	} else {
 		// Upstream SPP server cannot route IPv6
 		if !s.cfg.EnableIPv6 && isIPv6Literal(targetHost) {
@@ -459,14 +459,15 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 			return
 		}
 
-		// Forward via SPP
+		// Forward via the chosen upstream node
 		var sppAddr string
-		var nodeName string
+		var nodeUser, nodePass, nodeName string
 		var release func()
 		if smart, ok := s.cfg.Upstream.(SmartUpstreamProvider); ok {
-			sppAddr, nodeName, release = smart.PickNode()
+			sppAddr, nodeUser, nodePass, nodeName, release = smart.PickNode()
 		} else if s.cfg.Upstream != nil {
 			sppAddr = s.cfg.Upstream.Socks5Addr()
+			nodeUser, nodePass = s.cfg.Upstream.Socks5Auth()
 		}
 		if release != nil {
 			defer release()
@@ -507,10 +508,7 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 		}
 		defer sppConn.Close()
 
-		user, pass := "", ""
-		if s.cfg.Upstream != nil {
-			user, pass = s.cfg.Upstream.Socks5Auth()
-		}
+		user, pass := nodeUser, nodePass
 		if err := network.Sock5Handshake(sppConn, 5000, user, pass); err != nil {
 			loggo.Error("[HTTP Proxy] SPP upstream %s (%s) handshake failed: %v", sppAddr, nodeName, err)
 			if rep, ok := s.cfg.Upstream.(NodeFailureReporter); ok && nodeName != "" {
@@ -537,7 +535,7 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 		if _, err := clientConn.Write([]byte(http200)); err != nil {
 			return
 		}
-		relayStreamsWithNode(tunnelConn, sppConn, s.cfg.IdleTimeout, sess, s.cfg.Upstream, nodeName)
+		relayStreamsWithNode(tunnelConn, sppConn, s.cfg.IdleTimeout, sess, s.cfg.Upstream, nodeName, domainLearner(s.cfg.DNS, targetHost))
 	}
 }
 
@@ -603,12 +601,13 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 		}
 
 		var sppAddr string
-		var nodeName string
+		var nodeUser, nodePass, nodeName string
 		var release func()
 		if smart, ok := s.cfg.Upstream.(SmartUpstreamProvider); ok {
-			sppAddr, nodeName, release = smart.PickNode()
+			sppAddr, nodeUser, nodePass, nodeName, release = smart.PickNode()
 		} else if s.cfg.Upstream != nil {
 			sppAddr = s.cfg.Upstream.Socks5Addr()
+			nodeUser, nodePass = s.cfg.Upstream.Socks5Auth()
 		}
 		if release != nil {
 			defer release()
@@ -627,10 +626,7 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 		if rErr == nil {
 			sppConn, dialErr := netdial.DialTCP(nil, sppTCPAddr, 10*time.Second)
 			if dialErr == nil {
-				user, pass := "", ""
-				if s.cfg.Upstream != nil {
-					user, pass = s.cfg.Upstream.Socks5Auth()
-				}
+				user, pass := nodeUser, nodePass
 				if hsErr := network.Sock5Handshake(sppConn, 5000, user, pass); hsErr == nil {
 					if reqErr := network.Sock5SetRequest(sppConn, targetHost, targetPort, 10000); reqErr == nil {
 						recordNodeTraffic(s.cfg.Upstream, nodeName, 1, 1)
@@ -665,7 +661,7 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 		br:   br,
 	}
 
-	relayStreamsWithNode(clientPrefixed, targetConn, s.cfg.IdleTimeout, sess, s.cfg.Upstream, proxyNodeName)
+	relayStreamsWithNode(clientPrefixed, targetConn, s.cfg.IdleTimeout, sess, s.cfg.Upstream, proxyNodeName, domainLearner(s.cfg.DNS, targetHost))
 }
 
 type prefixedReaderConn struct {

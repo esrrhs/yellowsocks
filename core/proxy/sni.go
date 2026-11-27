@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"bytes"
+	"crypto/x509"
 	"net"
 	"strings"
 )
@@ -13,6 +14,13 @@ import (
 // it in the SNI extension of its ClientHello, and a plain HTTP client puts it
 // in the Host header. Both are inside the first bytes the client sends, which
 // pass through the relay anyway.
+//
+// There is a third source for the clients that name nothing at all: the
+// SERVER. A TLS server presents its certificate in the first flight, and on
+// TLS 1.2 that certificate is plaintext — its SAN answers "where is this
+// going" authoritatively even when the client stayed silent. serverCertSniffer
+// below reads it off the relayed bytes; TLS 1.3 encrypts the certificate, and
+// the sniffer simply gives up there.
 
 // sniffLimit bounds how many leading bytes are kept while looking for the
 // name. A ClientHello is typically well under 1 KiB; anything that does not
@@ -239,4 +247,141 @@ func cleanHost(s string) string {
 		return ""
 	}
 	return s
+}
+
+// ---- server certificate sniffing ----
+
+// certSniffLimit bounds how many server bytes are kept while reconstructing
+// the handshake. A TLS 1.2 ServerHello plus its certificate chain fits well
+// inside this on any real deployment; a bigger flight is not worth buffering.
+const certSniffLimit = 64 * 1024
+
+// serverCertSniffer walks the server's first TLS flight, in record and
+// handshake order, looking for the Certificate message. It is the
+// client-side sniffer's complement: SNI names what the client asked for,
+// the certificate names what the server answered as — the only name on the
+// wire for clients that dial by IP without SNI. TLS 1.3 encrypts the
+// certificate (EncryptedExtensions follows the ServerHello), so there the
+// sniffer decides with no name.
+type serverCertSniffer struct {
+	buf       []byte // unframed record bytes
+	handshake []byte // reassembled handshake stream after the record headers
+	sawHello  bool
+	done      bool
+}
+
+// feed takes the bytes that were just relayed from the server and reports
+// the name on its certificate, if one is reachable.
+func (s *serverCertSniffer) feed(b []byte) (string, bool) {
+	if s.done || len(b) == 0 {
+		return "", s.done
+	}
+	s.buf = append(s.buf, b...)
+
+	// Frame complete records into the handshake stream.
+	for {
+		if len(s.buf) < 5 {
+			break
+		}
+		if s.buf[0] != 0x16 || s.buf[1] != 0x03 {
+			// Not a TLS handshake record: server is not speaking TLS (or is
+			// speaking something we cannot read a name from).
+			s.done = true
+			return "", true
+		}
+		recLen := int(s.buf[3])<<8 | int(s.buf[4])
+		if recLen == 0 {
+			s.done = true
+			return "", true
+		}
+		if len(s.buf) < 5+recLen {
+			break // wait for the rest of the record
+		}
+		s.handshake = append(s.handshake, s.buf[5:5+recLen]...)
+		s.buf = s.buf[5+recLen:]
+	}
+
+	// Parse complete handshake messages out of the stream.
+	for {
+		if len(s.handshake) < 4 {
+			break
+		}
+		msgType := s.handshake[0]
+		msgLen := int(s.handshake[1])<<16 | int(s.handshake[2])<<8 | int(s.handshake[3])
+		if len(s.handshake) < 4+msgLen {
+			break // wait for the rest of the message
+		}
+		msg := s.handshake[4 : 4+msgLen]
+		s.handshake = s.handshake[4+msgLen:]
+
+		switch msgType {
+		case 0x02: // ServerHello (or HelloRetryRequest — either way, keep going)
+			s.sawHello = true
+		case 0x0b: // Certificate
+			if !s.sawHello {
+				s.done = true
+				return "", true
+			}
+			name := parseServerCertificate(msg)
+			s.done = true
+			return name, true
+		default:
+			if s.sawHello {
+				// The first flight after ServerHello belongs to the
+				// negotiated version: on TLS 1.3 it is EncryptedExtensions
+				// and the certificate is unreadable.
+				s.done = true
+				return "", true
+			}
+			s.done = true
+			return "", true
+		}
+	}
+
+	if len(s.buf)+len(s.handshake) > certSniffLimit {
+		s.done = true
+		return "", true
+	}
+	return "", false
+}
+
+// parseServerCertificate reads the first certificate of a TLS Certificate
+// handshake message and returns a usable host name from it: an exact SAN
+// entry first, then the sharpest wildcard, then the common name.
+func parseServerCertificate(msg []byte) string {
+	if len(msg) < 3 {
+		return ""
+	}
+	listLen := int(msg[0])<<16 | int(msg[1])<<8 | int(msg[2])
+	body := msg[3:]
+	if listLen > len(body) {
+		listLen = len(body)
+	}
+	body = body[:listLen]
+	if len(body) < 3 {
+		return ""
+	}
+	certLen := int(body[0])<<16 | int(body[1])<<8 | int(body[2])
+	if certLen > len(body)-3 {
+		certLen = len(body) - 3
+	}
+	cert, err := x509.ParseCertificate(body[3 : 3+certLen])
+	if err != nil {
+		return ""
+	}
+	for _, d := range cert.DNSNames {
+		if !strings.HasPrefix(d, "*.") {
+			if n := cleanHost(d); n != "" {
+				return n
+			}
+		}
+	}
+	for _, d := range cert.DNSNames {
+		if strings.HasPrefix(d, "*.") {
+			if n := cleanHost(d[2:]); n != "" {
+				return n
+			}
+		}
+	}
+	return cleanHost(cert.Subject.CommonName)
 }

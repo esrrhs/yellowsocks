@@ -77,3 +77,37 @@ func TestProtoRobustnessOrdering(t *testing.T) {
 		t.Fatal("rdns should rank above quic")
 	}
 }
+
+// A socks5 node dials its own server with its own credentials and needs no
+// local client; the pick must hand the real dial address and auth to the
+// proxy caller even while the node is unreachable (TEST-NET).
+func TestManagerPicksSocks5NodeWithCreds(t *testing.T) {
+	m, err := NewManager([]*Node{{
+		Name:     "socks5-backup",
+		Type:     "socks5",
+		Server:   "203.0.113.10",
+		Port:     1080,
+		Username: "esrrhs",
+		Password: "secret",
+		Priority: 1,
+	}}, "")
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+	defer m.Close()
+
+	addr, user, pass, name, release := m.PickNode()
+	if addr != "203.0.113.10:1080" {
+		t.Fatalf("PickNode addr = %q, want dial address 203.0.113.10:1080", addr)
+	}
+	if user != "esrrhs" || pass != "secret" {
+		t.Fatalf("PickNode creds = %q/%q, want node credentials", user, pass)
+	}
+	if name != "socks5-backup" {
+		t.Fatalf("PickNode name = %q", name)
+	}
+	if release == nil {
+		t.Fatal("PickNode release is nil")
+	}
+	release()
+}

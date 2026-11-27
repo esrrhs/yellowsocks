@@ -78,6 +78,16 @@ spp_key: "123456"
 #     rdnsquerytype: "TXT"              # 可选：TXT (默认) 或 NULL
 #     priority: 3
 #     bandwidth: 10
+#   # SOCKS5 节点：type 填 socks5，直接拨号（不走 SPP），支持各自的用户名密码。
+#   # 与 SPP 信道同池竞争，按 priority 分层切换，可作任意层级的备用节点。
+#   - name: "backup-socks5"
+#     type: socks5
+#     server: "backup.example.com"
+#     port: 1080
+#     username: "user"
+#     password: "password"
+#     priority: 3             # 第三优先级（备用）
+#     bandwidth: 50
 
 # 入站 SOCKS5（TCP CONNECT + UDP ASSOCIATE）。
 # 用 ":1080" 同时接受 IPv4 和 IPv6，用 "[::1]:1080" 只听 IPv6。

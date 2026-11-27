@@ -666,3 +666,24 @@ func TestLoadSeedsLegacyLifetimeFromSnapshotTotals(t *testing.T) {
 		t.Fatalf("session totals inherited from a legacy file: %+v", ov.Totals)
 	}
 }
+
+// A UDP association displays the peer its first named datagram revealed —
+// later destinations keep counting bytes to their own domains but the row
+// keeps pointing at where the association was opened.
+func TestUDPSessionDisplaysFirstPeer(t *testing.T) {
+	c := New(Config{})
+	defer c.Close()
+	s := c.Begin(ProtoUDP, "127.0.0.1:50000", "", 0, DecisionNone, "")
+	s.AddDatagram("www.google.com:443", DecisionProxy, 100, 200)
+	s.AddDatagram("8.8.8.8:53", DecisionDirect, 10, 20)
+	v := s.view(time.Now())
+	if v.Host != "www.google.com:443" {
+		t.Fatalf("view host = %q, want the first named peer", v.Host)
+	}
+	if v.Decision != string(DecisionProxy) {
+		t.Fatalf("view decision = %q, want the peer's decision", v.Decision)
+	}
+	if v.Upload != 110 || v.Download != 220 {
+		t.Fatalf("totals = %d/%d, want both datagrams counted", v.Upload, v.Download)
+	}
+}

@@ -26,9 +26,12 @@ type UpstreamProvider interface {
 }
 
 // SmartUpstreamProvider can dynamically select an upstream node per connection.
+// The pick carries the node's own credentials: a pool can mix SPP channels
+// (dialed via a local unauthenticated listener) with direct SOCKS5 servers
+// that each have their own username/password.
 type SmartUpstreamProvider interface {
 	UpstreamProvider
-	PickNode() (addr string, name string, release func())
+	PickNode() (addr string, user string, pass string, name string, release func())
 }
 
 // NodeFailureReporter reports errors on a specific upstream node.
@@ -341,7 +344,7 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 		if err := network.Sock5SendConnectReply(clientConn, 0x00, "0.0.0.0:0"); err != nil {
 			return
 		}
-		relayStreams(clientConn, outConn, s.cfg.IdleTimeout, sess)
+		relayStreams(clientConn, outConn, s.cfg.IdleTimeout, sess, domainLearner(s.cfg.DNS, targetHost))
 	} else {
 		// Upstream SPP server cannot route IPv6 (no IPv6 connectivity).
 		// When clients send IPv6 literals, reject with Network Unreachable (0x03)
@@ -352,14 +355,15 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 			return
 		}
 
-		// Forward via SPP
+		// Forward via the chosen upstream node
 		var sppAddr string
-		var nodeName string
+		var nodeUser, nodePass, nodeName string
 		var release func()
 		if smart, ok := s.cfg.Upstream.(SmartUpstreamProvider); ok {
-			sppAddr, nodeName, release = smart.PickNode()
+			sppAddr, nodeUser, nodePass, nodeName, release = smart.PickNode()
 		} else if s.cfg.Upstream != nil {
 			sppAddr = s.cfg.Upstream.Socks5Addr()
+			nodeUser, nodePass = s.cfg.Upstream.Socks5Auth()
 		}
 		if release != nil {
 			defer release()
@@ -397,10 +401,7 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 		}
 		defer sppConn.Close()
 
-		user, pass := "", ""
-		if s.cfg.Upstream != nil {
-			user, pass = s.cfg.Upstream.Socks5Auth()
-		}
+		user, pass := nodeUser, nodePass
 		if err := network.Sock5Handshake(sppConn, 5000, user, pass); err != nil {
 			loggo.Error("[SOCKS5] SPP upstream %s (%s) handshake failed: %v", sppAddr, nodeName, err)
 			if rep, ok := s.cfg.Upstream.(NodeFailureReporter); ok && nodeName != "" {
@@ -424,7 +425,7 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 		if err := network.Sock5SendConnectReply(clientConn, 0x00, "0.0.0.0:0"); err != nil {
 			return
 		}
-		relayStreamsWithNode(clientConn, sppConn, s.cfg.IdleTimeout, sess, s.cfg.Upstream, nodeName)
+		relayStreamsWithNode(clientConn, sppConn, s.cfg.IdleTimeout, sess, s.cfg.Upstream, nodeName, domainLearner(s.cfg.DNS, targetHost))
 	}
 }
 
@@ -499,12 +500,13 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 			return sppUDPConn, sppRelayUDP, nil
 		}
 		var sppAddr string
-		var nodeName string
+		var nodeUser, nodePass, nodeName string
 		var release func()
 		if smart, ok := s.cfg.Upstream.(SmartUpstreamProvider); ok {
-			sppAddr, nodeName, release = smart.PickNode()
+			sppAddr, nodeUser, nodePass, nodeName, release = smart.PickNode()
 		} else if s.cfg.Upstream != nil {
 			sppAddr = s.cfg.Upstream.Socks5Addr()
+			nodeUser, nodePass = s.cfg.Upstream.Socks5Auth()
 		}
 		if sppAddr == "" {
 			if release != nil {
@@ -528,10 +530,7 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 			return nil, nil, err
 		}
 
-		user, pass := "", ""
-		if s.cfg.Upstream != nil {
-			user, pass = s.cfg.Upstream.Socks5Auth()
-		}
+		user, pass := nodeUser, nodePass
 		if err := network.Sock5Handshake(tcpUp, 5000, user, pass); err != nil {
 			_ = tcpUp.Close()
 			if release != nil {
@@ -705,7 +704,10 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 				}(sess.addr, sess.conn, statsDecision(decision))
 			}
 			_, _ = sess.conn.WriteToUDP(payload, sess.addr)
-			udpSess.AddDatagram(dstHost, statsDecision(decision), int64(len(payload)), 0)
+			// Name the datagram by the recovered peer, not the raw address:
+			// the domain counters and the association's displayed peer both
+			// benefit when our DNS (or a sniffed name) knows the destination.
+			udpSess.AddDatagram(joinDialAddr(realHost, dstPort), statsDecision(decision), int64(len(payload)), 0)
 		} else {
 			// Upstream SPP cannot route IPv6
 			if !s.cfg.EnableIPv6 && isIPv6Literal(dstHost) {
@@ -731,7 +733,7 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 				}
 			}
 			if _, err := sppUConn.WriteToUDP(outbound, sppRelayTarget); err == nil {
-				udpSess.AddDatagram(dstHost, stats.DecisionProxy, int64(len(payload)), 0)
+				udpSess.AddDatagram(joinDialAddr(realHost, dstPort), stats.DecisionProxy, int64(len(payload)), 0)
 			}
 		}
 	}
@@ -759,7 +761,7 @@ func (s *Socks5Server) answerDNSDatagram(payload []byte, srcHost string, srcPort
 		return
 	}
 	_, _ = relay.WriteToUDP(packed, client)
-	sess.AddDatagram(srcHost, stats.DecisionDirect, 0, int64(len(out)))
+	sess.AddDatagram(joinDialAddr(srcHost, srcPort), stats.DecisionDirect, 0, int64(len(out)))
 }
 
 // defaultIdleTimeout closes proxied connections whose peer vanished without a
@@ -790,15 +792,37 @@ func statsDecision(d router.RouteDecision) stats.Decision {
 	return stats.DecisionProxy
 }
 
+// streamSniffer is the per-direction name recovery contract: feed consumes
+// the relayed bytes and reports a recovered name, or decided without one
+// when the direction has nothing more to give.
+type streamSniffer interface {
+	feed(b []byte) (string, bool)
+}
+
+// domainLearner returns the hook the relay uses for names recovered from a
+// connection's bytes: it teaches the DNS server's IP→domain table so later
+// connections to the same address — clients that stay silent where this one
+// spoke — inherit the name. nil when there is no resolver to teach.
+func domainLearner(dnsServer *dns.Server, dialHost string) func(string) {
+	if dnsServer == nil {
+		return nil
+	}
+	return func(name string) {
+		dnsServer.LearnIPDomain(dialHost, name)
+	}
+}
+
 // relayStreams copies both ways. a is the client side and b the target side:
 // bytes read from a are upload (client -> target) and bytes read from b are
 // download (target -> client). sess may be nil, in which case no traffic is
-// accounted.
-func relayStreams(a, b net.Conn, idle time.Duration, sess *stats.Session) {
-	relayStreamsWithNode(a, b, idle, sess, nil, "")
+// accounted. onDomain, when non-nil, is called once with every name the
+// sniffers recover (client SNI, server certificate) — the caller uses it to
+// backfill its own IP→domain memory.
+func relayStreams(a, b net.Conn, idle time.Duration, sess *stats.Session, onDomain func(string)) {
+	relayStreamsWithNode(a, b, idle, sess, nil, "", onDomain)
 }
 
-func relayStreamsWithNode(a, b net.Conn, idle time.Duration, sess *stats.Session, upstream UpstreamProvider, nodeName string) {
+func relayStreamsWithNode(a, b net.Conn, idle time.Duration, sess *stats.Session, upstream UpstreamProvider, nodeName string, onDomain func(string)) {
 	// lastActivity is shared by both directions, so a one-way transfer (e.g. a
 	// long download with no upstream data) keeps the connection alive.
 	lastActivity := time.Now().UnixNano()
@@ -834,11 +858,24 @@ func relayStreamsWithNode(a, b net.Conn, idle time.Duration, sess *stats.Session
 	wg.Add(2)
 	// Only a session that dialled an IP literal needs the name looked up, and
 	// only once: a request that already carried a name is authoritative.
-	var sniffer *sniSniffer
+	// Two sniffers share the work — the client's own SNI (first pipe) and,
+	// for clients that name nothing, the server's TLS certificate (second
+	// pipe, plaintext on TLS 1.2).
+	var sniffer, certSniffer streamSniffer
 	if sess.WantsDomain() {
 		sniffer = &sniSniffer{}
+		certSniffer = &serverCertSniffer{}
 	}
-	pipe := func(dst, src net.Conn, count func(int64), sniff *sniSniffer) {
+	deliverName := func(name string) {
+		if name == "" {
+			return
+		}
+		sess.SetDomain(name)
+		if onDomain != nil {
+			onDomain(name)
+		}
+	}
+	pipe := func(dst, src net.Conn, count func(int64), sniff streamSniffer) {
 		defer wg.Done()
 		bufp := relayBufPool.Get().(*[relayCopyBufferSize]byte)
 		defer relayBufPool.Put(bufp)
@@ -870,9 +907,7 @@ func relayStreamsWithNode(a, b net.Conn, idle time.Duration, sess *stats.Session
 				// name has to be parsed from the bytes we just forwarded.
 				if sniff != nil {
 					if name, decided := sniff.feed(buf[:n]); decided {
-						if name != "" {
-							sess.SetDomain(name)
-						}
+						deliverName(name)
 						sniff = nil
 					}
 				}
@@ -910,11 +945,13 @@ func relayStreamsWithNode(a, b net.Conn, idle time.Duration, sess *stats.Session
 		_ = dst.SetReadDeadline(time.Now().Add(grace))
 	}
 
-	// a is the client side: reading b and writing a is target -> client.
+	// a is the client side: reading b and writing a is target -> client. The
+	// server's TLS flight rides this direction, so the certificate sniffer
+	// belongs here.
 	go pipe(a, b, func(n int64) {
 		sess.AddDownload(n)
 		recordNodeTraffic(upstream, nodeName, 0, n)
-	}, nil)
+	}, certSniffer)
 	go pipe(b, a, func(n int64) {
 		sess.AddUpload(n)
 		recordNodeTraffic(upstream, nodeName, n, 0)

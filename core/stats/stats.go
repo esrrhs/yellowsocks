@@ -112,8 +112,14 @@ type DomainStat struct {
 	Conns       int64  `json:"conns"`
 	DirectConns int64  `json:"direct_conns"`
 	ProxyConns  int64  `json:"proxy_conns"`
-	Errors      int64  `json:"errors"`
-	LastSeen    int64  `json:"last_seen"`
+	// DirectBytes and ProxyBytes are the same traffic split by routing
+	// decision. A domain reachable both ways (a CDN routed direct here,
+	// proxy there) keeps one entry and both sides of the split; UDP
+	// datagrams carry no single decision and land in neither.
+	DirectBytes int64 `json:"direct_bytes"`
+	ProxyBytes  int64 `json:"proxy_bytes"`
+	Errors      int64 `json:"errors"`
+	LastSeen    int64 `json:"last_seen"`
 }
 
 // Total returns upload + download.
@@ -351,8 +357,13 @@ type Session struct {
 	// literal. It is display-only: host keeps naming the destination for the
 	// byte and domain counters, so a sniffed name cannot silently re-attribute
 	// bytes that were already counted under the address.
-	domain   atomic.Pointer[string]
-	start    time.Time
+	domain atomic.Pointer[string]
+	// udpPeer/udpDecision are the first named datagram's destination and
+	// decision, displayed instead of the blank host a UDP association starts
+	// with. Atomics, because datagrams relay on several goroutines.
+	udpPeer     atomic.Pointer[string]
+	udpDecision atomic.Pointer[Decision]
+	start       time.Time
 
 	upload      atomic.Int64
 	download    atomic.Int64
@@ -444,6 +455,13 @@ func (s *Session) AddDownload(n int64) {
 // host. UDP associations multiplex many destinations, so the per-domain
 // counters are updated per datagram while the session itself tracks the
 // association totals.
+//
+// The FIRST named datagram also becomes the association's displayed peer
+// (host:port) and its decision: in practice a TUN-mode association is one
+// application socket talking to one destination, and a row that says where
+// that is beats a blank. Later destinations still count their bytes against
+// their own domains; the display simply keeps the peer the association was
+// opened for.
 func (s *Session) AddDatagram(host string, d Decision, up, down int64) {
 	if s == nil {
 		return
@@ -461,6 +479,13 @@ func (s *Session) AddDatagram(host string, d Decision, up, down int64) {
 	}
 	if host != "" {
 		s.c.addDomain(host, d, up, down, 0, false)
+	}
+	if host != "" {
+		if s.udpPeer.Load() == nil {
+			h := host
+			s.udpPeer.Store(&h)
+			s.udpDecision.Store(&d)
+		}
 	}
 	s.flush()
 }
@@ -553,6 +578,19 @@ func (s *Session) Download() int64 {
 	return s.download.Load()
 }
 
+// tableKey is the domain-table key this session's bytes belong under. A
+// session that dialled an IP literal starts under the address itself; once
+// the sniffed name lands, the remaining traffic is committed under it, so
+// the destination breakdown names what the connection was actually for
+// instead of a CDN address. The few bytes flushed before the name arrived
+// stay on the address entry.
+func (s *Session) tableKey() string {
+	if d := s.Domain(); d != "" {
+		return d
+	}
+	return s.host
+}
+
 func (s *Session) flush() {
 	up := s.pendingUp.Swap(0)
 	down := s.pendingDown.Swap(0)
@@ -560,7 +598,7 @@ func (s *Session) flush() {
 		return
 	}
 	if s.host != "" {
-		s.c.addDomain(s.host, s.decision, up, down, 0, false)
+		s.c.addDomain(s.tableKey(), s.decision, up, down, 0, false)
 	}
 }
 
@@ -568,14 +606,23 @@ func (s *Session) view(now time.Time) SessionView {
 	age := now.Sub(s.start)
 	up, down := s.upload.Load(), s.download.Load()
 	upBps, downBps := s.rates(now, up, down)
+	// A UDP association displays the peer its first named datagram revealed;
+	// TCP sessions have the destination from the request itself.
+	viewHost, viewDecision := s.host, s.decision
+	if p := s.udpPeer.Load(); p != nil {
+		viewHost = *p
+	}
+	if d := s.udpDecision.Load(); d != nil {
+		viewDecision = *d
+	}
 	return SessionView{
 		ID:        s.id,
 		Proto:     string(s.proto),
 		Client:    s.client,
-		Host:      s.host,
+		Host:      viewHost,
 		Domain:    s.Domain(),
 		Port:      s.port,
-		Decision:  string(s.decision),
+		Decision:  string(viewDecision),
 		Node:      s.Node(),
 		Start:     s.start.Unix(),
 		AgeMs:     age.Milliseconds(),
@@ -600,9 +647,11 @@ func (c *Collector) finish(s *Session, err error) {
 	if s.host != "" {
 		// Byte counters were pushed to the domain table in flushThreshold
 		// chunks while the relay ran; commit the remainder with the session.
+		// The key follows the sniffed name when one landed, so the entry
+		// this session ends up under answers "where was this going".
 		pu := s.pendingUp.Swap(0)
 		pd := s.pendingDown.Swap(0)
-		c.addDomainLocked(s.host, s.decision, pu, pd, 1, err != nil)
+		c.addDomainLocked(s.tableKey(), s.decision, pu, pd, 1, err != nil)
 	}
 	nodeName := s.Node()
 	if s.decision == DecisionProxy && nodeName != "" {
@@ -904,8 +953,10 @@ func (c *Collector) addDomainLocked(host string, dec Decision, up, down, conns i
 	switch dec {
 	case DecisionDirect:
 		e.DirectConns += conns
+		e.DirectBytes += up + down
 	case DecisionProxy:
 		e.ProxyConns += conns
+		e.ProxyBytes += up + down
 	}
 	if isErr {
 		e.Errors++
@@ -1341,6 +1392,16 @@ func (c *Collector) LifetimeReset() {
 	c.lifetime = Counters{}
 	c.lifetimeDirect = Counters{}
 	c.lifetimeProxy = Counters{}
+}
+
+// ResetDomains clears the per-destination traffic table. It touches neither
+// the session counters nor the lifetime record: the domain table has its own
+// scope (it survives restarts through the snapshot), and the lifetime reset
+// of a frontend that shows both clears it too so the two cannot disagree.
+func (c *Collector) ResetDomains() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.domains = make(map[string]*DomainStat)
 }
 
 // Lifetime returns the permanent traffic totals: all traffic plus its

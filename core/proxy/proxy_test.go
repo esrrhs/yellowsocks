@@ -76,7 +76,7 @@ func startMockUpstreamSocks5(t *testing.T) (string, func()) {
 					}
 					defer dstConn.Close()
 					_ = network.Sock5SendConnectReply(c, 0x00, "0.0.0.0:0")
-					relayStreams(c, dstConn, defaultIdleTimeout, nil)
+					relayStreams(c, dstConn, defaultIdleTimeout, nil, nil)
 				} else if cmd == network.Socks5CmdUDPAssociate {
 					uRelay, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: 0})
 					if err != nil {
@@ -1659,8 +1659,8 @@ type trafficRecordingUpstream struct {
 
 func (u *trafficRecordingUpstream) Socks5Addr() string          { return u.addr }
 func (u *trafficRecordingUpstream) Socks5Auth() (string, string) { return "", "" }
-func (u *trafficRecordingUpstream) PickNode() (string, string, func()) {
-	return u.addr, "narrow-pipe-node", func() {}
+func (u *trafficRecordingUpstream) PickNode() (string, string, string, string, func()) {
+	return u.addr, "", "", "narrow-pipe-node", func() {}
 }
 func (u *trafficRecordingUpstream) RecordNodeTraffic(_ string, up, down int64) {
 	atomic.AddInt64(&u.uploadN, up)
