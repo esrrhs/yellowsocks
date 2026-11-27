@@ -197,9 +197,18 @@ func refreshTray(a *App, m *trayMenu) {
 	activeStr := fmt.Sprintf("%d", active)
 	if st.Running {
 		m.status.SetTitle(fmt.Sprintf("↓ %s  ↑ %s", trayRate(down), trayRate(up)))
-		systray.SetTooltip(text("tray.tooltipRate", map[string]string{
+		// The exit address rides along when a self-check has seen one: it is
+		// the answer to "is this traffic actually leaving from where the
+		// rules promise", visible without opening the window at all.
+		tooltipVars := map[string]string{
 			"down": trayRate(down), "up": trayRate(up), "n": activeStr,
-		}))
+		}
+		tooltipKey := "tray.tooltipRate"
+		if r := a.GetLastProbe(); r != nil && r.ExitIP != "" {
+			tooltipVars["ip"] = r.ExitIP
+			tooltipKey = "tray.tooltipExit"
+		}
+		systray.SetTooltip(text(tooltipKey, tooltipVars))
 	} else {
 		m.status.SetTitle(text("tray.stopped", nil))
 		systray.SetTooltip(text("tray.tooltipStopped", nil))

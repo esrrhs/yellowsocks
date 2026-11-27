@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // Connectivity checks. These deliberately probe the real path instead of the
@@ -28,6 +30,13 @@ const (
 	// so a rate-limited provider costs one leg instead of the whole report.
 	geoLegTimeout = 5 * time.Second
 	geoBudget     = 9 * time.Second
+
+	// The automatic self-check fires at this cadence while the engine runs,
+	// and once shortly after every engine start (see probeLoop). One minute
+	// is slow enough not to matter on any bill, fast enough that the strip
+	// on the home page is never quoting a dead link for long.
+	probeInterval   = time.Minute
+	probeStartDelay = 3 * time.Second
 )
 
 // ProbeItem is one line of the report.
@@ -63,8 +72,96 @@ type ProbeReport struct {
 	Items       []ProbeItem `json:"items"`
 }
 
+// runProbe executes the probe set once, caches the report and pushes it to
+// the window. Single-flight: the minute timer, the engine-start kick and a
+// manual click can all fire together, and a second concurrent set would
+// double the outbound traffic without adding information — the racing
+// caller is answered with the cached report instead.
+func (a *App) runProbe() ProbeReport {
+	if !a.probing.CompareAndSwap(false, true) {
+		if last := a.lastProbe.Load(); last != nil {
+			return *last
+		}
+		return ProbeReport{At: time.Now().Unix(), Items: []ProbeItem{}}
+	}
+	defer a.probing.Store(false)
+	r := a.probeOnce()
+	a.lastProbe.Store(&r)
+	a.emitProbe(r)
+	return r
+}
+
 // TestConnectivity runs the probe set against the current configuration.
+// The automatic loop in probeLoop calls the same path.
 func (a *App) TestConnectivity() ProbeReport {
+	return a.runProbe()
+}
+
+// GetLastProbe returns the newest self-check report, or nil before the first
+// one has run. The window reads it once at boot so the strip shows something
+// without waiting for the next tick.
+func (a *App) GetLastProbe() *ProbeReport {
+	return a.lastProbe.Load()
+}
+
+// probeLoop runs the automatic self-check for the life of the process: once
+// per minute while the engine runs, and once shortly after every engine
+// start, so a freshly established tunnel reports while the user is still
+// looking at the home page.
+//
+// The timer lives in the backend on purpose: WebView2 throttles window
+// timers while the window sits hidden in the tray, and a self-check that
+// stalls whenever the window is hidden would go stale exactly when nobody
+// is watching to notice.
+func (a *App) probeLoop() {
+	ticker := time.NewTicker(probeInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-a.shutdownDone:
+			return
+		case <-a.probeKick:
+			// The listeners are up, but the first seconds can still see
+			// route churn (TUN bring-up runs in parallel with the engine
+			// start); let it settle, then report. An engine that went down
+			// again in the meantime skips the round.
+			select {
+			case <-time.After(probeStartDelay):
+			case <-a.shutdownDone:
+				return
+			}
+			if a.engineRunning() {
+				a.runProbe()
+			}
+		case <-ticker.C:
+			if a.engineRunning() {
+				a.runProbe()
+			}
+		}
+	}
+}
+
+func (a *App) engineRunning() bool {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.running
+}
+
+// emitProbe pushes the report to the window, gated like the status event:
+// tests and driver builds have no Wails context, and the runtime exits the
+// process if it is used without one.
+func (a *App) emitProbe(r ProbeReport) {
+	a.mu.Lock()
+	on := a.frontendEvents
+	a.mu.Unlock()
+	if !on {
+		return
+	}
+	runtime.EventsEmit(a.ctx, "probe:report", r)
+}
+
+// probeOnce runs the probe set against the current configuration.
+func (a *App) probeOnce() ProbeReport {
 	a.mu.Lock()
 	httpAddr := a.lastCfg.HTTPListen
 	upstream := a.lastCfg.SPPServer

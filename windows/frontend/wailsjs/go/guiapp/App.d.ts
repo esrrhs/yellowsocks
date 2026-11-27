@@ -16,7 +16,11 @@ export function GetErrors():Promise<Array<stats.ErrorEntry>>;
 
 export function GetLanguage():Promise<string>;
 
+export function GetLastProbe():Promise<guiapp.ProbeReport>;
+
 export function GetLaunchAtLogin():Promise<boolean>;
+
+export function GetLifetimeDomains(arg1:number):Promise<Array<stats.DomainStat>>;
 
 export function GetLifetimeStats():Promise<stats.LifetimeStats>;
 

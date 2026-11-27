@@ -336,13 +336,81 @@ body {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 16px;
+    flex-wrap: wrap;
+    gap: 4px 16px;
     margin-bottom: 14px;
     padding: 2px 0 15px;
     background: transparent;
     border: none;
     border-bottom: 1px solid var(--line);
     border-radius: 0;
+}
+
+/* The self-check strip: one muted line under the title row, refreshed by the
+   backend's own clock (once a minute, plus once after every engine start)
+   and pushed here as an event, so it stays current even while the window
+   hides in the tray. Legs read as lamps + milliseconds; the per-leg detail
+   sentences live in the strip's tooltip. */
+.probe-strip {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+    flex-basis: 100%;
+    margin-top: 10px;
+    padding-top: 9px;
+    border-top: 1px solid var(--line-soft);
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-dim);
+}
+
+.ps-label {
+    color: var(--text-3);
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.ps-state {
+    color: var(--text-3);
+}
+
+.ps-time {
+    color: var(--text-3);
+}
+
+.ps-item {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    white-space: nowrap;
+}
+
+.ps-item .dot {
+    width: 6px;
+    height: 6px;
+}
+
+.ps-ms {
+    color: var(--text-3);
+}
+
+.ps-exit {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    color: var(--text-dim);
+}
+
+.ps-run {
+    margin-left: auto;
+}
+
+/* A failed leg speaks in the error hue but stays small: the strip is a
+   status line, not an alarm. */
+.dot.err {
+    background: var(--down);
 }
 
 .status-main {
@@ -438,67 +506,19 @@ body {
     color: var(--down);
 }
 
-/* Split of one direction: the solid part is domestic, the dimmed part is
-   foreign. Both halves keep the direction's hue, so a bar in the upload card
-   is never mistaken for a download share. */
-.split-bar {
-    display: flex;
-    height: 3px;
-    margin-top: 9px;
-    border-radius: 1px;
-    overflow: hidden;
-    background: var(--line-soft);
-}
-
-.split-bar .seg {
-    display: block;
-    height: 100%;
-}
-
-.split-bar .seg.proxy {
-    flex: 1;
-}
-
-.split-bar.up .seg.direct {
-    background: var(--up);
-}
-
-.split-bar.up .seg.proxy {
-    background: var(--up);
-    opacity: 0.34;
-}
-
-.split-bar.down .seg.direct {
-    background: var(--down);
-}
-
-.split-bar.down .seg.proxy {
-    background: var(--down);
-    opacity: 0.34;
-}
-
-/* Connections are neither upload nor download, so this bar stays neutral:
-   tinting it teal or clay would say "traffic" instead of "sessions". */
-.split-bar.conns .seg.direct {
-    background: var(--text-dim);
-}
-
-.split-bar.conns .seg.proxy {
-    background: var(--text-dim);
-    opacity: 0.34;
-}
-
-/* Idle: show the empty track instead of a bar that looks all-foreign. */
-.split-bar.idle .seg {
-    display: none;
-}
-
+/* Under each headline number, the domestic/foreign breakdown as plain
+   labelled entries. It deliberately carries no bar: a filled strip next to a
+   number reads as a progress meter, and a share bar in the upload card was
+   regularly mistaken for "how much of the upload finished". The swatches
+   borrow the traffic chart's vocabulary instead -- solid for domestic,
+   dashed for foreign, tinted by the card's own hue -- so the two halves read
+   as a legend, not a gauge. */
 .split-line {
     display: flex;
     flex-wrap: wrap;
     justify-content: space-between;
     gap: 4px 10px;
-    margin-top: 7px;
+    margin-top: 9px;
     color: var(--text-3);
     font-family: var(--mono);
     font-size: 11px;
@@ -564,6 +584,13 @@ body {
 .sw.down {
     background: var(--down);
     color: var(--down);
+}
+
+/* Connections are neither upload nor download; their swatches stay neutral,
+   since tinting them teal or clay would say "traffic" instead of "sessions". */
+.sw.dim {
+    background: var(--text-dim);
+    color: var(--text-dim);
 }
 
 /* Foreign share: same hue, dashed like the line it stands for. currentColor
@@ -698,71 +725,252 @@ body {
 
 /* ---------- option bank ---------- */
 
-/* Five switches in one panel, one per row, each with its own rule. Vertical
-   rows fit both languages without the 150px-wide cell that made the old
-   two-column chips wrap their labels. */
+/* Five slide toggles on one faceplate line, one per option. The old bank was
+   a stacked list with a state sentence per row, which cost a full card height
+   for what is five booleans; the label alone fits beside a switch, and the
+   sentence moves into the tooltip. TUN's pending/retry states stay as visible
+   text because they ask the user to act. Wraps, so narrower windows get two
+   lines instead of an overflow. */
 .options-row {
     display: flex;
-    flex-direction: column;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 18px;
     margin-bottom: 14px;
+    padding: 9px 14px;
     background: var(--panel);
     border: 1px solid var(--line);
     border-radius: 3px;
-    overflow: hidden;
 }
 
-.options-row .option-chip {
-    display: flex;
+.option-toggle {
+    display: inline-flex;
     align-items: center;
-    gap: 10px;
-    width: 100%;
-    padding: 8px 14px;
+    gap: 8px;
+    padding: 0;
     border: none;
-    border-radius: 0;
     background: transparent;
-    text-align: left;
     font: inherit;
     font-size: 12.5px;
     color: var(--text-dim);
+    white-space: nowrap;
     cursor: pointer;
-    transition: background 0.12s, color 0.12s;
+    transition: color 0.12s;
 }
 
-.options-row .option-chip + .option-chip {
-    border-top: 1px solid var(--line-soft);
-}
-
-.options-row .option-chip:hover {
-    background: var(--raise);
+.option-toggle:hover {
     color: var(--text);
 }
 
-/* A switch that is on lights the left edge of its row; the row itself keeps
-   the neutral panel colour, so five enabled switches do not turn the panel
-   into a block of amber. Scoped under .options-row to outrank the row colour
-   set above. */
-.options-row .option-chip.on {
+.option-toggle.on {
     color: var(--text);
-    box-shadow: inset 2px 0 0 var(--accent);
 }
 
-.chip-title {
-    font-weight: 400;
-}
-
-.options-row .option-chip.on .chip-title {
+.option-toggle.on span {
     font-weight: 600;
 }
 
-.chip-state {
-    margin-left: auto;
+/* The switch: a rectangular faceplate slide — square knob that travels
+   right and lights the track amber when on. */
+.tk {
+    position: relative;
+    display: inline-block;
+    flex: none;
+    width: 26px;
+    height: 14px;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: var(--line-soft);
+    transition: background 0.15s, border-color 0.15s;
+}
+
+.tk .knob {
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    width: 10px;
+    height: 10px;
+    border-radius: 5px;
+    background: var(--text-3);
+    transition: transform 0.15s, background 0.15s;
+}
+
+.option-toggle.on .tk {
+    background: var(--accent);
+    border-color: var(--accent);
+}
+
+.option-toggle.on .tk .knob {
+    transform: translateX(12px);
+    background: var(--panel);
+}
+
+/* TUN bring-up failed: the switch stays off but speaks up in the error hue,
+   so a failed authorization does not read as a plain "off". */
+.option-toggle.err .tk {
+    background: var(--down);
+    border-color: var(--down);
+}
+
+.tg-state {
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--accent);
+}
+
+.option-toggle.err .tg-state {
+    color: var(--down);
+}
+
+/* ---------- stats page: destination breakdown ---------- */
+
+/* Two side groups (国内/国外) of named rows. The row is a full-width button
+   that expands into its top member domains; the catch-all rows (其他, 未
+   识别地址) dim, because they are a summary of what did not match, not a
+   destination of its own. Numbers keep the mono face; no bars anywhere on
+   this page by design. */
+.dest-side {
+    margin-top: 10px;
+}
+
+.dest-side:first-of-type {
+    margin-top: 4px;
+}
+
+.dest-side-head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 2px 6px;
     color: var(--text-3);
+    font-size: 11px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+.dest-side-head .sw {
+    height: 3px;
+}
+
+.dest-side-total {
+    margin-left: auto;
+    color: var(--text-dim);
     font-family: var(--mono);
     font-size: 11px;
 }
 
-.options-row .option-chip.on .chip-state {
-    color: var(--accent);
+.dest-rows {
+    border-top: 1px solid var(--line-soft);
+}
+
+.dest-row {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    width: 100%;
+    padding: 5px 2px;
+    border: none;
+    border-bottom: 1px solid var(--line-soft);
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    color: var(--text-dim);
+    cursor: pointer;
+}
+
+.dest-row:hover {
+    background: var(--raise);
+    color: var(--text);
+}
+
+.dest-row.bare {
+    color: var(--text-3);
+}
+
+.dest-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12.5px;
+}
+
+.dest-row.open .dest-name,
+.dest-row:hover.dest-name {
+    color: var(--text);
+}
+
+.dest-share {
+    flex: none;
+    width: 34px;
+    text-align: right;
+    color: var(--text-3);
+    font-family: var(--mono);
+    font-size: 10.5px;
+}
+
+.dest-bytes {
+    flex: none;
+    width: 70px;
+    text-align: right;
+    color: var(--text);
+    font-family: var(--mono);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+}
+
+.dest-updown {
+    flex: none;
+    width: 132px;
+    text-align: right;
+    color: var(--text-3);
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-variant-numeric: tabular-nums;
+}
+
+.dest-caret {
+    flex: none;
+    width: 10px;
+    color: var(--text-3);
+    font-size: 10px;
+}
+
+.dest-detail {
+    padding: 2px 2px 8px 14px;
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--raise);
+}
+
+.dest-member {
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    padding: 2px 0;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-3);
+}
+
+.dest-member-name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-dim);
+}
+
+.dest-member-bytes {
+    flex: none;
+    font-variant-numeric: tabular-nums;
+}
+
+.dest-more {
+    padding-top: 4px;
+    color: var(--text-3);
+    font-size: 10.5px;
 }
 
 /* ---------- buttons ---------- */
@@ -1096,6 +1304,78 @@ body {
     font-size: 12.5px;
     user-select: text;
     word-break: break-all;
+}
+
+.ok-banner {
+    background: rgba(79, 179, 169, 0.07);
+    border: 1px solid rgba(79, 179, 169, 0.38);
+    color: var(--ok);
+    border-radius: 3px;
+    padding: 9px 12px;
+    margin-bottom: 14px;
+    font-size: 12.5px;
+}
+
+/* ---------- nodes page ---------- */
+
+/* Upstream node pool: tier headings with editable node cards under them.
+   The cards reuse the settings form-grid rhythm so fields line up the same
+   way on both pages; the type badge distinguishes SPP channels from plain
+   SOCKS5 servers at a glance. */
+.chart-head-actions {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.node-tier {
+    margin-top: 12px;
+}
+
+.node-tier-note {
+    margin-left: auto;
+    color: var(--text-3);
+    font-size: 10.5px;
+}
+
+.node-card {
+    border: 1px solid var(--line-soft);
+    border-radius: 3px;
+    padding: 8px 12px 10px;
+    margin-bottom: 8px;
+    background: var(--raise);
+}
+
+.node-card-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 6px;
+}
+
+.node-type {
+    font-size: 10.5px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    color: var(--text-3);
+}
+
+.node-type.socks5 {
+    color: var(--accent);
+}
+
+.node-del {
+    border: none;
+    background: transparent;
+    color: var(--text-3);
+    font-size: 12px;
+    cursor: pointer;
+    padding: 2px 6px;
+}
+
+.node-del:hover {
+    color: var(--bad);
 }
 
 /* ---------- lifetime traffic ---------- */

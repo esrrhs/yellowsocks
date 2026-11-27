@@ -4,14 +4,13 @@ import {
   EngineStatus,
   GetAutoStartCore,
   GetLaunchAtLogin,
-  GetLifetimeStats,
+  GetLastProbe,
   GetOverview,
   GetProxyGuard,
   GetProxyMode,
   GetSeries,
   GetSystemProxy,
   GetTunMode,
-  ResetLifetimeStats,
   SetAutoStartCore,
   SetLaunchAtLogin,
   SetProxyGuard,
@@ -35,7 +34,6 @@ const busy = ref(false);
 const autoStart = ref(false);
 const launchAtLogin = ref(false);
 const tunMode = ref(false);
-const lifetime = ref<stats.LifetimeStats | null>(null);
 const proxyMode = ref("rule");
 const probe = ref<guiapp.ProbeReport | null>(null);
 const probing = ref(false);
@@ -46,15 +44,17 @@ let timer: number | undefined;
 // once and stays for the life of the window: the chips and the status line
 // keep tracking the engine even while another page is on screen.
 let offStatus: (() => void) | undefined;
+// The self-check report event: the backend probes on its own schedule and
+// the strip renders whatever lands.
+let offProbe: (() => void) | undefined;
 
-// The three live calls go out together. Awaited in turn they cost three round
+// The two live calls go out together. Awaited in turn they cost two round
 // trips per tick and, worse, the counters on screen lag the tick that just
-// fired; in parallel the page has all of them by the time the tick ends.
+// fired; in parallel the page has both by the time the tick ends.
 async function refresh() {
-  const [ov, pts, life] = await Promise.all([
+  const [ov, pts] = await Promise.all([
     GetOverview().catch(() => null),
     GetSeries(1800).catch(() => [] as stats.SeriesPoint[]),
-    GetLifetimeStats().catch(() => null),
   ]);
   if (ov) overview.value = ov;
   // A nil overview while the engine is not running is "no data", not "keep the
@@ -63,9 +63,6 @@ async function refresh() {
   else if (!status.value.running) overview.value = null;
   if (status.value.running) series.value = pts ?? [];
   else series.value = [];
-  // The lifetime record is served from a cache on the Go side, so it stays
-  // readable even while the engine is stopped.
-  if (life) lifetime.value = life;
 }
 
 // One round trip per fact, all in flight at once. Serially awaited this was a
@@ -95,6 +92,11 @@ async function bootstrap() {
   if (tun !== null && !st) tunMode.value = tun;
   if (mode) proxyMode.value = mode;
   if (guard !== null) proxyGuard.value = guard;
+  // The backend probes on its own clock and pushes reports as events; this
+  // read only fills the strip with the newest cached report at boot so it
+  // is never blank until the first minute boundary.
+  const lastProbe = await GetLastProbe().catch(() => null);
+  if (lastProbe) probe.value = new guiapp.ProbeReport(lastProbe);
   await refresh();
 }
 
@@ -161,16 +163,6 @@ async function toggleTunMode() {
   }
 }
 
-async function resetLifetime() {
-  actionError.value = "";
-  try {
-    await ResetLifetimeStats();
-    lifetime.value = await GetLifetimeStats();
-  } catch (e: any) {
-    actionError.value = errText(e);
-  }
-}
-
 async function toggleProxyGuard() {
   actionError.value = "";
   try {
@@ -206,6 +198,20 @@ async function runProbe() {
   }
 }
 
+// One line per leg in the strip; the per-leg detail sentences the old card
+// showed move into the strip's tooltip.
+const probeTip = computed(() => {
+  const p = probe.value;
+  if (!p) return "";
+  return p.items
+    .map((it) => {
+      const key = it.detail_key ? probeDetails[it.detail_key] : undefined;
+      const detail = key ? t(key) : it.detail || "";
+      return `${probeName(it)}: ${it.ok ? `${it.ms}ms` : t("probe.fail")}${detail ? ` · ${detail}` : ""}`;
+    })
+    .join("\n");
+});
+
 // The probe report carries no display text: Go reports which row it is (key)
 // and which sentence applies (detail_key), and the wording lives here, in both
 // languages. Raw details (a Go net error, an HTTP status) are shown verbatim
@@ -224,6 +230,17 @@ const probeDetails: Record<string, MsgKey> = {
   unparsed: "probe.detail.unparsed",
 };
 
+// The toggles carry only their label; the full state sentence the old rows
+// showed lives in the tooltip. TUN is the one exception: pending/retry are
+// states the user must act on (a UAC prompt, a failed bring-up), so they stay
+// visible text next to the switch.
+const tunTitle = computed(() => {
+  if (status.value.tun) return t("chip.tunActive");
+  if (status.value.tun_error) return t("chip.tunRetry");
+  if (tunMode.value) return t("chip.tunPending");
+  return t("chip.tunIdle");
+});
+
 // "United States · Los Angeles" / "美国 · 洛杉矶". The country is localised
 // from the code the probe returned; the city is the provider's own spelling
 // and stays untranslated, like the address next to it.
@@ -236,26 +253,6 @@ const exitPlace = computed(() => {
   return country || city;
 });
 
-// How much of the current speed is domestic, in percent. The bar is a split
-// of one direction, so both halves are the same hue and the foreign part is
-// just dimmer -- purple here never means "download", which is what the colour
-// means everywhere else on this page.
-function share(direct?: number | null, proxy?: number | null): number {
-  const d = direct ?? 0;
-  const p = proxy ?? 0;
-  if (d + p <= 0) return 0;
-  return Math.round((d / (d + p)) * 100);
-}
-
-const upShare = computed(() =>
-  share(overview.value?.rate?.direct_upload_bps, overview.value?.rate?.proxy_upload_bps),
-);
-const downShare = computed(() =>
-  share(overview.value?.rate?.direct_download_bps, overview.value?.rate?.proxy_download_bps),
-);
-const connShare = computed(() =>
-  share(overview.value?.active_direct, overview.value?.active_proxy),
-);
 // UDP associations carry no single decision (each datagram is routed on its
 // own), so they show up in the total but in neither half. Naming the
 // remainder keeps "104 connections" from looking like broken arithmetic
@@ -266,13 +263,6 @@ const connOther = computed(() => {
   return Math.max(0, total - split);
 });
 
-// True when a domestic/foreign pair carries any value at all. Shared by the
-// speed cards and the connection card: an empty pair must render the plain
-// track, never a full-width bar that reads as "everything is foreign".
-function hasSplit(direct?: number | null, proxy?: number | null): boolean {
-  return (direct ?? 0) + (proxy ?? 0) > 0;
-}
-
 function probeName(it: guiapp.ProbeItem): string {
   const key = probeNames[it.key];
   return key ? t(key) : it.key;
@@ -281,11 +271,6 @@ function probeName(it: guiapp.ProbeItem): string {
 function probeDetail(it: guiapp.ProbeItem): string {
   const key = it.detail_key ? probeDetails[it.detail_key] : undefined;
   return key ? t(key) : it.detail || "";
-}
-
-function lifetimeTotal(c?: stats.Counters | null): number {
-  if (!c) return 0;
-  return (c.upload_bytes ?? 0) + (c.download_bytes ?? 0);
 }
 
 // Set once the first snapshot has landed, so the activation that coincides
@@ -326,6 +311,13 @@ onMounted(async () => {
       series.value = [];
     }
   });
+  // The backend runs the self-check on its own clock (per minute, plus once
+  // after every engine start) and pushes the report; the strip just renders
+  // whatever lands, hidden or not.
+  offProbe = EventsOn("probe:report", (r: guiapp.ProbeReport) => {
+    probe.value = new guiapp.ProbeReport(r);
+    probing.value = false;
+  });
   document.addEventListener("visibilitychange", onVisibility);
   await bootstrap();
   booted = true;
@@ -346,6 +338,8 @@ onUnmounted(() => {
   document.removeEventListener("visibilitychange", onVisibility);
   offStatus?.();
   offStatus = undefined;
+  offProbe?.();
+  offProbe = undefined;
 });
 
 // Traffic chart. Four polylines normalised against one shared ceiling, drawn
@@ -489,6 +483,27 @@ const chart = computed(() => {
       >
         {{ busy ? t("engine.working") : status.running ? t("engine.stop") : t("engine.start") }}
       </button>
+
+      <div class="probe-strip" v-if="status.running">
+        <span class="ps-label" :title="t('probe.hint')">{{ t("probe.title") }}</span>
+        <span class="ps-state" v-if="probing">{{ t("probe.running") }}</span>
+        <template v-else-if="probe">
+          <span class="ps-time">{{ fmtHM(probe.at) }}</span>
+          <span class="ps-item" v-for="it in probe.items" :key="it.key" :title="probeTip">
+            <i class="dot" :class="it.ok ? 'on' : 'err'"></i>
+            <span>{{ probeName(it) }}</span>
+            <span class="ps-ms" v-if="it.ok">{{ it.ms }}ms</span>
+          </span>
+          <span class="ps-exit" v-if="probe.exit_ip" :title="probeTip">
+            {{ probe.exit_ip }}
+            <template v-if="exitPlace"> · {{ exitPlace }}</template>
+          </span>
+        </template>
+        <span class="ps-state" v-else>{{ t("probe.idle") }}</span>
+        <button class="btn small ps-run" :disabled="probing" @click="runProbe">
+          {{ probing ? t("probe.running") : t("probe.retest") }}
+        </button>
+      </div>
     </div>
 
     <div class="mode-row">
@@ -523,61 +538,51 @@ const chart = computed(() => {
 
     <div class="options-row">
       <button
-        class="card option-chip"
+        class="option-toggle"
         :class="{ on: status.system_proxy }"
+        :title="status.system_proxy ? t('chip.on') : t('chip.off')"
         @click="toggleSystemProxy"
       >
-        <span class="dot" :class="status.system_proxy ? 'on' : 'off'"></span>
-        <span class="chip-title">{{ t("chip.systemProxy") }}</span>
-        <span class="chip-state">{{ status.system_proxy ? t("chip.on") : t("chip.off") }}</span>
+        <i class="tk"><i class="knob"></i></i>
+        <span>{{ t("chip.systemProxy") }}</span>
       </button>
       <button
-        class="card option-chip"
+        class="option-toggle"
         :class="{ on: autoStart }"
+        :title="autoStart ? t('chip.connectOnStart') : t('chip.connectManual')"
         @click="toggleAutoStart"
       >
-        <span class="dot" :class="autoStart ? 'on' : 'off'"></span>
-        <span class="chip-title">{{ t("chip.autoConnect") }}</span>
-        <span class="chip-state">{{ autoStart ? t("chip.connectOnStart") : t("chip.connectManual") }}</span>
+        <i class="tk"><i class="knob"></i></i>
+        <span>{{ t("chip.autoConnect") }}</span>
       </button>
       <button
-        class="card option-chip"
+        class="option-toggle"
         :class="{ on: launchAtLogin }"
+        :title="launchAtLogin ? t('chip.loginAuto') : t('chip.disabled')"
         @click="toggleLaunchAtLogin"
       >
-        <span class="dot" :class="launchAtLogin ? 'on' : 'off'"></span>
-        <span class="chip-title">{{ t("chip.launchAtLogin") }}</span>
-        <span class="chip-state">{{
-          launchAtLogin ? t("chip.loginAuto") : t("chip.disabled")
-        }}</span>
+        <i class="tk"><i class="knob"></i></i>
+        <span>{{ t("chip.launchAtLogin") }}</span>
       </button>
       <button
-        class="card option-chip"
-        :class="{ on: status.tun }"
+        class="option-toggle"
+        :class="{ on: status.tun, err: !!status.tun_error }"
+        :title="tunTitle"
         @click="toggleTunMode"
       >
-        <span class="dot" :class="status.tun ? 'on' : 'off'"></span>
-        <span class="chip-title">{{ t("chip.tun") }}</span>
-        <span class="chip-state">{{
-          status.tun
-            ? t("chip.tunActive")
-            : status.tun_error
-              ? t("chip.tunRetry")
-              : tunMode
-                ? t("chip.tunPending")
-                : t("chip.tunIdle")
-        }}</span>
+        <i class="tk"><i class="knob"></i></i>
+        <span>{{ t("chip.tun") }}</span>
+        <span v-if="status.tun_error" class="tg-state">{{ t("chip.tunRetry") }}</span>
+        <span v-else-if="!status.tun && tunMode" class="tg-state">{{ t("chip.tunPending") }}</span>
       </button>
       <button
-        class="card option-chip"
+        class="option-toggle"
         :class="{ on: proxyGuard }"
+        :title="proxyGuard ? t('chip.guardOn') : t('chip.disabled')"
         @click="toggleProxyGuard"
       >
-        <span class="dot" :class="proxyGuard ? 'on' : 'off'"></span>
-        <span class="chip-title">{{ t("chip.guard") }}</span>
-        <span class="chip-state">{{
-          proxyGuard ? t("chip.guardOn") : t("chip.disabled")
-        }}</span>
+        <i class="tk"><i class="knob"></i></i>
+        <span>{{ t("chip.guard") }}</span>
       </button>
     </div>
 
@@ -587,32 +592,18 @@ const chart = computed(() => {
       <div class="card stat">
         <div class="stat-label">{{ t("stat.conns") }}</div>
         <div class="stat-value">{{ overview?.active_conns ?? 0 }}</div>
-        <div
-          class="split-bar conns"
-          :class="{ idle: !hasSplit(overview?.active_direct, overview?.active_proxy) }"
-        >
-          <i class="seg direct" :style="{ width: connShare + '%' }"></i>
-          <i class="seg proxy"></i>
-        </div>
         <div class="split-line">
-          <span>{{ t("lifetime.direct") }} {{ overview?.active_direct ?? 0 }}</span>
-          <span>{{ t("lifetime.proxy") }} {{ overview?.active_proxy ?? 0 }}</span>
-          <span v-if="connOther > 0">{{ t("stat.connsUdp") }} {{ connOther }}</span>
+          <span class="lg"><i class="sw dim"></i>{{ t("lifetime.direct") }} {{ overview?.active_direct ?? 0 }}</span>
+          <span class="lg"><i class="sw dim intl"></i>{{ t("lifetime.proxy") }} {{ overview?.active_proxy ?? 0 }}</span>
+          <span v-if="connOther > 0" class="lg">{{ t("stat.connsUdp") }} {{ connOther }}</span>
         </div>
       </div>
       <div class="card stat">
         <div class="stat-label">{{ t("stat.upRate") }}</div>
         <div class="stat-value up">{{ fmtBps(overview?.rate?.upload_bps) }}</div>
-        <div
-          class="split-bar up"
-          :class="{ idle: !hasSplit(overview?.rate?.direct_upload_bps, overview?.rate?.proxy_upload_bps) }"
-        >
-          <i class="seg direct" :style="{ width: upShare + '%' }"></i>
-          <i class="seg proxy"></i>
-        </div>
         <div class="split-line">
-          <span>{{ t("lifetime.direct") }} {{ fmtBps(overview?.rate?.direct_upload_bps) }}</span>
-          <span>{{ t("lifetime.proxy") }} {{ fmtBps(overview?.rate?.proxy_upload_bps) }}</span>
+          <span class="lg"><i class="sw up"></i>{{ t("lifetime.direct") }} {{ fmtBps(overview?.rate?.direct_upload_bps) }}</span>
+          <span class="lg"><i class="sw up intl"></i>{{ t("lifetime.proxy") }} {{ fmtBps(overview?.rate?.proxy_upload_bps) }}</span>
         </div>
       </div>
       <div class="card stat">
@@ -620,16 +611,9 @@ const chart = computed(() => {
         <div class="stat-value down">
           {{ fmtBps(overview?.rate?.download_bps) }}
         </div>
-        <div
-          class="split-bar down"
-          :class="{ idle: !hasSplit(overview?.rate?.direct_download_bps, overview?.rate?.proxy_download_bps) }"
-        >
-          <i class="seg direct" :style="{ width: downShare + '%' }"></i>
-          <i class="seg proxy"></i>
-        </div>
         <div class="split-line">
-          <span>{{ t("lifetime.direct") }} {{ fmtBps(overview?.rate?.direct_download_bps) }}</span>
-          <span>{{ t("lifetime.proxy") }} {{ fmtBps(overview?.rate?.proxy_download_bps) }}</span>
+          <span class="lg"><i class="sw down"></i>{{ t("lifetime.direct") }} {{ fmtBps(overview?.rate?.direct_download_bps) }}</span>
+          <span class="lg"><i class="sw down intl"></i>{{ t("lifetime.proxy") }} {{ fmtBps(overview?.rate?.proxy_download_bps) }}</span>
         </div>
       </div>
       <div class="card stat">
@@ -646,65 +630,6 @@ const chart = computed(() => {
         <div class="stat-label">{{ t("stat.uptime") }}</div>
         <div class="stat-value small">
           {{ fmtUptime(overview?.uptime_seconds) }}
-        </div>
-      </div>
-    </div>
-
-    <div class="card chart-card">
-      <div class="chart-head">
-        <span>{{ t("probe.title") }}</span>
-        <button class="btn small" :disabled="probing" @click="runProbe">
-          {{ probing ? t("probe.running") : t("probe.run") }}
-        </button>
-      </div>
-      <div v-if="probe" class="probe-list">
-        <div v-for="it in probe.items" :key="it.key" class="probe-row">
-          <span class="dot" :class="it.ok ? 'on' : 'off'"></span>
-          <span class="probe-name">{{ probeName(it) }}</span>
-          <span class="probe-ms" :class="{ dim: !it.ok }">
-            {{ it.ok ? `${it.ms}ms` : t("probe.fail") }}
-          </span>
-          <span class="probe-detail">{{ probeDetail(it) }}</span>
-        </div>
-        <div class="probe-exit" v-if="probe.exit_ip">
-          {{ t("probe.exitIPValue", { ip: probe.exit_ip }) }}
-          <span v-if="exitPlace" class="probe-exit-place"> · {{ exitPlace }}</span>
-        </div>
-      </div>
-      <p v-else class="hint">
-        {{ t("probe.hint") }}
-      </p>
-    </div>
-
-    <div class="card chart-card">
-      <div class="chart-head">
-        <span>{{ t("lifetime.title") }}</span>
-        <button class="btn small" @click="resetLifetime">{{ t("lifetime.reset") }}</button>
-      </div>
-      <div class="lifetime-grid">
-        <div class="lt-item">
-          <div class="lt-label lt-cn">{{ t("lifetime.direct") }}</div>
-          <div class="lt-value">{{ fmtBytes(lifetimeTotal(lifetime?.direct)) }}</div>
-          <div class="lt-sub">
-            ↑ {{ fmtBytes(lifetime?.direct?.upload_bytes) }} · ↓
-            {{ fmtBytes(lifetime?.direct?.download_bytes) }}
-          </div>
-        </div>
-        <div class="lt-item">
-          <div class="lt-label lt-foreign">{{ t("lifetime.proxy") }}</div>
-          <div class="lt-value">{{ fmtBytes(lifetimeTotal(lifetime?.proxy)) }}</div>
-          <div class="lt-sub">
-            ↑ {{ fmtBytes(lifetime?.proxy?.upload_bytes) }} · ↓
-            {{ fmtBytes(lifetime?.proxy?.download_bytes) }}
-          </div>
-        </div>
-        <div class="lt-item">
-          <div class="lt-label">{{ t("lifetime.total") }}</div>
-          <div class="lt-value">{{ fmtBytes(lifetimeTotal(lifetime?.totals)) }}</div>
-          <div class="lt-sub">
-            ↑ {{ fmtBytes(lifetime?.totals?.upload_bytes) }} · ↓
-            {{ fmtBytes(lifetime?.totals?.download_bytes) }}
-          </div>
         </div>
       </div>
     </div>

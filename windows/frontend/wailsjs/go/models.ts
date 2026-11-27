@@ -130,6 +130,8 @@ export namespace stats {
 	    conns: number;
 	    direct_conns: number;
 	    proxy_conns: number;
+	    direct_bytes: number;
+	    proxy_bytes: number;
 	    errors: number;
 	    last_seen: number;
 	
@@ -145,6 +147,8 @@ export namespace stats {
 	        this.conns = source["conns"];
 	        this.direct_conns = source["direct_conns"];
 	        this.proxy_conns = source["proxy_conns"];
+	        this.direct_bytes = source["direct_bytes"];
+	        this.proxy_bytes = source["proxy_bytes"];
 	        this.errors = source["errors"];
 	        this.last_seen = source["last_seen"];
 	    }

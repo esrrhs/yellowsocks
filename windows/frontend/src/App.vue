@@ -2,7 +2,9 @@
 import { computed, onMounted, onUnmounted, ref, watch, type Component } from "vue";
 import Home from "./views/Home.vue";
 import Connections from "./views/Connections.vue";
+import Nodes from "./views/Nodes.vue";
 import Logs from "./views/Logs.vue";
+import Stats from "./views/Stats.vue";
 import Settings from "./views/Settings.vue";
 import About from "./views/About.vue";
 import { GetLanguage, SetLanguage } from "../wailsjs/go/guiapp/App";
@@ -25,6 +27,11 @@ const pages: { id: string; key: MsgKey; paths: string[] }[] = [
     paths: ["M2.5 6h11", "M10.5 3.5 13 6l-2.5 2.5", "M13.5 10h-11", "M5.5 7.5 3 10l2.5 2.5"],
   },
   {
+    id: "nodes",
+    key: "nav.nodes",
+    paths: ["M2.5 2.5h4.5v4.5H2.5z", "M9 9h4.5v4.5H9z", "M5.5 5l3.5 4"],
+  },
+  {
     id: "logs",
     key: "nav.logs",
     paths: ["M2.5 4h11", "M2.5 8h11", "M2.5 12h6.5"],
@@ -33,6 +40,11 @@ const pages: { id: string; key: MsgKey; paths: string[] }[] = [
     id: "settings",
     key: "nav.settings",
     paths: ["M3.5 2.5v11", "M8 2.5v11", "M12.5 2.5v11", "M1.5 6h4", "M6 10h4", "M11 4.5h4"],
+  },
+  {
+    id: "stats",
+    key: "nav.stats",
+    paths: ["M3 13.5V9", "M8 13.5V3.5", "M13 13.5V6.5"],
   },
   {
     id: "about",
@@ -51,8 +63,10 @@ const current = ref("home");
 const views: Record<string, Component> = {
   home: Home,
   connections: Connections,
+  nodes: Nodes,
   logs: Logs,
   settings: Settings,
+  stats: Stats,
   about: About,
 };
 const view = computed<Component>(() => views[current.value] ?? About);

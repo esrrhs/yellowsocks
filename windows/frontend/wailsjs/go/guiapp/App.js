@@ -26,8 +26,16 @@ export function GetLanguage() {
   return window['go']['guiapp']['App']['GetLanguage']();
 }
 
+export function GetLastProbe() {
+  return window['go']['guiapp']['App']['GetLastProbe']();
+}
+
 export function GetLaunchAtLogin() {
   return window['go']['guiapp']['App']['GetLaunchAtLogin']();
+}
+
+export function GetLifetimeDomains(arg1) {
+  return window['go']['guiapp']['App']['GetLifetimeDomains'](arg1);
 }
 
 export function GetLifetimeStats() {

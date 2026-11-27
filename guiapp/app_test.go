@@ -268,3 +268,37 @@ func TestConnectivityAndLogsWhenEngineStopped(t *testing.T) {
 	}
 	_ = a.GetSeries(60)
 }
+
+// Regression: the user toggles the system proxy on, the app restarts, and
+// TUN comes up at boot. Bringing TUN up withdraws the WinINET registration
+// (the adapter already captures every packet), but it must not rewrite the
+// persisted intent — it used to call SetSystemProxy(false), so every restart
+// with TUN enabled flipped a saved "on" back to "off" on disk.
+func TestSystemProxyIntentSurvivesTunSuppression(t *testing.T) {
+	useTempConfigDir(t)
+	snap := snapshotInternetSettings(t)
+	t.Cleanup(func() { restoreInternetSettings(t, snap) })
+
+	a := NewApp()
+	if err := a.SetSystemProxy(true); err != nil {
+		t.Fatalf("SetSystemProxy: %v", err)
+	}
+	if st, err := loadSettings(); err != nil || !st.SystemProxy {
+		t.Fatalf("toggle did not persist the intent: %+v (%v)", st, err)
+	}
+
+	// Boot with TUN enabled: the registration is live when applyTun
+	// succeeds, and applyTun withdraws it. The intent must survive.
+	a.mu.Lock()
+	a.sysProxyActive = true
+	a.mu.Unlock()
+	if err := a.applySystemProxyLocked(false); err != nil {
+		t.Fatalf("suppress system proxy for TUN: %v", err)
+	}
+	if st, err := loadSettings(); err != nil || !st.SystemProxy {
+		t.Fatalf("TUN suppression erased the system-proxy intent: %+v (%v)", st, err)
+	}
+	if !a.GetSystemProxy() {
+		t.Fatal("GetSystemProxy lost the intent")
+	}
+}

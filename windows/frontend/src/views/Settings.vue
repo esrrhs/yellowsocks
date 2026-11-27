@@ -22,7 +22,7 @@ import type { MsgKey } from "../i18n";
 // overwritten by a save from this one.
 
 type Form = Record<string, any>;
-type GroupId = "upstream" | "listen" | "dns" | "routing" | "auth" | "api";
+type GroupId = "listen" | "dns" | "routing" | "auth" | "api";
 
 interface Group {
   id: GroupId;
@@ -31,15 +31,6 @@ interface Group {
 }
 
 const groups: Group[] = [
-  {
-    id: "upstream",
-    titleKey: "settings.sectionUpstream",
-    keys: [
-      "spp_proto", "spp_server", "spp_username", "spp_password", "spp_key",
-      "spp_encrypt", "spp_compress", "spp_rdnsdomain", "spp_rdnsupstream",
-      "spp_rdnspsk", "spp_rdnsquerytype",
-    ],
-  },
   {
     id: "listen",
     titleKey: "settings.sectionListen",
@@ -67,28 +58,16 @@ const groups: Group[] = [
 ];
 
 const mode = ref<"form" | "yaml">("form");
-const group = ref<GroupId>("upstream");
+const group = ref<GroupId>("listen");
 const raw = ref(""); // authoritative YAML text (source of truth)
 const doc = ref<Record<string, unknown>>({});
 const form = ref<Form>({});
 const message = ref("");
 const error = ref("");
 
-const sppProtos = [
-  "tcp", "udp", "rudp", "ricmp", "kcp", "quic", "rhttp", "rdns",
-  "pingtunnel", "socks5",
-];
 const loglevels = ["debug", "info", "warn", "error"];
 
 const activeGroup = computed(() => groups.find((g) => g.id === group.value) ?? groups[0]);
-
-const proto = computed({
-  get: () => (form.value.spp_proto as string) || "tcp",
-  set: (v: string) => (form.value.spp_proto = v),
-});
-const isSocks5 = computed(() => proto.value === "socks5");
-const isSPP = computed(() => !isSocks5.value && proto.value !== "pingtunnel");
-const isRdns = computed(() => proto.value === "rdns");
 
 // "Allow LAN" is not a separate config key: it is the listen address of the
 // three inbound services. Exposing it as one switch keeps the user from having
@@ -134,17 +113,6 @@ async function load() {
 function formFromDoc(d: Record<string, unknown>): Form {
   const lines = (v: unknown) => (Array.isArray(v) ? v.join("\n") : (v as string) ?? "");
   return {
-    spp_proto: (d.spp_proto as string) || "tcp",
-    spp_server: (d.spp_server as string) ?? "",
-    spp_key: (d.spp_key as string) ?? "",
-    spp_username: (d.spp_username as string) ?? "",
-    spp_password: (d.spp_password as string) ?? "",
-    spp_encrypt: (d.spp_encrypt as string) ?? "",
-    spp_compress: d.spp_compress,
-    spp_rdnsdomain: (d.spp_rdnsdomain as string) ?? "",
-    spp_rdnsupstream: (d.spp_rdnsupstream as string) ?? "",
-    spp_rdnspsk: (d.spp_rdnspsk as string) ?? "",
-    spp_rdnsquerytype: (d.spp_rdnsquerytype as string) ?? "",
     socks5_listen: (d.socks5_listen as string) ?? "",
     http_listen: (d.http_listen as string) ?? "",
     dns_listen: (d.dns_listen as string) ?? "",
@@ -203,11 +171,6 @@ function setKey(out: Record<string, unknown>, key: string, v: unknown) {
 }
 
 const writers: Record<string, (out: Record<string, unknown>, f: Form) => void> = {
-  spp_compress: (out, f) => {
-    const v = f.spp_compress;
-    if (v === undefined || v === null || v === "") delete out.spp_compress;
-    else out.spp_compress = Number(v);
-  },
   stats_history_hours: (out, f) => {
     const v = f.stats_history_hours;
     if (v === undefined || v === null || v === "") delete out.stats_history_hours;
@@ -325,54 +288,7 @@ onMounted(load);
         </button>
       </div>
 
-      <div v-if="group === 'upstream'" class="card section">
-        <h3>{{ t("settings.sectionUpstream") }}</h3>
-        <div class="form-grid">
-          <label>{{ t("settings.sppProto") }} <code>spp_proto</code></label>
-          <select v-model="form.spp_proto">
-            <option v-for="p in sppProtos" :key="p" :value="p">{{ p }}</option>
-          </select>
-
-          <label>{{ t("settings.sppServer") }} <code>spp_server</code></label>
-          <input v-model="form.spp_server" :placeholder="isSocks5 ? '192.168.0.105:1080' : '1.2.3.4:8888'" />
-
-          <template v-if="isSocks5">
-            <label>{{ t("settings.sppUsername") }} <code>spp_username</code></label>
-            <input v-model="form.spp_username" :placeholder="t('settings.ph.authOptional')" />
-            <label>{{ t("settings.sppPassword") }} <code>spp_password</code></label>
-            <input v-model="form.spp_password" type="password" :placeholder="t('settings.ph.authOptional')" />
-          </template>
-
-          <template v-if="!isSocks5">
-            <label>{{ t("settings.sppKey") }} <code>spp_key</code></label>
-            <input v-model="form.spp_key" />
-          </template>
-
-          <template v-if="isSPP">
-            <label>{{ t("settings.sppEncrypt") }} <code>spp_encrypt</code></label>
-            <input v-model="form.spp_encrypt" placeholder="default" />
-            <label>{{ t("settings.sppCompress") }} <code>spp_compress</code></label>
-            <input v-model="form.spp_compress" type="number" placeholder="128" />
-          </template>
-
-          <template v-if="isRdns">
-            <label>{{ t("settings.rdnsDomain") }} <code>spp_rdnsdomain</code></label>
-            <input v-model="form.spp_rdnsdomain" placeholder="tunnel.example.com" />
-            <label>{{ t("settings.rdnsUpstream") }} <code>spp_rdnsupstream</code></label>
-            <input v-model="form.spp_rdnsupstream" />
-            <label>{{ t("settings.rdnsPsk") }} <code>spp_rdnspsk</code></label>
-            <input v-model="form.spp_rdnspsk" />
-            <label>{{ t("settings.rdnsQueryType") }} <code>spp_rdnsquerytype</code></label>
-            <select v-model="form.spp_rdnsquerytype">
-              <option value="">{{ t("settings.queryDefault") }}</option>
-              <option value="TXT">TXT</option>
-              <option value="NULL">NULL</option>
-            </select>
-          </template>
-        </div>
-      </div>
-
-      <div v-else-if="group === 'listen'" class="card section">
+      <div v-if="group === 'listen'" class="card section">
         <h3>{{ t("settings.sectionListen") }}</h3>
         <div class="form-grid">
           <label>{{ t("settings.allowLan") }}</label>

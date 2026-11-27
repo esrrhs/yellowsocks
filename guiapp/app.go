@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/esrrhs/gohome/loggo"
@@ -135,6 +136,20 @@ type App struct {
 	lifetimeAll    stats.Counters
 	lifetimeDirect stats.Counters
 	lifetimeProxy  stats.Counters
+	// lifetimeDomains mirrors the engine's per-destination table for the
+	// statistics page while the engine is stopped: seeded from the snapshot
+	// at boot, refreshed from the live collector on every poll, served from
+	// the cache when the engine is gone.
+	lifetimeDomains []stats.DomainStat
+
+	// probeKick wakes the self-check loop the moment the engine comes up, so
+	// the first report lands without waiting a full minute. Buffered, so a
+	// kick never blocks StartEngine; probing single-flights the probe set
+	// itself, and lastProbe caches the newest report for the window and the
+	// tray tooltip.
+	probeKick chan struct{}
+	probing   atomic.Bool
+	lastProbe atomic.Pointer[ProbeReport]
 
 	// Closed once Shutdown has torn TUN and the engine down. The TUN handover
 	// waits on it before quitting, so the elevated successor never starts
@@ -148,7 +163,11 @@ func NewApp() *App {
 	// Rule-based routing is the default, and it has to be set here rather than
 	// left empty: the tray and the window read this before Startup has loaded
 	// the settings file, and an empty mode would render as "no mode selected".
-	return &App{proxyMode: router.ModeRule.String(), shutdownDone: make(chan struct{})}
+	return &App{
+		proxyMode:    router.ModeRule.String(),
+		shutdownDone: make(chan struct{}),
+		probeKick:    make(chan struct{}, 1),
+	}
 }
 
 // startup is called when the app starts. The context is saved so we can call
@@ -190,6 +209,9 @@ func (a *App) Startup(ctx context.Context) {
 	// Drop restart.request into the data directory to swap in a fresh build.
 	go a.restartWatcher()
 	go a.proxyGuardLoop()
+	// The automatic self-check: once per minute while the engine runs, and
+	// once shortly after every engine start.
+	go a.probeLoop()
 	// TUN mode needs the engine running; the boot flag alone is not enough.
 	wantEngine := st.AutoStartCore || st.TunMode
 	if wantEngine {
@@ -294,6 +316,15 @@ func (a *App) StartEngine() error {
 	if a.tunWanted {
 		go func() { _ = a.applyTun() }()
 	}
+
+	// The engine just came up: ask the self-check loop for an immediate
+	// report once the listeners have settled — for every start, not only
+	// the TUN path. Non-blocking: a kick still pending from a previous
+	// start needs no queueing behind.
+	select {
+	case a.probeKick <- struct{}{}:
+	default:
+	}
 	return nil
 }
 
@@ -332,19 +363,32 @@ func (a *App) GetSystemProxy() bool {
 	return a.sysProxyWanted
 }
 
-// SetSystemProxy toggles the system proxy. The intent is persisted; it takes
-// effect immediately when the engine is running, otherwise on next start.
+// SetSystemProxy toggles the system proxy. The intent is persisted and
+// survives restarts; the WinINET registration itself takes effect
+// immediately when the engine runs. While the TUN adapter is up the
+// registration is withheld (TUN already captures every packet) — the intent
+// stays saved and takes over the moment TUN goes down.
 func (a *App) SetSystemProxy(on bool) error {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	a.sysProxyWanted = on
-	if err := a.persistSettingsLocked(); err != nil {
-		loggo.Warn("[GUI] persist settings: %s", err.Error())
+	persistErr := a.persistSettingsLocked()
+	tunUp, running := a.tunActive, a.running
+	if !running || (on && tunUp) {
+		// Nothing to register right now (engine down, or TUN owns the
+		// traffic): the persisted intent is the change the user asked for.
+		a.emitStatusLocked(nil)
+		a.mu.Unlock()
+		if persistErr != nil {
+			loggo.Warn("[GUI] persist settings: %s", persistErr.Error())
+		}
+		return nil
 	}
-	if a.running {
-		return a.applySystemProxyLocked(on)
+	err := a.applySystemProxyLocked(on)
+	a.mu.Unlock()
+	if persistErr != nil {
+		loggo.Warn("[GUI] persist settings: %s", persistErr.Error())
 	}
-	return nil
+	return err
 }
 
 // GetTunMode reports the TUN intent (the adapter may still be coming up).
@@ -551,11 +595,16 @@ func (a *App) applyTun() error {
 	a.mu.Lock()
 	a.tunActive = true
 	a.tunErr = ""
-	// The TUN captures everything; the WinINET proxy would only double-apply.
-	sysProxyOn := a.sysProxyWanted
+	// The TUN captures every packet system-wide, so the WinINET registration
+	// would only double-apply: withdraw it while the adapter is up. The
+	// user's intent (sysProxyWanted) must NOT be rewritten here — SetTunMode
+	// re-applies the system proxy from that intent the moment TUN goes down,
+	// and rewriting it turned "toggled on" into "silently off" across every
+	// restart that brought TUN up.
+	sysProxyRegistered := a.sysProxyActive
 	a.mu.Unlock()
-	if sysProxyOn {
-		_ = a.SetSystemProxy(false)
+	if sysProxyRegistered {
+		_ = a.applySystemProxyLocked(false)
 	}
 	a.emitStatus()
 	loggo.Info("[GUI] TUN mode enabled")
@@ -819,6 +868,7 @@ func (a *App) loadLifetimeStats() {
 	all, direct, proxy := stats.LifetimeTotals(statsPath())
 	a.mu.Lock()
 	a.lifetimeAll, a.lifetimeDirect, a.lifetimeProxy = all, direct, proxy
+	a.lifetimeDomains = stats.DomainTable(statsPath())
 	a.mu.Unlock()
 }
 
@@ -835,14 +885,39 @@ func (a *App) GetLifetimeStats() stats.LifetimeStats {
 	}
 }
 
-// ResetLifetimeStats clears the permanent traffic record. While the engine is
-// stopped the stats file is rewritten directly, so the cleared totals are
-// not resurrected by the next launch.
+// GetLifetimeDomains returns the permanent per-destination record: one entry
+// per domain (or bare address) with its domestic/foreign byte split, going
+// live from the collector while the engine runs and from the cached snapshot
+// copy while it is stopped. The table survives restarts; it is cleared only
+// by ResetLifetimeStats.
+func (a *App) GetLifetimeDomains(limit int) []stats.DomainStat {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.running && a.engine != nil {
+		out := a.engine.Stats().Domains(limit, "bytes")
+		a.lifetimeDomains = out
+		return out
+	}
+	out := a.lifetimeDomains
+	if limit > 0 && len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+// ResetLifetimeStats clears the permanent traffic record. The per-destination
+// table is cleared with it: the statistics page shows both as one permanent
+// record, and leaving domains behind after a reset would read as lost bytes.
+// While the engine is stopped the stats file is rewritten directly, so the
+// cleared totals are not resurrected by the next launch.
 func (a *App) ResetLifetimeStats() error {
 	a.mu.Lock()
 	if a.running && a.engine != nil {
-		a.engine.Stats().LifetimeReset()
+		st := a.engine.Stats()
+		st.LifetimeReset()
+		st.ResetDomains()
 		a.lifetimeAll, a.lifetimeDirect, a.lifetimeProxy = stats.Counters{}, stats.Counters{}, stats.Counters{}
+		a.lifetimeDomains = nil
 		a.mu.Unlock()
 		return nil
 	}
@@ -850,10 +925,12 @@ func (a *App) ResetLifetimeStats() error {
 
 	c := stats.New(stats.Config{File: statsPath(), SaveInterval: 0})
 	c.LifetimeReset()
+	c.ResetDomains()
 	err := c.Save()
 	c.Close()
 	a.mu.Lock()
 	a.lifetimeAll, a.lifetimeDirect, a.lifetimeProxy = stats.Counters{}, stats.Counters{}, stats.Counters{}
+	a.lifetimeDomains = nil
 	a.mu.Unlock()
 	return err
 }
