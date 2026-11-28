@@ -333,6 +333,7 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 
 	sess := s.beginSession(stats.ProtoSOCKS5, addrString(clientConn.RemoteAddr()), realHost, targetPort, decision)
 	defer sess.End(nil)
+	sess.SetAttributionTarget(targetHost)
 	attemptProcessAttribution(s.cfg.ProcessResolver, sess, clientConn.RemoteAddr(), targetHost, targetPort)
 
 	if decision == router.Direct {

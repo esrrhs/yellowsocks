@@ -70,8 +70,8 @@ type HTTPConfig struct {
 	// IdleTimeout closes a proxied connection that transfers no data for this
 	// long. Zero defaults to defaultIdleTimeout.
 	IdleTimeout time.Duration
-	// ProcessResolver, when set, attributes each CONNECT session to the OS
-	// process that opened it. Nil disables the lookup.
+	// ProcessResolver, when set, attributes each session to the OS process
+	// that opened it. Nil disables the lookup.
 	ProcessResolver ProcessResolver
 }
 
@@ -436,6 +436,7 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 
 	sess := s.beginSession(stats.ProtoHTTP, addrString(clientConn.RemoteAddr()), realHost, targetPort, decision)
 	defer sess.End(nil)
+	sess.SetAttributionTarget(targetHost)
 	attemptProcessAttribution(s.cfg.ProcessResolver, sess, clientConn.RemoteAddr(), targetHost, targetPort)
 
 	if decision == router.Direct {
@@ -557,6 +558,8 @@ func (s *HTTPServer) handleStandardHTTP(clientConn net.Conn, br *bufio.Reader, m
 
 	sess := s.beginSession(stats.ProtoHTTP, addrString(clientConn.RemoteAddr()), realHost, targetPort, decision)
 	defer sess.End(nil)
+	sess.SetAttributionTarget(targetHost)
+	attemptProcessAttribution(s.cfg.ProcessResolver, sess, clientConn.RemoteAddr(), targetHost, targetPort)
 
 	// Rewrite absolute URI to relative origin-form
 	relPath := rawURI

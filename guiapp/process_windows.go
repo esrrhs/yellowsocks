@@ -19,15 +19,19 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// processResolver attributes relayed connections to the OS process
-// that opened them, using the system connection tables:
+// processResolver attributes relayed connections to the OS process that
+// opened them, using the system connection tables. Every proxy client comes
+// in over loopback, so the owner of the client socket decides the strategy:
 //
-//   - TUN-captured traffic: the client is the tun2socks engine, so the row
-//     is found by its REMOTE address — the application actually dialed the
-//     target the session carries (real or fake address), and that row's PID
-//     is the app.
-//   - Loopback proxy clients (system proxy): the client socket belongs to
-//     the application itself, so the row is found by its LOCAL port.
+//   - Owner is this process: the client is the tun2socks capture engine, and
+//     the app is the owner of a socket to the address the engine dialed (real
+//     or fake) — the REMOTE-address row.
+//   - Owner is another process: the client is the application itself (system
+//     proxy), so that row's owner is the answer — the LOCAL-port row.
+//
+// Both can happen at once: users keep the system proxy on while TUN is up,
+// and the tunnel state alone would attribute those domain-target system-proxy
+// connections to nobody.
 //
 // Results are cached for a couple of seconds: segmented downloaders open
 // dozens of connections to the same edge per second, and each miss costs a
@@ -86,49 +90,78 @@ func parsePort(p string) uint16 {
 
 // FindProcess implements proxy.ProcessResolver.
 func (r *processResolver) FindProcess(srcIP net.IP, srcPort int, dstHost string, dstPort int) (string, string) {
-	// The two clients are indistinguishable at accept time — both are
-	// loopback sockets dialing our listener — so the tunnel state picks the
-	// strategy: with TUN up every client is the capture engine and the row
-	// to find is the application's own socket to the dialed target (remote
-	// address); without it the client is the application itself (local port).
-	var key string
-	byLocal := false
+	// A loopback client is either the application itself (system proxy) or
+	// our own tun2socks engine (TUN capture) — and both are live at once when
+	// the system proxy stays on under TUN. The owner of the client socket
+	// tells them apart, so the tunnel state is only a fallback hint.
+	if r.tcpListenPorts[uint16(srcPort)] {
+		return "", "" // one of our own listeners — nothing to attribute
+	}
+	self := windows.GetCurrentProcessId()
+	if owner, ok := findPIDByLocalPort(uint16(srcPort)); ok {
+		if owner == self {
+			return r.attributeByRemote(dstHost, dstPort)
+		}
+		return r.attributeByLocal(srcPort, owner)
+	}
+	// The client row is already gone (short-lived connection) or the table
+	// read failed. With TUN up the client was most likely the capture
+	// engine, so the dialed address is still worth a try.
 	if r.tunActive != nil && r.tunActive() {
-		host := strings.Trim(dstHost, "[]")
-		if net.ParseIP(host) == nil {
-			return "", ""
-		}
-		key = fmt.Sprintf("R%s:%d", host, dstPort)
-	} else {
-		if r.tcpListenPorts[uint16(srcPort)] {
-			return "", "" // one of our own listeners — nothing to attribute
-		}
-		key = fmt.Sprintf("L%d", srcPort)
-		byLocal = true
+		return r.attributeByRemote(dstHost, dstPort)
 	}
+	return "", ""
+}
 
-	r.mu.Lock()
-	if c, ok := r.cache[key]; ok && time.Since(c.at) < processCacheTTL {
-		r.mu.Unlock()
-		return c.name, c.icon
+// attributeByRemote finds the app by the socket it opened to the target the
+// capture engine dialed. The engine replays the app's own destination, so the
+// target is an address on this path: the initial call passes the literal
+// target and retries pass the same literal target stored on the session.
+func (r *processResolver) attributeByRemote(dstHost string, dstPort int) (string, string) {
+	host := strings.Trim(dstHost, "[]")
+	if net.ParseIP(host) == nil {
+		return "", ""
 	}
-	r.mu.Unlock()
-
+	key := fmt.Sprintf("R%s:%d", host, dstPort)
+	if name, icon, ok := r.cached(key); ok {
+		return name, icon
+	}
 	var pid uint32
 	var ok bool
-	if byLocal {
-		pid, ok = findPIDByLocalPort(uint16(srcPort))
-	} else {
-		ip := net.ParseIP(strings.Trim(dstHost, "[]"))
-		if v4 := ip.To4(); v4 != nil {
-			pid, ok = findPIDByRemoteTCP(v4, uint16(dstPort))
-		}
+	if v4 := net.ParseIP(host).To4(); v4 != nil {
+		pid, ok = findPIDByRemoteTCP(v4, uint16(dstPort))
 	}
+	return r.remember(key, pid, ok)
+}
+
+// attributeByLocal answers from the client socket's owner — the system-proxy
+// path, where the app dialed our listener itself.
+func (r *processResolver) attributeByLocal(srcPort int, pid uint32) (string, string) {
+	key := fmt.Sprintf("L%d", srcPort)
+	if name, icon, ok := r.cached(key); ok {
+		return name, icon
+	}
+	return r.remember(key, pid, true)
+}
+
+func (r *processResolver) cached(key string) (string, string, bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	c, ok := r.cache[key]
+	if !ok || time.Since(c.at) >= processCacheTTL {
+		return "", "", false
+	}
+	return c.name, c.icon, true
+}
+
+// remember turns a lookup outcome into the cached answer; an unknown owner
+// caches an empty answer so a burst of connections to the same target does
+// not repeat the table walk.
+func (r *processResolver) remember(key string, pid uint32, ok bool) (string, string) {
 	if !ok || pid == 0 {
 		r.storeCache(key, cachedProcess{at: time.Now()})
 		return "", ""
 	}
-
 	name, icon := r.processIdentity(pid)
 	r.storeCache(key, cachedProcess{name: name, icon: icon, at: time.Now()})
 	if name != "" {

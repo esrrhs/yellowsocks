@@ -608,7 +608,13 @@ func (a *App) processAttributionLoop() {
 					srcIP = net.ParseIP(h)
 					srcPort, _ = strconv.Atoi(p)
 				}
-				if name, icon := res.FindProcess(srcIP, srcPort, v.Host, v.Port); name != "" {
+				// v.Host may be a domain recovered from a fake address; the
+				// table row is keyed by the literal target the client dialed.
+				target := v.AttrTarget
+				if target == "" {
+					target = v.Host
+				}
+				if name, icon := res.FindProcess(srcIP, srcPort, target, v.Port); name != "" {
 					eng.Stats().SetSessionProcess(v.ID, name, icon)
 				}
 			}

@@ -244,6 +244,9 @@ type SessionView struct {
 	// be determined.
 	ProcessName string `json:"process_name,omitempty"`
 	ProcessIcon string `json:"process_icon,omitempty"`
+	// AttrTarget is the literal dial target for attribution retries; internal
+	// plumbing, never serialized.
+	AttrTarget string `json:"-"`
 	Start       int64  `json:"start"` // unix seconds
 	AgeMs       int64  `json:"age_ms"`
 	Upload      int64  `json:"upload_bytes"`
@@ -470,7 +473,11 @@ type Session struct {
 	// once at accept time by an optional resolver. Icon is a data URL.
 	process atomic.Pointer[string]
 	icon    atomic.Pointer[string]
-	start   time.Time
+	// attrTarget is the literal target the client dialed, before any domain
+	// recovery. Attribution retries reuse it: the displayed host may be a
+	// recovered domain, which the connection table cannot match by address.
+	attrTarget atomic.Pointer[string]
+	start      time.Time
 
 	upload      atomic.Int64
 	download    atomic.Int64
@@ -637,6 +644,25 @@ func (s *Session) ProcessIcon() string {
 	return *p
 }
 
+// SetAttributionTarget records the literal target the client dialed, for
+// process-attribution retries. The displayed host may be a recovered domain;
+// retries need the address (or name) the table row was actually opened to.
+func (s *Session) SetAttributionTarget(target string) {
+	if s == nil || target == "" {
+		return
+	}
+	s.attrTarget.Store(&target)
+}
+
+// attributionTarget returns the literal dial target, or "" when unset.
+func (s *Session) attributionTarget() string {
+	ptr := s.attrTarget.Load()
+	if ptr == nil {
+		return ""
+	}
+	return *ptr
+}
+
 // SetNode sets or updates the SPP upstream node associated with this session.
 func (s *Session) SetNode(name string) {
 	if s == nil || name == "" {
@@ -776,6 +802,7 @@ func (s *Session) view(now time.Time) SessionView {
 		Node:        s.Node(),
 		ProcessName: s.Process(),
 		ProcessIcon: s.ProcessIcon(),
+		AttrTarget:  s.attributionTarget(),
 		Start:       s.start.Unix(),
 		AgeMs:       age.Milliseconds(),
 		Upload:      up,

@@ -17,6 +17,7 @@ import (
 
 	"github.com/esrrhs/gohome/network"
 	"github.com/esrrhs/yellowsocks/core/router"
+	"github.com/esrrhs/yellowsocks/core/stats"
 )
 
 type mockUpstream struct {
@@ -491,6 +492,81 @@ func TestHTTPProxy_ConnectAndStandard(t *testing.T) {
 	}
 	if !bytes.Contains([]byte(connectRespLine), []byte("200 Connection Established")) {
 		t.Errorf("expected 200 Connection Established, got %s", connectRespLine)
+	}
+}
+
+// fakeProcessResolver records lookups and always answers with one name.
+type fakeProcessResolver struct {
+	calls atomic.Int32
+}
+
+func (f *fakeProcessResolver) FindProcess(srcIP net.IP, srcPort int, dstHost string, dstPort int) (string, string) {
+	f.calls.Add(1)
+	return "fake-app.exe", "icon"
+}
+
+// Plain-HTTP proxying (system proxy, no CONNECT) must attribute the session
+// to the client process exactly like CONNECT does; the call used to live only
+// on the CONNECT path, so http:// rows showed no application.
+func TestHTTPStandardRequestGetsProcessAttribution(t *testing.T) {
+	ts := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("ok"))
+	})}
+	httpL, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("http listen failed: %v", err)
+	}
+	defer httpL.Close()
+	go func() { _ = ts.Serve(httpL) }()
+	defer ts.Close()
+
+	r := router.NewRouter()
+	defer r.Close()
+	c := stats.New(stats.Config{})
+	defer c.Close()
+	fake := &fakeProcessResolver{}
+	httpProxy := NewHTTPServer(HTTPConfig{
+		ListenAddr:      "127.0.0.1:0",
+		Router:          r,
+		Stats:           c,
+		ProcessResolver: fake,
+	})
+	if err := httpProxy.Start(); err != nil {
+		t.Fatalf("http proxy start failed: %v", err)
+	}
+	defer httpProxy.Stop()
+
+	conn, err := net.Dial("tcp", httpProxy.Addr().String())
+	if err != nil {
+		t.Fatalf("dial proxy failed: %v", err)
+	}
+	defer conn.Close()
+	req := fmt.Sprintf("GET http://%s/test HTTP/1.1\r\nHost: %s\r\n\r\n", httpL.Addr(), httpL.Addr())
+	if _, err := conn.Write([]byte(req)); err != nil {
+		t.Fatalf("write request failed: %v", err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response failed: %v", err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+
+	if fake.calls.Load() == 0 {
+		t.Fatal("resolver never consulted for a plain-HTTP request")
+	}
+	got, gotTarget := "", ""
+	for _, v := range c.ActiveSessions(stats.ActiveOptions{Limit: 10}) {
+		if v.ProcessName != "" {
+			got, gotTarget = v.ProcessName, v.AttrTarget
+		}
+	}
+	if got != "fake-app.exe" {
+		t.Fatalf("active session process = %q, want fake-app.exe", got)
+	}
+	// Retries must reuse the literal dial target, not the displayed host.
+	if gotTarget != "127.0.0.1" {
+		t.Fatalf("attribution target = %q, want 127.0.0.1", gotTarget)
 	}
 }
 
