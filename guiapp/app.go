@@ -488,9 +488,11 @@ func (a *App) SetProxyGuard(on bool) error {
 	}
 	a.emitStatus()
 	if on {
-		// Repair immediately instead of waiting for the next tick: turning the
-		// switch on means "make this true now".
-		go a.proxyGuardCheck()
+		// Repair before returning instead of waiting for the next tick: turning
+		// the switch on means "make this true now". Synchronous on purpose —
+		// a pending background repair would race with anything that changes
+		// the registration right after this call.
+		a.proxyGuardCheck()
 	}
 	return err
 }

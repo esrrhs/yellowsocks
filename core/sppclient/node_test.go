@@ -2,6 +2,8 @@ package sppclient
 
 import (
 	"encoding/json"
+	"net"
+	"strconv"
 	"testing"
 )
 
@@ -80,13 +82,25 @@ func TestProtoRobustnessOrdering(t *testing.T) {
 
 // A socks5 node dials its own server with its own credentials and needs no
 // local client; the pick must hand the real dial address and auth to the
-// proxy caller even while the node is unreachable (TEST-NET).
+// proxy caller. The node has to be reachable: the manager starts no node
+// otherwise (TestNewManagerAllNodesUnreachable pins the empty-pick contract).
 func TestManagerPicksSocks5NodeWithCreds(t *testing.T) {
+	ln := listenTCP(t)
+	acceptAndClose(t, ln)
+	host, portStr, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		t.Fatalf("split listener addr: %v", err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		t.Fatalf("parse listener port: %v", err)
+	}
+
 	m, err := NewManager([]*Node{{
 		Name:     "socks5-backup",
 		Type:     "socks5",
-		Server:   "203.0.113.10",
-		Port:     1080,
+		Server:   host,
+		Port:     port,
 		Username: "esrrhs",
 		Password: "secret",
 		Priority: 1,
@@ -97,8 +111,8 @@ func TestManagerPicksSocks5NodeWithCreds(t *testing.T) {
 	defer m.Close()
 
 	addr, user, pass, name, release := m.PickNode()
-	if addr != "203.0.113.10:1080" {
-		t.Fatalf("PickNode addr = %q, want dial address 203.0.113.10:1080", addr)
+	if addr != ln.Addr().String() {
+		t.Fatalf("PickNode addr = %q, want dial address %q", addr, ln.Addr().String())
 	}
 	if user != "esrrhs" || pass != "secret" {
 		t.Fatalf("PickNode creds = %q/%q, want node credentials", user, pass)
