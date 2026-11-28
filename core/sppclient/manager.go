@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/esrrhs/gohome/loggo"
+	"github.com/esrrhs/gohome/network"
 	"github.com/esrrhs/yellowsocks/core/netdial"
 )
 
@@ -159,6 +160,85 @@ func probeNodeWithRTT(node *Node, timeout time.Duration) (bool, time.Duration) {
 	}
 }
 
+// nodeProbeHTTPHost is the target the per-node real request fetches. It is
+// an ordinary domestic site: the probe measures whether the node can carry
+// traffic at all, and any working egress reaches it.
+const (
+	nodeProbeHTTPHost = "www.baidu.com"
+	nodeProbeHTTPPort = 80
+)
+
+// probeNodeRealRequest pushes one real request through the node: SOCKS5
+// handshake (with the node's own credentials for socks5 nodes), CONNECT to
+// the target, an HTTP GET, and at least one response byte. A bare TCP dial
+// would report a port as alive while the channel or auth behind it is dead.
+func (m *Manager) probeNodeRealRequest(rt *nodeRuntime) (bool, time.Duration) {
+	addr, user, pass := "", "", ""
+	if rt.node.IsSocks5() {
+		addr = rt.node.DialAddr()
+		user, pass = rt.node.Username, rt.node.Password
+	} else {
+		m.mu.Lock()
+		if err := m.ensureClientRunningLocked(rt); err != nil {
+			m.mu.Unlock()
+			return false, 0
+		}
+		addr = rt.localSocks5
+		m.mu.Unlock()
+	}
+
+	start := time.Now()
+	raw, err := netdial.DialTimeout("tcp", addr, nodeProbeTimeout)
+	if err != nil {
+		return false, 0
+	}
+	conn, ok := raw.(*net.TCPConn)
+	if !ok {
+		_ = raw.Close()
+		return false, 0
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(nodeProbeTimeout))
+
+	if err := network.Sock5Handshake(conn, int(nodeProbeTimeout.Milliseconds()), user, pass); err != nil {
+		return false, 0
+	}
+	if err := network.Sock5SetRequest(conn, nodeProbeHTTPHost, nodeProbeHTTPPort, int(nodeProbeTimeout.Milliseconds())); err != nil {
+		return false, 0
+	}
+	req := "GET / HTTP/1.1\r\nHost: " + nodeProbeHTTPHost +
+		"\r\nUser-Agent: yellowsocks-nodeprobe\r\nConnection: close\r\n\r\n"
+	if _, err := conn.Write([]byte(req)); err != nil {
+		return false, 0
+	}
+	buf := make([]byte, 128)
+	if _, err := conn.Read(buf); err != nil {
+		return false, 0
+	}
+	return true, time.Since(start)
+}
+
+// probeRealRequests runs the real-request probe across every alive node in
+// parallel. Results are display-only: the failover machinery keeps using its
+// own TCP probe, so a flapping HTTP check cannot churn the active channel.
+func (m *Manager) probeRealRequests() {
+	var wg sync.WaitGroup
+	for _, rt := range m.runtimes {
+		if !rt.alive.Load() {
+			rt.realOK.Store(false)
+			continue
+		}
+		wg.Add(1)
+		go func(rt *nodeRuntime) {
+			defer wg.Done()
+			ok, ms := m.probeNodeRealRequest(rt)
+			rt.realOK.Store(ok)
+			rt.realMs.Store(ms.Milliseconds())
+		}(rt)
+	}
+	wg.Wait()
+}
+
 // probeNode maintains backward compatibility for unit tests.
 func probeNode(node *Node) bool {
 	alive, _ := probeNodeWithRTT(node, nodeProbeTimeout)
@@ -211,6 +291,12 @@ type nodeRuntime struct {
 	clientPtr        atomic.Pointer[upstream]
 	alive            atomic.Bool
 	rttMs            atomic.Int64
+	// realOK/realMs carry the per-node REAL request probe: a full SOCKS5
+	// handshake plus an HTTP GET through the node itself, not a bare TCP
+	// dial. A port can answer while the channel behind it is useless; this
+	// is what the nodes page reports as 可用/延迟.
+	realOK           atomic.Bool
+	realMs           atomic.Int64
 	consecutiveOks   atomic.Int32
 	consecutiveFails atomic.Int32
 	activeConns      atomic.Int64
@@ -365,8 +451,10 @@ func newManager(nodes []*Node, localSocks5 string, interval time.Duration) (*Man
 		healthInterval: interval,
 	}
 
-	// Initial synchronous probe
+	// Initial synchronous probe (TCP liveness, then one real request per
+	// alive node so the nodes page has numbers on first paint)
 	m.probeAllNodes()
+	m.probeRealRequests()
 
 	// Only start clients for nodes that probed alive. Do not keep a reconnecting
 	// client when every upstream is down.
@@ -730,6 +818,12 @@ func (m *Manager) checkNodes() {
 		return
 	}
 
+	m.probeRealRequests()
+
+	if m.closed.Load() {
+		return
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -869,6 +963,11 @@ type NodeStatus struct {
 	Alive       bool   `json:"alive"`
 	Active      bool   `json:"active"`
 	ActiveConns int64  `json:"active_conns"`
+	// RealOK/RealMs are the real-request probe result: a full SOCKS5
+	// handshake plus an HTTP GET through this node. This is what the nodes
+	// page reports as 可用 and 延迟.
+	RealOK bool   `json:"real_ok"`
+	RealMs int64  `json:"real_ms"`
 }
 
 // NodeStatuses returns status for every configured node.
@@ -882,11 +981,15 @@ func (m *Manager) NodeStatuses() []NodeStatus {
 	for i, n := range m.nodes {
 		rtt := int64(0)
 		alive := false
+		realOK := false
+		realMs := int64(0)
 		var conns int64
 		if i < len(m.runtimes) {
 			rt := m.runtimes[i]
 			rtt = rt.rttMs.Load()
 			alive = rt.alive.Load()
+			realOK = rt.realOK.Load()
+			realMs = rt.realMs.Load()
 			conns = rt.activeConns.Load()
 		}
 		isActive := alive && (n.getEffectivePriority() == tier)
@@ -900,6 +1003,8 @@ func (m *Manager) NodeStatuses() []NodeStatus {
 			Alive:       alive,
 			Active:      isActive,
 			ActiveConns: conns,
+			RealOK:      realOK,
+			RealMs:      realMs,
 		})
 	}
 	return out
