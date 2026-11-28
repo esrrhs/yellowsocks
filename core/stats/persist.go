@@ -42,9 +42,16 @@ type snapshot struct {
 	Lifetime       Counters     `json:"lifetime,omitempty"`
 	LifetimeDirect Counters     `json:"lifetime_direct,omitempty"`
 	LifetimeProxy  Counters     `json:"lifetime_proxy,omitempty"`
+	// Lifetime monitoring metrics: ratchet-only values that survive restarts
+	// alongside the counters above.
+	LifetimePeakUp   int64 `json:"lifetime_peak_up,omitempty"`
+	LifetimePeakDown int64 `json:"lifetime_peak_down,omitempty"`
+	LifetimeMaxConns int64 `json:"lifetime_max_conns,omitempty"`
+	LifetimeActiveSec int64 `json:"lifetime_active_sec,omitempty"`
 	DNS            persistedDNS `json:"dns"`
 	Buckets        []Bucket     `json:"buckets"`
 	Domains        []DomainStat `json:"domains"`
+	Processes      []ProcessStat `json:"processes"`
 	Nodes          []NodeStat   `json:"nodes"`
 	Errors         []ErrorEntry `json:"errors"`
 	PeakUp         int64        `json:"peak_upload_bps"`
@@ -71,6 +78,10 @@ func (c *Collector) Save() error {
 		Lifetime:       c.lifetime,
 		LifetimeDirect: c.lifetimeDirect,
 		LifetimeProxy:  c.lifetimeProxy,
+		LifetimePeakUp:   c.peakAllUp,
+		LifetimePeakDown: c.peakAllDown,
+		LifetimeMaxConns: c.maxConnsAll,
+		LifetimeActiveSec: c.activeSecAll,
 		DNS: persistedDNS{
 			Queries:    c.dns.Queries,
 			CacheHits:  c.dns.CacheHits,
@@ -81,9 +92,10 @@ func (c *Collector) Save() error {
 			ByUpstream: copyMap(c.dns.ByUpstream),
 			TopDomains: c.topFromLocked(c.dnsNames, c.cfg.DomainLimit),
 		},
-		Buckets:  c.orderedBucketsLocked(),
-		Domains:  allDomainsLocked(c.domains),
-		Nodes:    allNodesLocked(c.nodes),
+		Buckets:   c.orderedBucketsLocked(),
+		Domains:   allDomainsLocked(c.domains),
+		Processes: allProcessesLocked(c.processes),
+		Nodes:     allNodesLocked(c.nodes),
 		Errors:   c.errs,
 		PeakUp:   c.peakUp,
 		PeakDown: c.peakDown,
@@ -143,6 +155,10 @@ func (c *Collector) Load() error {
 	c.lifetime = snap.Lifetime
 	c.lifetimeDirect = snap.LifetimeDirect
 	c.lifetimeProxy = snap.LifetimeProxy
+	c.peakAllUp = snap.LifetimePeakUp
+	c.peakAllDown = snap.LifetimePeakDown
+	c.maxConnsAll = snap.LifetimeMaxConns
+	c.activeSecAll = snap.LifetimeActiveSec
 	// Snapshots written before the lifetime counters existed (version 1)
 	// carry no lifetime fields. Seed them from the accumulated totals so the
 	// all-time numbers do not silently restart from zero. Version 2 files
@@ -191,11 +207,19 @@ func (c *Collector) Load() error {
 		c.buckets = append(c.buckets, b)
 	}
 
-	for i := range snap.Domains {
-		d := snap.Domains[i]
-		if d.Domain == "" {
+	for i := range snap.Processes {
+		pr := snap.Processes[i]
+		if pr.Name == "" {
 			continue
 		}
+		// Snapshots written before the byte split existed carry totals with
+		// no split; nothing to recover from (process entries predate the
+		// split entirely), so they keep their totals on neither side.
+		cp := pr
+		c.processes[pr.Name] = &cp
+	}
+	for i := range snap.Domains {
+		d := snap.Domains[i]
 		// Snapshots written before the byte split existed carry totals with
 		// no split (or a split that only covers bytes written by a newer
 		// build after it loaded the same file); recover the unknown remainder
@@ -241,6 +265,14 @@ func allDomainsLocked(m map[string]*DomainStat) []DomainStat {
 	return out
 }
 
+func allProcessesLocked(m map[string]*ProcessStat) []ProcessStat {
+	out := make([]ProcessStat, 0, len(m))
+	for _, pr := range m {
+		out = append(out, *pr)
+	}
+	return out
+}
+
 // LifetimeTotals reads the permanent counters straight from a snapshot file,
 // without building a collector. It is meant for frontends that show the
 // all-time totals while the engine is stopped. Missing or unreadable files
@@ -259,6 +291,38 @@ func LifetimeTotals(path string) (all, direct, proxy Counters) {
 		return snap.Totals, snap.Direct, snap.Proxy
 	}
 	return snap.Lifetime, snap.LifetimeDirect, snap.LifetimeProxy
+}
+
+// LifetimeMetrics reads the persisted lifetime monitoring metrics (peaks,
+// max concurrency, accumulated on-time) straight from a snapshot file.
+func LifetimeMetrics(path string) (peakUp, peakDown, maxConns, activeSec int64) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return 0, 0, 0, 0
+	}
+	var snap snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return 0, 0, 0, 0
+	}
+	if snap.Version < 2 && snap.Lifetime.Total() == 0 && snap.Totals.Total() > 0 {
+		return 0, 0, 0, 0 // legacy file: nothing to seed from
+	}
+	return snap.LifetimePeakUp, snap.LifetimePeakDown, snap.LifetimeMaxConns, snap.LifetimeActiveSec
+}
+
+// ProcessTable reads the persisted per-process table straight from a
+// snapshot file. Companion to DomainTable for the statistics page's
+// application view while the engine is stopped.
+func ProcessTable(path string) []ProcessStat {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var snap snapshot
+	if err := json.Unmarshal(data, &snap); err != nil {
+		return nil
+	}
+	return snap.Processes
 }
 
 // DomainTable reads the persisted per-destination table straight from a

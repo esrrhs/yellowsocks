@@ -83,6 +83,13 @@ type LifetimeStats struct {
 	Totals Counters `json:"totals"`
 	Direct Counters `json:"direct"`
 	Proxy  Counters `json:"proxy"`
+	// Peak rate over the whole lifetime (fastest single second, up/down).
+	PeakUp   int64 `json:"peak_up"`
+	PeakDown int64 `json:"peak_down"`
+	// MaxConns is the highest concurrent-connection count ever seen; ActiveSec
+	// is the accumulated on-time the lifetime averages are divided by.
+	MaxConns  int64 `json:"max_conns"`
+	ActiveSec int64 `json:"active_sec"`
 }
 
 // Bucket is one history interval.
@@ -124,6 +131,25 @@ type DomainStat struct {
 
 // Total returns upload + download.
 func (d DomainStat) Total() int64 { return d.Upload + d.Download }
+
+// ProcessStat aggregates traffic for one OS process (the connections
+// page's process attribution). UDP datagrams carry no process and land in
+// neither byte split.
+type ProcessStat struct {
+	Name string `json:"name"`
+	// Icon is the exe's shell icon as a PNG data URL, captured with the
+	// attribution. Empty on platforms without icon extraction.
+	Icon        string `json:"icon,omitempty"`
+	Upload      int64  `json:"upload_bytes"`
+	Download    int64  `json:"download_bytes"`
+	Conns       int64  `json:"conns"`
+	DirectBytes int64  `json:"direct_bytes"`
+	ProxyBytes  int64  `json:"proxy_bytes"`
+	LastSeen    int64  `json:"last_seen"`
+}
+
+// Total returns upload + download.
+func (p ProcessStat) Total() int64 { return p.Upload + p.Download }
 
 // NodeStat aggregates traffic forwarded through one SPP node.
 type NodeStat struct {
@@ -221,10 +247,11 @@ type Collector struct {
 	lifetime       Counters
 	lifetimeDirect Counters
 	lifetimeProxy  Counters
-	dns      DNSStat
-	dnsNames map[string]*DomainStat
-	domains  map[string]*DomainStat
-	nodes    map[string]*NodeStat
+	dns       DNSStat
+	dnsNames  map[string]*DomainStat
+	domains   map[string]*DomainStat
+	processes map[string]*ProcessStat
+	nodes     map[string]*NodeStat
 	errs     []ErrorEntry
 
 	// History is a fixed-size ring of buckets plus the bucket being filled.
@@ -244,6 +271,15 @@ type Collector struct {
 	rateDownProxy  [rateSlots]int64
 	peakUp         int64
 	peakDown       int64
+	// Lifetime counterparts of the launch peaks: they survive restarts via
+	// the snapshot and only ratchet upward.
+	peakAllUp   int64
+	peakAllDown int64
+	// maxConnsAll is the highest concurrent-connection count ever seen;
+	// activeSecAll accumulates the collector's on-time for lifetime averages.
+	maxConnsAll  int64
+	activeSecAll int64
+	lastActiveTick time.Time
 
 	nextID atomic.Int64
 
@@ -286,9 +322,10 @@ func New(cfg Config) *Collector {
 		start:    now,
 		active:   make(map[int64]*Session),
 		dns:      DNSStat{ByType: map[string]int64{}, ByUpstream: map[string]int64{}},
-		dnsNames: make(map[string]*DomainStat),
-		domains:  make(map[string]*DomainStat),
-		nodes:    make(map[string]*NodeStat),
+		dnsNames:  make(map[string]*DomainStat),
+		domains:   make(map[string]*DomainStat),
+		processes: make(map[string]*ProcessStat),
+		nodes:     make(map[string]*NodeStat),
 		buckets:  make([]Bucket, 0, cfg.HistoryMinutes),
 		stopCh:   make(chan struct{}),
 	}
@@ -336,6 +373,11 @@ func (c *Collector) saveLoop() {
 		case <-c.stopCh:
 			return
 		case <-ticker.C:
+			// The collector being alive IS the on-time: accumulate it for the
+			// lifetime averages, with the save interval as the tick length.
+			c.mu.Lock()
+			c.activeSecAll += int64(c.cfg.SaveInterval / time.Second)
+			c.mu.Unlock()
 			if err := c.Save(); err != nil {
 				logWarn("save stats snapshot %s failed: %v", c.cfg.File, err)
 			}
@@ -432,6 +474,9 @@ func (c *Collector) Begin(p Proto, client, host string, port int, d Decision, no
 	}
 	c.mu.Lock()
 	c.active[s.id] = s
+	if n := int64(len(c.active)); n > c.maxConnsAll {
+		c.maxConnsAll = n
+	}
 	c.mu.Unlock()
 	return s
 }
@@ -646,6 +691,9 @@ func (s *Session) flush() {
 	if s.host != "" {
 		s.c.addDomain(s.tableKey(), s.decision, up, down, 0, false)
 	}
+	if proc := s.Process(); proc != "" {
+		s.c.addProcess(proc, s.ProcessIcon(), s.decision, up, down)
+	}
 }
 
 func (s *Session) view(now time.Time) SessionView {
@@ -700,6 +748,9 @@ func (c *Collector) finish(s *Session, err error) {
 		pu := s.pendingUp.Swap(0)
 		pd := s.pendingDown.Swap(0)
 		c.addDomainLocked(s.tableKey(), s.decision, pu, pd, 1, err != nil)
+		if proc := s.Process(); proc != "" {
+			c.addProcessLocked(proc, s.ProcessIcon(), s.decision, pu, pd, 1)
+		}
 	}
 	nodeName := s.Node()
 	if s.decision == DecisionProxy && nodeName != "" {
@@ -816,6 +867,12 @@ func (c *Collector) addRateLocked(nowSec, up, down int64, d Decision) {
 	}
 	if c.rateDown[idx] > c.peakDown {
 		c.peakDown = c.rateDown[idx]
+	}
+	if c.rateUp[idx] > c.peakAllUp {
+		c.peakAllUp = c.rateUp[idx]
+	}
+	if c.rateDown[idx] > c.peakAllDown {
+		c.peakAllDown = c.rateDown[idx]
 	}
 }
 
@@ -1160,6 +1217,101 @@ func (c *Collector) ActiveSessions(opt ActiveOptions) []SessionView {
 	return out
 }
 
+// SessionsNeedingProcess returns active TCP sessions that carry no process
+// attribution yet and are young enough for their connection-table row to
+// still exist — the retry feed for the GUI's attribution loop.
+func (c *Collector) SessionsNeedingProcess(maxAge time.Duration) []SessionView {
+	now := time.Now()
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	out := make([]SessionView, 0, 8)
+	for _, s := range c.active {
+		if s.proto != ProtoSOCKS5 && s.proto != ProtoHTTP {
+			continue
+		}
+		if s.Process() != "" || s.host == "" {
+			continue
+		}
+		if now.Sub(s.start) > maxAge {
+			continue
+		}
+		out = append(out, s.view(now))
+	}
+	return out
+}
+
+// SetSessionProcess records the attributed process on a live session.
+func (c *Collector) SetSessionProcess(id int64, name, icon string) {
+	c.mu.RLock()
+	s, ok := c.active[id]
+	c.mu.RUnlock()
+	if ok {
+		s.SetProcess(name, icon)
+	}
+}
+
+// addProcess merges traffic into the per-process table. UDP datagrams carry
+// no process and never reach here — the table is TCP-only by construction.
+func (c *Collector) addProcess(name, icon string, d Decision, up, down int64) {
+	c.mu.Lock()
+	c.addProcessLocked(name, icon, d, up, down, 0)
+	c.mu.Unlock()
+}
+
+func (c *Collector) addProcessLocked(name, icon string, dec Decision, up, down, conns int64) {
+	now := time.Now()
+	e := c.processes[name]
+	if e == nil {
+		e = &ProcessStat{Name: name, Icon: icon}
+		c.processes[name] = e
+	}
+	if e.Icon == "" && icon != "" {
+		e.Icon = icon
+	}
+	e.Upload += up
+	e.Download += down
+	e.Conns += conns
+	switch dec {
+	case DecisionDirect:
+		e.DirectBytes += up + down
+	case DecisionProxy:
+		e.ProxyBytes += up + down
+	}
+	e.LastSeen = now.Unix()
+}
+
+// ResetProcesses clears the per-application table, leaving every other
+// counter alone (the lifetime reset of a frontend showing both clears it
+// alongside the domain table so the two cannot disagree).
+func (c *Collector) ResetProcesses() {
+	c.mu.Lock()
+	c.processes = make(map[string]*ProcessStat)
+	c.mu.Unlock()
+}
+
+// Processes returns the process table, ordered by bytes.
+func (c *Collector) Processes(limit int) []ProcessStat {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	if limit <= 0 {
+		limit = 100
+	}
+	out := make([]ProcessStat, 0, len(c.processes))
+	for _, d := range c.processes {
+		out = append(out, *d)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Total() == out[j].Total() {
+			return out[i].Conns > out[j].Conns
+		}
+		return out[i].Total() > out[j].Total()
+	})
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
 // Config returns the collector's configuration as resolved by New.
 func (c *Collector) Config() Config { return c.cfg }
 
@@ -1440,6 +1592,10 @@ func (c *Collector) LifetimeReset() {
 	c.lifetime = Counters{}
 	c.lifetimeDirect = Counters{}
 	c.lifetimeProxy = Counters{}
+	c.peakAllUp = 0
+	c.peakAllDown = 0
+	c.maxConnsAll = 0
+	c.activeSecAll = 0
 }
 
 // ResetDomains clears the per-destination traffic table. It touches neither
@@ -1460,10 +1616,21 @@ func (c *Collector) Lifetime() (all, direct, proxy Counters) {
 	return c.lifetime, c.lifetimeDirect, c.lifetimeProxy
 }
 
-// LifetimeStats returns the permanent totals as a struct.
+// LifetimeStats returns the permanent totals as a struct, together with the
+// lifetime monitoring metrics (peaks, max concurrency, on-time).
 func (c *Collector) LifetimeStats() LifetimeStats {
 	all, direct, proxy := c.Lifetime()
-	return LifetimeStats{Totals: all, Direct: direct, Proxy: proxy}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return LifetimeStats{
+		Totals:    all,
+		Direct:    direct,
+		Proxy:     proxy,
+		PeakUp:    c.peakAllUp,
+		PeakDown:  c.peakAllDown,
+		MaxConns:  c.maxConnsAll,
+		ActiveSec: c.activeSecAll,
+	}
 }
 
 func copyMap(m map[string]int64) map[string]int64 {
