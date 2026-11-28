@@ -3,6 +3,11 @@ name: CI
 on:
   push:
     branches: [ "master" ]
+    # Pushing a v* tag is a release: the same matrix builds it and the
+    # release job publishes under that tag. Branch pushes still release by
+    # bumping VERSION; the tag the bot creates there does not re-trigger
+    # this workflow (pushes made with GITHUB_TOKEN never do).
+    tags: [ "v*" ]
   pull_request:
     branches: [ "master" ]
 
@@ -25,6 +30,24 @@ jobs:
       - name: Detect if VERSION requires a new release
         id: check
         run: |
+          # A pushed v* tag is the release trigger itself: build the commit it
+          # points at and publish under that tag. Only branch pushes fall back
+          # to comparing VERSION with the tags that already exist. The tag has
+          # to match VERSION: every build step embeds the file's value, and a
+          # mismatch would ship assets labelled with the wrong version.
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+            FILE_VERSION=$(cat VERSION | tr -d '[:space:]')
+            if [[ "$VERSION" != "$FILE_VERSION" ]]; then
+              echo "Tag $GITHUB_REF_NAME does not match VERSION ($FILE_VERSION); bump VERSION before tagging." >&2
+              exit 1
+            fi
+            echo "Tag ${GITHUB_REF_NAME} pushed: releasing v$VERSION"
+            echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+            echo "release_needed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
           VERSION=$(cat VERSION | tr -d '[:space:]')
           echo "Current version in repository: $VERSION"
           echo "version=$VERSION" >> $GITHUB_OUTPUT
@@ -191,13 +214,16 @@ jobs:
   release:
     name: Publish GitHub Release
     needs: [check-version, test, test-windows, package, gui]
-    if: github.ref == 'refs/heads/master' && needs.check-version.outputs.release_needed == 'true'
+    if: github.event_name == 'push' && needs.check-version.outputs.release_needed == 'true'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Branch pushes release by tagging the version they bumped to; a pushed
+      # tag already exists and must not be recreated.
       - name: Create Git Tag
+        if: startsWith(github.ref, 'refs/heads/')
         run: |
           VERSION="${{ needs.check-version.outputs.version }}"
           git config user.name "github-actions[bot]"
