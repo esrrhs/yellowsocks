@@ -403,10 +403,6 @@ body {
     color: var(--text-dim);
 }
 
-.ps-run {
-    margin-left: auto;
-}
-
 /* A failed leg speaks in the error hue but stays small: the strip is a
    status line, not an alarm. */
 .dot.err {
@@ -1258,8 +1254,15 @@ body {
 
 .about-card {
     max-width: 380px;
+    margin: 0 auto;
     text-align: center;
     padding: 26px 24px;
+}
+
+/* The About page is a single centred card; the page heading follows it
+   instead of hanging left above nothing. */
+.about-title {
+    text-align: center;
 }
 
 .app-name {

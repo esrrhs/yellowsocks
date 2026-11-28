@@ -19,7 +19,6 @@ import {
   SetTunMode,
   StartEngine,
   StopEngine,
-  TestConnectivity,
 } from "../../wailsjs/go/guiapp/App";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { guiapp, stats } from "../../wailsjs/go/models";
@@ -36,7 +35,6 @@ const launchAtLogin = ref(false);
 const tunMode = ref(false);
 const proxyMode = ref("rule");
 const probe = ref<guiapp.ProbeReport | null>(null);
-const probing = ref(false);
 const proxyGuard = ref(false);
 
 let timer: number | undefined;
@@ -186,18 +184,6 @@ async function setMode(mode: string) {
   }
 }
 
-async function runProbe() {
-  probing.value = true;
-  actionError.value = "";
-  try {
-    probe.value = await TestConnectivity();
-  } catch (e: any) {
-    actionError.value = errText(e);
-  } finally {
-    probing.value = false;
-  }
-}
-
 // One line per leg in the strip; the per-leg detail sentences the old card
 // showed move into the strip's tooltip.
 const probeTip = computed(() => {
@@ -316,7 +302,6 @@ onMounted(async () => {
   // whatever lands, hidden or not.
   offProbe = EventsOn("probe:report", (r: guiapp.ProbeReport) => {
     probe.value = new guiapp.ProbeReport(r);
-    probing.value = false;
   });
   document.addEventListener("visibilitychange", onVisibility);
   await bootstrap();
@@ -486,8 +471,7 @@ const chart = computed(() => {
 
       <div class="probe-strip" v-if="status.running">
         <span class="ps-label" :title="t('probe.hint')">{{ t("probe.title") }}</span>
-        <span class="ps-state" v-if="probing">{{ t("probe.running") }}</span>
-        <template v-else-if="probe">
+        <template v-if="probe">
           <span class="ps-time">{{ fmtHM(probe.at) }}</span>
           <span class="ps-item" v-for="it in probe.items" :key="it.key" :title="probeTip">
             <i class="dot" :class="it.ok ? 'on' : 'err'"></i>
@@ -500,9 +484,6 @@ const chart = computed(() => {
           </span>
         </template>
         <span class="ps-state" v-else>{{ t("probe.idle") }}</span>
-        <button class="btn small ps-run" :disabled="probing" @click="runProbe">
-          {{ probing ? t("probe.running") : t("probe.retest") }}
-        </button>
       </div>
     </div>
 

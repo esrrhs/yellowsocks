@@ -14,7 +14,7 @@ onMounted(async () => {
 
 <template>
   <section class="page">
-    <h2>{{ t("about.title") }}</h2>
+    <h2 class="about-title">{{ t("about.title") }}</h2>
     <div class="card about-card">
       <div class="logo big">YS</div>
       <div class="app-name">YellowSocks</div>
