@@ -1,8 +1,9 @@
 <script lang="ts" setup>
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from "vue";
 import { load as yamlLoad, dump as yamlDump } from "js-yaml";
-import { GetConfig, GetNodeStatuses, SaveConfig } from "../../wailsjs/go/guiapp/App";
-import { sppclient } from "../../wailsjs/go/models";
+import { GetConfig, GetNodes, GetNodeStatuses, SaveConfig } from "../../wailsjs/go/guiapp/App";
+import { sppclient, stats } from "../../wailsjs/go/models";
+import { fmtBytes, fmtClock } from "../format";
 import { errText, t } from "../i18n";
 
 // The upstream node pool. One place edits the config file's `nodes:` list:
@@ -51,7 +52,21 @@ const isOpen = (uid: number) => expanded.value.has(uid);
 const statuses = ref<Record<string, sppclient.NodeStatus>>({});
 let statusTimer: number | undefined;
 
+// Per-node byte counters, the table that used to live in the connections
+// page. Polled alongside the probe statuses: cumulative totals do not need a
+// faster clock.
+const traffic = ref<stats.NodeStat[]>([]);
+
+async function refreshTraffic() {
+  try {
+    traffic.value = (await GetNodes()) ?? [];
+  } catch {
+    // engine stopped: keep the last known numbers
+  }
+}
+
 async function refreshStatuses() {
+  void refreshTraffic();
   try {
     const list = (await GetNodeStatuses()) ?? [];
     const map: Record<string, sppclient.NodeStatus> = {};
@@ -61,6 +76,16 @@ async function refreshStatuses() {
     // engine stopped or binding unavailable: keep the last known state
   }
 }
+
+const trafficTotals = computed(() => {
+  let up = 0;
+  let down = 0;
+  for (const n of traffic.value) {
+    up += n.upload_bytes ?? 0;
+    down += n.download_bytes ?? 0;
+  }
+  return { up, down };
+});
 
 function startStatusPolling() {
   if (statusTimer) return;
@@ -404,6 +429,42 @@ onMounted(async () => {
 
       <div v-if="error" class="error-banner">{{ error }}</div>
       <div v-if="message" class="ok-banner">{{ message }}</div>
+    </div>
+
+    <div class="card table-card traffic-card">
+      <div class="chart-head traffic-head">
+        <span>{{ t("nodes.trafficTitle") }}</span>
+      </div>
+      <table class="tbl">
+        <thead>
+          <tr>
+            <th>{{ t("conn.colNode") }}</th>
+            <th class="right">{{ t("nodes.colConns") }}</th>
+            <th class="right">{{ t("nodes.colUp") }}</th>
+            <th class="right">{{ t("nodes.colDown") }}</th>
+            <th class="right">{{ t("nodes.colSeen") }}</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr v-for="n in traffic" :key="n.name">
+            <td class="mono">{{ n.name || t("nodes.unnamed") }}</td>
+            <td class="right num">{{ n.conns ?? 0 }}</td>
+            <td class="right num">{{ fmtBytes(n.upload_bytes) }}</td>
+            <td class="right num">{{ fmtBytes(n.download_bytes) }}</td>
+            <td class="right num dim">{{ fmtClock(n.last_seen) }}</td>
+          </tr>
+          <tr v-if="!traffic.length">
+            <td colspan="5" class="empty-row">{{ t("nodes.trafficEmpty") }}</td>
+          </tr>
+          <tr v-else class="sum-row">
+            <td>{{ t("nodes.trafficSum") }}</td>
+            <td></td>
+            <td class="right num">{{ fmtBytes(trafficTotals.up) }}</td>
+            <td class="right num">{{ fmtBytes(trafficTotals.down) }}</td>
+            <td></td>
+          </tr>
+        </tbody>
+      </table>
     </div>
   </section>
 </template>

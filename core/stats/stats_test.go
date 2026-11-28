@@ -554,6 +554,48 @@ func TestProcessRatesSampledBetweenPolls(t *testing.T) {
 	}
 }
 
+// The per-decision rates share the sample window: domestic and foreign bytes
+// accrue independently, and an idle interval zeros both like the combined
+// rates.
+func TestProcessDecisionRatesSampledBetweenPolls(t *testing.T) {
+	c := newTestCollector()
+	c.addProcess("app.exe", "", DecisionDirect, 100, 300)
+	c.addProcess("app.exe", "", DecisionProxy, 50, 100)
+
+	c.Processes(10) // baseline
+
+	c.addProcess("app.exe", "", DecisionDirect, 200, 400)
+	c.addProcess("app.exe", "", DecisionProxy, 30, 60)
+	c.mu.Lock()
+	c.processes["app.exe"].rateAt = time.Now().Add(-time.Second)
+	c.mu.Unlock()
+
+	got := c.Processes(10)[0]
+	if got.DirectUploadBps < 180 || got.DirectUploadBps > 200 {
+		t.Fatalf("direct upload bps = %d, want about 200", got.DirectUploadBps)
+	}
+	if got.DirectDownloadBps < 380 || got.DirectDownloadBps > 400 {
+		t.Fatalf("direct download bps = %d, want about 400", got.DirectDownloadBps)
+	}
+	if got.ProxyUploadBps < 25 || got.ProxyUploadBps > 30 {
+		t.Fatalf("proxy upload bps = %d, want about 30", got.ProxyUploadBps)
+	}
+	if got.ProxyDownloadBps < 55 || got.ProxyDownloadBps > 60 {
+		t.Fatalf("proxy download bps = %d, want about 60", got.ProxyDownloadBps)
+	}
+
+	// The side counters feed only deltas: the restored totals must not turn
+	// into a burst on the first sample after restart.
+	c.mu.Lock()
+	c.processes["app.exe"].rateAt = time.Now().Add(-time.Second)
+	c.mu.Unlock()
+	idle := c.Processes(10)[0]
+	if idle.DirectUploadBps != 0 || idle.DirectDownloadBps != 0 ||
+		idle.ProxyUploadBps != 0 || idle.ProxyDownloadBps != 0 {
+		t.Fatalf("idle sample kept split speeds: %+v", idle)
+	}
+}
+
 // Nil receivers stay safe, matching the rest of the collector methods.
 func TestRecordUDPRelayNilCollector(t *testing.T) {
 	var c *Collector

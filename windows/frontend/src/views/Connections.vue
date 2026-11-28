@@ -1,11 +1,12 @@
 <script lang="ts" setup>
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from "vue";
-import { GetErrors, GetNodes, GetOverview, GetProcesses, GetSessions } from "../../wailsjs/go/guiapp/App";
+import { GetOverview, GetProcesses, GetSessions } from "../../wailsjs/go/guiapp/App";
 import { stats } from "../../wailsjs/go/models";
-import { fmtBps, fmtBytes, fmtAge, fmtClock } from "../format";
-import { t } from "../i18n";
+import { fmtBps, fmtBytes, fmtAge } from "../format";
+import { buildLiveDestGroup } from "../dest-group";
+import { locale, t } from "../i18n";
 
-type Tab = "conns" | "apps" | "nodes" | "errors";
+type Tab = "conns" | "apps" | "dest";
 
 const tab = ref<Tab>("conns");
 const sessions = ref<stats.SessionView[]>([]);
@@ -13,8 +14,6 @@ const sessions = ref<stats.SessionView[]>([]);
 // as the denominator keeps "200 / 320" honest instead of pretending the table
 // holds everything.
 const liveTotal = ref(0);
-const nodes = ref<stats.NodeStat[]>([]);
-const errors = ref<stats.ErrorEntry[]>([]);
 const processes = ref<stats.ProcessStat[]>([]);
 const query = ref("");
 // UDP associations are no longer recorded (UDP relay is direct-only and
@@ -50,10 +49,8 @@ async function refresh() {
       liveTotal.value = ov?.active_conns ?? sessions.value.length;
     } else if (tab.value === "apps") {
       processes.value = (await GetProcesses()) ?? [];
-    } else if (tab.value === "nodes") {
-      nodes.value = (await GetNodes()) ?? [];
     } else {
-      errors.value = (await GetErrors()) ?? [];
+      sessions.value = (await GetSessions()) ?? [];
     }
   } catch {
     // Engine stopped between the switch and the call; the next tick recovers.
@@ -63,6 +60,10 @@ async function refresh() {
 function switchTab(next: Tab) {
   if (tab.value === next) return;
   tab.value = next;
+  // All three tabs read live data now, so one clock serves them all; the
+  // first refresh below reseeds the view for the tab that just became visible.
+  stopPolling();
+  startPolling();
   void refresh();
 }
 
@@ -124,9 +125,10 @@ const visible = computed(() => {
 });
 
 // Application tab sorting: rate columns lead (same "who is using bandwidth"
-// question as the connections table) but the cumulative size columns sort
-// too, because "what moved the most today" is the other reason to open it.
-type AppSortKey = "name" | "upRate" | "upTotal" | "downRate" | "downTotal" | "conns";
+// question as the connections table), and the cumulative size columns sort
+// too — including the domestic/foreign split, which ranks by that side's live
+// rate with its cumulative bytes as the tiebreaker.
+type AppSortKey = "name" | "upRate" | "downRate" | "total" | "domestic" | "foreign" | "conns";
 const appSortKey = ref<AppSortKey>("downRate");
 const appSortDir = ref<"asc" | "desc">("desc");
 
@@ -139,6 +141,8 @@ function toggleAppSort(key: AppSortKey) {
   appSortDir.value = key === "name" ? "asc" : "desc";
 }
 
+const appTotal = (a: stats.ProcessStat) => (a.upload_bytes ?? 0) + (a.download_bytes ?? 0);
+
 const visibleApps = computed(() => {
   const rows = processes.value.slice();
   const key = appSortKey.value;
@@ -149,12 +153,18 @@ const visibleApps = computed(() => {
       d = (a.name ?? "").localeCompare(b.name ?? "");
     } else if (key === "upRate") {
       d = (a.upload_bps ?? 0) - (b.upload_bps ?? 0);
-    } else if (key === "upTotal") {
-      d = (a.upload_bytes ?? 0) - (b.upload_bytes ?? 0);
     } else if (key === "downRate") {
       d = (a.download_bps ?? 0) - (b.download_bps ?? 0);
-    } else if (key === "downTotal") {
-      d = (a.download_bytes ?? 0) - (b.download_bytes ?? 0);
+    } else if (key === "total") {
+      d = appTotal(a) - appTotal(b);
+    } else if (key === "domestic") {
+      d = (a.direct_upload_bps ?? 0) + (a.direct_download_bps ?? 0) -
+          ((b.direct_upload_bps ?? 0) + (b.direct_download_bps ?? 0)) ||
+        (a.direct_bytes ?? 0) - (b.direct_bytes ?? 0);
+    } else if (key === "foreign") {
+      d = (a.proxy_upload_bps ?? 0) + (a.proxy_download_bps ?? 0) -
+          ((b.proxy_upload_bps ?? 0) + (b.proxy_download_bps ?? 0)) ||
+        (a.proxy_bytes ?? 0) - (b.proxy_bytes ?? 0);
     } else {
       d = (a.conns ?? 0) - (b.conns ?? 0);
     }
@@ -163,16 +173,6 @@ const visibleApps = computed(() => {
     return d * dir;
   });
   return rows;
-});
-
-const nodeTotals = computed(() => {
-  let up = 0;
-  let down = 0;
-  for (const n of nodes.value) {
-    up += n.upload_bytes ?? 0;
-    down += n.download_bytes ?? 0;
-  }
-  return { up, down };
 });
 
 function decisionLabel(d: string): string {
@@ -186,6 +186,39 @@ function decisionLabel(d: string): string {
 function brk(s?: string): string {
   return (s ?? "").replace(/[.:-]/g, (m) => m + "\u200b");
 }
+
+// Destination tab: the same classification as the Stats page's 按目标 view
+// (shared dest-group.ts), fed by the active session list rather than the
+// lifetime domain table. Every row is a destination that is connected right
+// now, so the panel shows its live rates and the bytes those connections have
+// carried; nothing here survives the connection.
+const destSide = ref<"direct" | "proxy">("direct");
+const destDirect = computed(() =>
+  buildLiveDestGroup(sessions.value, "direct", {
+    unnamed: t("stats.unnamed"),
+    lang: locale.value,
+  }),
+);
+const destProxy = computed(() =>
+  buildLiveDestGroup(sessions.value, "proxy", {
+    unnamed: t("stats.unnamed"),
+    lang: locale.value,
+  }),
+);
+const destGroupOf = (side: "direct" | "proxy") =>
+  side === "direct" ? destDirect.value : destProxy.value;
+const destGroup = computed(() => destGroupOf(destSide.value));
+const hasDestData = computed(() => sessions.value.length > 0);
+
+const destExpanded = ref(new Set<string>());
+function toggleDestRow(id: string) {
+  const key = `${destSide.value}:${id}`;
+  const next = new Set(destExpanded.value);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  destExpanded.value = next;
+}
+const destOpen = (id: string) => destExpanded.value.has(`${destSide.value}:${id}`);
 
 // Kept alive across tab switches (see App.vue), so polling pauses while the
 // page is hidden and resumes with a fresh sample the moment it is shown --
@@ -235,7 +268,6 @@ onUnmounted(() => {
         @click="switchTab('conns')"
       >
         {{ t("conn.tabConns") }}
-        <span class="badge" v-if="totalCount">{{ totalCount }}</span>
       </button>
       <button
         class="tab"
@@ -246,18 +278,10 @@ onUnmounted(() => {
       </button>
       <button
         class="tab"
-        :class="{ active: tab === 'nodes' }"
-        @click="switchTab('nodes')"
+        :class="{ active: tab === 'dest' }"
+        @click="switchTab('dest')"
       >
-        {{ t("conn.tabNodes") }}
-      </button>
-      <button
-        class="tab"
-        :class="{ active: tab === 'errors' }"
-        @click="switchTab('errors')"
-      >
-        {{ t("conn.tabErrors") }}
-        <span class="badge bad" v-if="errors.length">{{ errors.length }}</span>
+        {{ t("conn.tabDest") }}
       </button>
     </div>
 
@@ -380,11 +404,12 @@ onUnmounted(() => {
       <div class="card table-card">
         <table class="tbl tbl-fixed">
           <colgroup>
-            <col style="width: 40%" />
-            <col style="width: 13%" />
+            <col style="width: 26%" />
             <col style="width: 12%" />
-            <col style="width: 13%" />
             <col style="width: 12%" />
+            <col style="width: 10%" />
+            <col style="width: 15%" />
+            <col style="width: 15%" />
             <col style="width: 10%" />
           </colgroup>
           <thead>
@@ -396,26 +421,32 @@ onUnmounted(() => {
                 }}</span>
               </th>
               <th class="right sortable" @click="toggleAppSort('upRate')">
-                {{ t("conn.colUpRate") }}
+                {{ t("conn.colUp") }}
                 <span class="sort-mark" v-if="appSortKey === 'upRate'">{{
                   appSortDir === "desc" ? "▾" : "▴"
                 }}</span>
               </th>
-              <th class="right sortable" @click="toggleAppSort('upTotal')">
-                {{ t("conn.colUpTotal") }}
-                <span class="sort-mark" v-if="appSortKey === 'upTotal'">{{
-                  appSortDir === "desc" ? "▾" : "▴"
-                }}</span>
-              </th>
               <th class="right sortable" @click="toggleAppSort('downRate')">
-                {{ t("conn.colDownRate") }}
+                {{ t("conn.colDown") }}
                 <span class="sort-mark" v-if="appSortKey === 'downRate'">{{
                   appSortDir === "desc" ? "▾" : "▴"
                 }}</span>
               </th>
-              <th class="right sortable" @click="toggleAppSort('downTotal')">
-                {{ t("conn.colDownTotal") }}
-                <span class="sort-mark" v-if="appSortKey === 'downTotal'">{{
+              <th class="right sortable" @click="toggleAppSort('total')">
+                {{ t("conn.colTotal") }}
+                <span class="sort-mark" v-if="appSortKey === 'total'">{{
+                  appSortDir === "desc" ? "▾" : "▴"
+                }}</span>
+              </th>
+              <th class="right sortable" @click="toggleAppSort('domestic')">
+                {{ t("conn.colDomestic") }}
+                <span class="sort-mark" v-if="appSortKey === 'domestic'">{{
+                  appSortDir === "desc" ? "▾" : "▴"
+                }}</span>
+              </th>
+              <th class="right sortable" @click="toggleAppSort('foreign')">
+                {{ t("conn.colForeign") }}
+                <span class="sort-mark" v-if="appSortKey === 'foreign'">{{
                   appSortDir === "desc" ? "▾" : "▴"
                 }}</span>
               </th>
@@ -435,53 +466,33 @@ onUnmounted(() => {
                   <span class="proc-name">{{ a.name }}</span>
                 </span>
               </td>
-              <td class="right num wrap">
+              <td class="right num wrap" :title="fmtBytes(a.upload_bytes)">
                 <span class="up">↑{{ fmtBps(a.upload_bps) }}</span>
+                <span class="total dim">{{ fmtBytes(a.upload_bytes) }}</span>
               </td>
-              <td class="right num dim">{{ fmtBytes(a.upload_bytes) }}</td>
-              <td class="right num wrap">
+              <td class="right num wrap" :title="fmtBytes(a.download_bytes)">
                 <span class="down">↓{{ fmtBps(a.download_bps) }}</span>
+                <span class="total dim">{{ fmtBytes(a.download_bytes) }}</span>
               </td>
-              <td class="right num dim">{{ fmtBytes(a.download_bytes) }}</td>
+              <td class="right num">{{ fmtBytes(appTotal(a)) }}</td>
+              <td class="right num wrap" :title="fmtBytes(a.direct_bytes)">
+                <span class="side-pair">
+                  <span class="up">↑{{ fmtBps(a.direct_upload_bps) }}</span>
+                  <span class="down">↓{{ fmtBps(a.direct_download_bps) }}</span>
+                </span>
+                <span class="total dim">{{ fmtBytes(a.direct_bytes) }}</span>
+              </td>
+              <td class="right num wrap" :title="fmtBytes(a.proxy_bytes)">
+                <span class="side-pair">
+                  <span class="up">↑{{ fmtBps(a.proxy_upload_bps) }}</span>
+                  <span class="down">↓{{ fmtBps(a.proxy_download_bps) }}</span>
+                </span>
+                <span class="total dim">{{ fmtBytes(a.proxy_bytes) }}</span>
+              </td>
               <td class="right num dim">{{ a.conns ?? 0 }}</td>
             </tr>
             <tr v-if="!visibleApps.length">
-              <td colspan="6" class="empty-row">{{ t("conn.noApps") }}</td>
-            </tr>
-          </tbody>
-        </table>
-      </div>
-    </template>
-
-    <template v-else-if="tab === 'nodes'">
-      <div class="card table-card">
-        <table class="tbl">
-          <thead>
-            <tr>
-              <th>{{ t("conn.nodeTitle") }}</th>
-              <th class="right">{{ t("conn.colNodeConns") }}</th>
-              <th class="right">{{ t("conn.colNodeUp") }}</th>
-              <th class="right">{{ t("conn.colNodeDown") }}</th>
-              <th class="right">{{ t("conn.colNodeSeen") }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="n in nodes" :key="n.name">
-              <td class="mono">{{ n.name || t("conn.defaultNode") }}</td>
-              <td class="right num">{{ n.conns ?? 0 }}</td>
-              <td class="right num">{{ fmtBytes(n.upload_bytes) }}</td>
-              <td class="right num">{{ fmtBytes(n.download_bytes) }}</td>
-              <td class="right num dim">{{ fmtClock(n.last_seen) }}</td>
-            </tr>
-            <tr v-if="!nodes.length">
-              <td colspan="5" class="empty-row">{{ t("conn.noNodes") }}</td>
-            </tr>
-            <tr v-else class="sum-row">
-              <td>{{ t("conn.sum") }}</td>
-              <td></td>
-              <td class="right num">{{ fmtBytes(nodeTotals.up) }}</td>
-              <td class="right num">{{ fmtBytes(nodeTotals.down) }}</td>
-              <td></td>
+              <td colspan="7" class="empty-row">{{ t("conn.noApps") }}</td>
             </tr>
           </tbody>
         </table>
@@ -489,28 +500,69 @@ onUnmounted(() => {
     </template>
 
     <template v-else>
-      <div class="card table-card">
-        <table class="tbl">
-          <thead>
-            <tr>
-              <th class="narrow">{{ t("conn.colTime") }}</th>
-              <th>{{ t("conn.colHost") }}</th>
-              <th class="narrow">{{ t("conn.colScope") }}</th>
-              <th>{{ t("conn.colDecision") }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="(e, i) in errors" :key="`${e.t}-${i}`">
-              <td class="num dim">{{ e.time || fmtClock(e.t) }}</td>
-              <td class="mono ellipsis">{{ e.host || "—" }}</td>
-              <td class="dim">{{ e.scope || "—" }}</td>
-              <td class="err-msg">{{ e.message }}</td>
-            </tr>
-            <tr v-if="!errors.length">
-              <td colspan="4" class="empty-row">{{ t("conn.noErrors") }}</td>
-            </tr>
-          </tbody>
-        </table>
+      <div class="card chart-card">
+        <div class="chart-head">
+          <span>{{ t("stats.title") }}</span>
+        </div>
+        <p class="hint">{{ t("conn.destHint") }}</p>
+
+        <template v-if="hasDestData">
+          <div class="dest-tabs">
+            <button
+              v-for="side in ['direct', 'proxy'] as const"
+              :key="side"
+              class="dest-tab"
+              :class="{ active: destSide === side }"
+              @click="destSide = side"
+            >
+              {{ side === "direct" ? t("lifetime.direct") : t("lifetime.proxy") }}
+              <span class="dest-tab-total">
+                <span class="up">↑{{ fmtBps(destGroupOf(side).upBps) }}</span>
+                <span class="down">↓{{ fmtBps(destGroupOf(side).downBps) }}</span>
+              </span>
+            </button>
+          </div>
+          <div class="dest-side">
+            <div class="dest-rows" v-if="destGroup.rows.length">
+              <template v-for="row in destGroup.rows" :key="destSide + row.id">
+                <button
+                  class="dest-row"
+                  :class="{ open: destOpen(row.id), bare: row.id.startsWith('@') }"
+                  @click="toggleDestRow(row.id)"
+                >
+                  <span class="dest-name">{{ row.label }}</span>
+                  <span class="dest-live">
+                    <span class="dest-rates">
+                      <span class="up">↑{{ fmtBps(row.upBps) }}</span>
+                      <span class="down">↓{{ fmtBps(row.downBps) }}</span>
+                    </span>
+                    <span class="dest-sums">↑{{ fmtBytes(row.up) }} ↓{{ fmtBytes(row.down) }}</span>
+                  </span>
+                  <span class="dest-caret">{{ destOpen(row.id) ? "▾" : "▸" }}</span>
+                </button>
+                <div class="dest-detail" v-if="destOpen(row.id)">
+                  <div
+                    class="dest-member"
+                    v-for="m in row.members.slice(0, 8)"
+                    :key="m.name"
+                  >
+                    <span class="dest-member-name" :title="m.name">{{ m.name }}</span>
+                    <span class="dest-member-live">
+                      <span class="up">↑{{ fmtBps(m.upBps) }}</span>
+                      <span class="down">↓{{ fmtBps(m.downBps) }}</span>
+                    </span>
+                    <span class="dest-member-bytes">{{ fmtBytes(m.bytes) }}</span>
+                  </div>
+                  <div class="dest-more" v-if="row.members.length > 8">
+                    {{ t("stats.showDomains", { n: row.members.length }) }}
+                  </div>
+                </div>
+              </template>
+            </div>
+            <div class="dest-empty" v-else>{{ t("conn.destEmpty") }}</div>
+          </div>
+        </template>
+        <p class="hint" v-else>{{ t("conn.empty") }}</p>
       </div>
     </template>
   </section>

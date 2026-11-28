@@ -8,7 +8,13 @@ import {
 } from "../../wailsjs/go/guiapp/App";
 import { stats } from "../../wailsjs/go/models";
 import { fmtBytes, fmtBps } from "../format";
-import { baseDomain, isAddrLiteral, matchVendor } from "../vendor-map";
+import {
+  buildDestGroup,
+  destShare as share,
+  topDestMembers as topMembers,
+  type DestGroup,
+  type DestRow,
+} from "../dest-group";
 import { errText, locale, t } from "../i18n";
 
 const lifetime = ref<stats.LifetimeStats | null>(null);
@@ -60,95 +66,8 @@ async function resetLifetime() {
 
 // ---------- destination grouping ----------
 //
-// The collector reports one row per domain (or bare address) with the
-// domestic/foreign byte split. Grouping happens here, in the display layer:
-// suffix matching against the vendor table is presentation, not accounting,
-// and keeping it in the frontend means a new vendor needs no engine change.
-
-interface DestRow {
-  id: string;
-  label: string;
-  bytes: number;
-  up: number;
-  down: number;
-  members: stats.DomainStat[];
-  icon?: string; // app rows: the process icon as a data URL
-}
-
-interface DestGroup {
-  total: number;
-  rows: DestRow[];
-}
-
-// One side of the split. Rows come out sorted by bytes, descending, with the
-// catch-all buckets pinned to the end: 其他 for unmatched domains, 未识别
-// for bare addresses (pre-SNI bytes, DoH-only clients). UDP is relayed
-// direct-only and counted in the totals, never in the per-destination view.
-function buildGroup(kind: "direct" | "proxy"): DestGroup {
-  const bytesOf = (d: stats.DomainStat) =>
-    kind === "direct" ? (d.direct_bytes ?? 0) : (d.proxy_bytes ?? 0);
-
-  const groups = new Map<
-    string,
-    { label: string; members: stats.DomainStat[]; bytes: number; up: number; down: number }
-  >();
-  let total = 0;
-
-  for (const d of domains.value) {
-    const b = bytesOf(d);
-    if (b <= 0) continue;
-    const addr = isAddrLiteral(d.domain);
-    const vendor = addr ? undefined : matchVendor(d.domain);
-    // Unlisted sites group by their registrable domain — baidu.com.cn, not
-    // a pile of anonymous hosts — so the leftovers read as a ranking.
-    const base = addr ? "" : baseDomain(d.domain);
-    const id = addr ? "@addr" : vendor ? vendor.id : "d:" + base;
-    const label = addr
-      ? t("stats.unnamed")
-      : vendor
-        ? locale.value === "zh"
-          ? vendor.zh
-          : vendor.en
-        : base;
-
-    // Per-direction numbers are stored per entry, not per decision; when an
-    // entry rode both paths, scale them by the share this side owns.
-    const whole = (d.upload_bytes ?? 0) + (d.download_bytes ?? 0);
-    const up = whole > 0 ? ((d.upload_bytes ?? 0) * b) / whole : 0;
-    const down = whole > 0 ? ((d.download_bytes ?? 0) * b) / whole : 0;
-
-    const g = groups.get(id);
-    if (g) {
-      g.members.push(d);
-      g.bytes += b;
-      g.up += up;
-      g.down += down;
-    } else {
-      groups.set(id, { label, members: [d], bytes: b, up, down });
-    }
-    total += b;
-  }
-
-  // Everything ranks by traffic, largest first — vendor names and grouped
-  // base domains compete on the same scale; the unrecognised-address
-  // bucket pins last, since it is not a destination of its own.
-  const rows = [...groups.entries()]
-    .map(([id, g]): DestRow => ({
-      id,
-      label: g.label,
-      bytes: g.bytes,
-      up: g.up,
-      down: g.down,
-      members: g.members,
-    }))
-    .sort((a, b) => {
-      const ra = a.id === "@addr" ? 1 : 0;
-      const rb = b.id === "@addr" ? 1 : 0;
-      return ra - rb || b.bytes - a.bytes;
-    });
-
-  return { total, rows };
-}
+// Shared with the Connections page's destination tab (dest-group.ts), so
+// both screens classify the same bytes the same way.
 
 const processes = ref<stats.ProcessStat[]>([]);
 
@@ -206,8 +125,9 @@ const appGroupOf = (side: "direct" | "proxy") =>
 const appActiveSide = ref<"direct" | "proxy">("direct");
 const hasAppData = computed(() => processes.value.length > 0);
 
-const directGroup = computed(() => buildGroup("direct"));
-const proxyGroup = computed(() => buildGroup("proxy"));
+const destLabels = () => ({ unnamed: t("stats.unnamed"), lang: locale.value });
+const directGroup = computed(() => buildDestGroup(domains.value, "direct", destLabels()));
+const proxyGroup = computed(() => buildDestGroup(domains.value, "proxy", destLabels()));
 const hasData = computed(() => domains.value.length > 0);
 const groupOf = (side: "direct" | "proxy") => (side === "direct" ? directGroup.value : proxyGroup.value);
 
@@ -228,18 +148,6 @@ function toggleRow(side: string, id: string) {
   expanded.value = next;
 }
 const isOpen = (side: string, id: string) => expanded.value.has(`${side}:${id}`);
-
-// The expanded list shows the vendor's own entries, biggest first, capped:
-// a CDN vendor can own hundreds of hostnames and the box must not grow with
-// them. The count line tells the user there is more.
-function topMembers(members: stats.DomainStat[], bytesOf: (d: stats.DomainStat) => number) {
-  return [...members].sort((a, b) => bytesOf(b) - bytesOf(a)).slice(0, 8);
-}
-
-function share(bytes: number, total: number): string {
-  if (total <= 0) return "";
-  return `${Math.round((bytes / total) * 100)}%`;
-}
 
 // Poll slower than the home page: the lifetime record moves at human speed,
 // and every read re-sorts a table of up to a few thousand entries.

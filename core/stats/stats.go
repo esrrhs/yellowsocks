@@ -154,10 +154,24 @@ type ProcessStat struct {
 	// baseline, so a number from a previous run is never reported.
 	UploadBps   int64 `json:"upload_bps"`
 	DownloadBps int64 `json:"download_bps"`
+	// The same live speeds split by routing decision, over the same window:
+	// the apps table shows domestic and foreign rates next to the totals.
+	DirectUploadBps   int64 `json:"direct_upload_bps"`
+	DirectDownloadBps int64 `json:"direct_download_bps"`
+	ProxyUploadBps    int64 `json:"proxy_upload_bps"`
+	ProxyDownloadBps  int64 `json:"proxy_download_bps"`
 
 	rateAt   time.Time
 	rateUp   int64
 	rateDown int64
+	// Per-decision byte counters feeding the split rates. Private: they only
+	// exist to diff between samples, exactly like rateUp/rateDown.
+	directUp, directDown int64
+	proxyUp, proxyDown   int64
+	rateDirectUp         int64
+	rateDirectDown       int64
+	rateProxyUp          int64
+	rateProxyDown        int64
 }
 
 // sampleRate folds the bytes accrued since the previous sample into speeds.
@@ -167,7 +181,11 @@ func (p *ProcessStat) sampleRate(now time.Time) {
 	if p.rateAt.IsZero() {
 		p.rateAt = now
 		p.rateUp, p.rateDown = p.Upload, p.Download
+		p.rateDirectUp, p.rateDirectDown = p.directUp, p.directDown
+		p.rateProxyUp, p.rateProxyDown = p.proxyUp, p.proxyDown
 		p.UploadBps, p.DownloadBps = 0, 0
+		p.DirectUploadBps, p.DirectDownloadBps = 0, 0
+		p.ProxyUploadBps, p.ProxyDownloadBps = 0, 0
 		return
 	}
 	dt := now.Sub(p.rateAt)
@@ -177,7 +195,13 @@ func (p *ProcessStat) sampleRate(now time.Time) {
 	ms := dt.Milliseconds()
 	p.UploadBps = (p.Upload - p.rateUp) * 1000 / ms
 	p.DownloadBps = (p.Download - p.rateDown) * 1000 / ms
+	p.DirectUploadBps = (p.directUp - p.rateDirectUp) * 1000 / ms
+	p.DirectDownloadBps = (p.directDown - p.rateDirectDown) * 1000 / ms
+	p.ProxyUploadBps = (p.proxyUp - p.rateProxyUp) * 1000 / ms
+	p.ProxyDownloadBps = (p.proxyDown - p.rateProxyDown) * 1000 / ms
 	p.rateAt, p.rateUp, p.rateDown = now, p.Upload, p.Download
+	p.rateDirectUp, p.rateDirectDown = p.directUp, p.directDown
+	p.rateProxyUp, p.rateProxyDown = p.proxyUp, p.proxyDown
 }
 
 // Total returns upload + download.
@@ -1317,8 +1341,12 @@ func (c *Collector) addProcessLocked(name, icon string, dec Decision, up, down, 
 	switch dec {
 	case DecisionDirect:
 		e.DirectBytes += up + down
+		e.directUp += up
+		e.directDown += down
 	case DecisionProxy:
 		e.ProxyBytes += up + down
+		e.proxyUp += up
+		e.proxyDown += down
 	}
 	e.LastSeen = now.Unix()
 }

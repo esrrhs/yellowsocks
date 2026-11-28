@@ -3,8 +3,9 @@ import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } fro
 import {
   EngineStatus,
   GetAutoStartCore,
-  GetLaunchAtLogin,
   GetLastProbe,
+  GetLaunchAtLogin,
+  GetLifetimeStats,
   GetOverview,
   GetProxyGuard,
   GetProxyMode,
@@ -25,6 +26,7 @@ import { errText, t, type MsgKey } from "../i18n";
 
 const status = ref(new guiapp.EngineStatus());
 const overview = ref<stats.Overview | null>(null);
+const lifetime = ref<stats.LifetimeStats | null>(null);
 const series = ref<stats.SeriesPoint[]>([]);
 const actionError = ref("");
 const autoStart = ref(false);
@@ -43,19 +45,23 @@ let offStatus: (() => void) | undefined;
 // the strip renders whatever lands.
 let offProbe: (() => void) | undefined;
 
-// The two live calls go out together. Awaited in turn they cost two round
-// trips per tick and, worse, the counters on screen lag the tick that just
-// fired; in parallel the page has both by the time the tick ends.
+// The live calls go out together. Awaited in turn they cost a round trip per
+// fact and, worse, the counters on screen lag the tick that just fired; in
+// parallel the page has all of them by the time the tick ends.
 async function refresh() {
-  const [ov, pts] = await Promise.all([
+  const [ov, pts, life] = await Promise.all([
     GetOverview().catch(() => null),
     GetSeries(1800).catch(() => [] as stats.SeriesPoint[]),
+    GetLifetimeStats().catch(() => null),
   ]);
   if (ov) overview.value = ov;
   // A nil overview while the engine is not running is "no data", not "keep the
   // last numbers"; when it is running, a failed read means the engine is
   // restarting and the previous sample is still the best thing to show.
   else if (!status.value.running) overview.value = null;
+  // The lifetime record is served from the app's cache and survives the
+  // engine, so it is kept even when the read fails transiently.
+  if (life) lifetime.value = life;
   if (status.value.running) series.value = pts ?? [];
   else series.value = [];
 }
@@ -298,7 +304,7 @@ onUnmounted(() => {
   offProbe = undefined;
 });
 
-// Traffic chart. Four polylines normalised against one shared ceiling, drawn
+// Traffic chart. Four curves normalised against one shared ceiling, drawn
 // in a 0..100 viewBox and stretched by CSS; colour stays "direction" (upload
 // blue, download purple, as in the stat cards) and the dashed line is the
 // foreign share of the same direction, so a pair reads as one quantity split
@@ -333,6 +339,69 @@ function niceRateCeil(v: number): number {
   return step * mag;
 }
 
+// Monotone cubic interpolation (Fritsch–Carlson) through the sample points.
+// Straight segments between one-minute samples read as a seismograph; a curve
+// is what the underlying traffic looks like. The monotone tangents are what
+// keep the curve honest: it passes through every sample and never dips below
+// the axis or above the samples it joins, which a plain Catmull-Rom spline
+// does on flat stretches.
+function smoothPath(values: number[]): string {
+  const n = values.length;
+  if (!n) return "";
+  const xAt = (i: number) => (i / Math.max(1, n - 1)) * 100;
+  if (n === 1) return `M ${xAt(0).toFixed(2)},${values[0].toFixed(2)}`;
+
+  const h = xAt(1) - xAt(0);
+  const secant: number[] = [];
+  for (let i = 0; i < n - 1; i++) secant.push((values[i + 1] - values[i]) / h);
+
+  // Tangents start as the average of the neighbouring secants; a sign change
+  // means a local extremum, where the curve has to level off.
+  const tangent: number[] = new Array(n);
+  tangent[0] = secant[0];
+  tangent[n - 1] = secant[n - 2];
+  for (let i = 1; i < n - 1; i++) {
+    tangent[i] = secant[i - 1] * secant[i] <= 0 ? 0 : (secant[i - 1] + secant[i]) / 2;
+  }
+
+  // Clamp the tangents so each segment stays monotone: no overshoot beyond
+  // the two samples it connects.
+  for (let i = 0; i < n - 1; i++) {
+    const d = secant[i];
+    if (d === 0) {
+      tangent[i] = 0;
+      tangent[i + 1] = 0;
+      continue;
+    }
+    let a = tangent[i] / d;
+    let b = tangent[i + 1] / d;
+    if (a < 0) {
+      tangent[i] = 0;
+      a = 0;
+    }
+    if (b < 0) {
+      tangent[i + 1] = 0;
+      b = 0;
+    }
+    const s = a * a + b * b;
+    if (s > 9) {
+      const t = 3 / Math.sqrt(s);
+      tangent[i] = t * a * d;
+      tangent[i + 1] = t * b * d;
+    }
+  }
+
+  let path = `M ${xAt(0).toFixed(2)},${values[0].toFixed(2)}`;
+  for (let i = 0; i < n - 1; i++) {
+    const c1x = xAt(i) + h / 3;
+    const c1y = values[i] + (tangent[i] * h) / 3;
+    const c2x = xAt(i + 1) - h / 3;
+    const c2y = values[i + 1] - (tangent[i + 1] * h) / 3;
+    path += ` C ${c1x.toFixed(2)},${c1y.toFixed(2)} ${c2x.toFixed(2)},${c2y.toFixed(2)} ${xAt(i + 1).toFixed(2)},${values[i + 1].toFixed(2)}`;
+  }
+  return path;
+}
+
 const chart = computed(() => {
   const pts = series.value;
   if (!pts.length) {
@@ -365,15 +434,10 @@ const chart = computed(() => {
     ),
   );
 
-  const toPath = (pick: (p: stats.SeriesPoint) => number) =>
-    pts
-      .map(
-        (p, i) =>
-          `${(i / Math.max(1, pts.length - 1)) * 100},${
-            100 - (Math.min(rate(pick(p)), peak) / peak) * 100
-          }`,
-      )
-      .join(" ");
+  const curve = (pick: (p: stats.SeriesPoint) => number) =>
+    smoothPath(
+      pts.map((p) => 100 - (Math.min(rate(pick(p)), peak) / peak) * 100),
+    );
 
   // Five labels each way: peak-to-zero down the side, first-to-last sample
   // along the bottom (naming the window that is actually drawn, which is not
@@ -397,15 +461,41 @@ const chart = computed(() => {
   }
 
   return {
-    up: toPath((p) => p.direct_upload_bytes ?? 0),
-    upIntl: toPath((p) => p.proxy_upload_bytes ?? 0),
-    down: toPath((p) => p.direct_download_bytes ?? 0),
-    downIntl: toPath((p) => p.proxy_download_bytes ?? 0),
+    up: curve((p) => p.direct_upload_bytes ?? 0),
+    upIntl: curve((p) => p.proxy_upload_bytes ?? 0),
+    down: curve((p) => p.direct_download_bytes ?? 0),
+    downIntl: curve((p) => p.proxy_download_bytes ?? 0),
     has: true,
     yTicks,
     xTicks,
   };
 });
+
+// ---------- load dials ----------
+//
+// Each live reading in the top row carries a small dial whose full sweep is
+// that reading's all-time record on the statistics page (max concurrent
+// connections, peak upload, peak download). The needle answers "how close to
+// the record is the link right now", which the bare number cannot: 2 MB/s is
+// idle or near the ceiling depending on what this machine has done before.
+// The cap is printed in the card header; a record of zero means nothing has
+// been measured yet, and the dial simply stays at rest.
+const GAUGE_ARC = Math.PI * 28;
+
+function gaugeOf(value: number, max: number) {
+  const frac = max > 0 ? Math.min(1, value / max) : 0;
+  return { frac, offset: GAUGE_ARC * (1 - frac) };
+}
+
+const gauge = computed(() => ({
+  conns: gaugeOf(overview.value?.active_conns ?? 0, lifetime.value?.max_conns ?? 0),
+  up: gaugeOf(overview.value?.rate?.upload_bps ?? 0, lifetime.value?.peak_up ?? 0),
+  down: gaugeOf(overview.value?.rate?.download_bps ?? 0, lifetime.value?.peak_down ?? 0),
+}));
+
+function capRate(v?: number | null): string {
+  return v && v > 0 ? fmtBps(v) : "—";
+}
 </script>
 
 <template>
@@ -500,25 +590,76 @@ const chart = computed(() => {
 
     <div class="cards">
       <div class="card stat">
-        <div class="stat-label">{{ t("stat.conns") }}</div>
-        <div class="stat-value">{{ overview?.active_conns ?? 0 }}</div>
+        <div class="stat-head">
+          <span class="stat-label">{{ t("stat.conns") }}</span>
+          <span class="stat-cap">{{ t("stat.cap") }} {{ lifetime?.max_conns || "—" }}</span>
+        </div>
+        <div class="stat-main">
+          <div class="stat-value">{{ overview?.active_conns ?? 0 }}</div>
+          <svg class="gauge" viewBox="0 0 72 42" aria-hidden="true">
+            <path class="gauge-track" d="M 8 38 A 28 28 0 0 1 64 38" />
+            <path
+              class="gauge-fill"
+              d="M 8 38 A 28 28 0 0 1 64 38"
+              :style="{ strokeDasharray: GAUGE_ARC, strokeDashoffset: gauge.conns.offset }"
+            />
+            <g class="gauge-needle" :style="{ transform: `rotate(${gauge.conns.frac * 180}deg)` }">
+              <line x1="36" y1="38" x2="12" y2="38" />
+            </g>
+            <circle class="gauge-hub" cx="36" cy="38" r="2.2" />
+          </svg>
+        </div>
         <div class="split-line">
           <span class="lg"><i class="sw dim"></i>{{ t("lifetime.direct") }} {{ overview?.active_direct ?? 0 }}</span>
           <span class="lg"><i class="sw dim intl"></i>{{ t("lifetime.proxy") }} {{ overview?.active_proxy ?? 0 }}</span>
         </div>
       </div>
       <div class="card stat">
-        <div class="stat-label">{{ t("stat.upRate") }}</div>
-        <div class="stat-value up">{{ fmtBps(overview?.rate?.upload_bps) }}</div>
+        <div class="stat-head">
+          <span class="stat-label">{{ t("stat.upRate") }}</span>
+          <span class="stat-cap">{{ t("stat.cap") }} {{ capRate(lifetime?.peak_up) }}</span>
+        </div>
+        <div class="stat-main">
+          <div class="stat-value up">{{ fmtBps(overview?.rate?.upload_bps) }}</div>
+          <svg class="gauge up" viewBox="0 0 72 42" aria-hidden="true">
+            <path class="gauge-track" d="M 8 38 A 28 28 0 0 1 64 38" />
+            <path
+              class="gauge-fill"
+              d="M 8 38 A 28 28 0 0 1 64 38"
+              :style="{ strokeDasharray: GAUGE_ARC, strokeDashoffset: gauge.up.offset }"
+            />
+            <g class="gauge-needle" :style="{ transform: `rotate(${gauge.up.frac * 180}deg)` }">
+              <line x1="36" y1="38" x2="12" y2="38" />
+            </g>
+            <circle class="gauge-hub" cx="36" cy="38" r="2.2" />
+          </svg>
+        </div>
         <div class="split-line">
           <span class="lg"><i class="sw up"></i>{{ t("lifetime.direct") }} {{ fmtBps(overview?.rate?.direct_upload_bps) }}</span>
           <span class="lg"><i class="sw up intl"></i>{{ t("lifetime.proxy") }} {{ fmtBps(overview?.rate?.proxy_upload_bps) }}</span>
         </div>
       </div>
       <div class="card stat">
-        <div class="stat-label">{{ t("stat.downRate") }}</div>
-        <div class="stat-value down">
-          {{ fmtBps(overview?.rate?.download_bps) }}
+        <div class="stat-head">
+          <span class="stat-label">{{ t("stat.downRate") }}</span>
+          <span class="stat-cap">{{ t("stat.cap") }} {{ capRate(lifetime?.peak_down) }}</span>
+        </div>
+        <div class="stat-main">
+          <div class="stat-value down">
+            {{ fmtBps(overview?.rate?.download_bps) }}
+          </div>
+          <svg class="gauge down" viewBox="0 0 72 42" aria-hidden="true">
+            <path class="gauge-track" d="M 8 38 A 28 28 0 0 1 64 38" />
+            <path
+              class="gauge-fill"
+              d="M 8 38 A 28 28 0 0 1 64 38"
+              :style="{ strokeDasharray: GAUGE_ARC, strokeDashoffset: gauge.down.offset }"
+            />
+            <g class="gauge-needle" :style="{ transform: `rotate(${gauge.down.frac * 180}deg)` }">
+              <line x1="36" y1="38" x2="12" y2="38" />
+            </g>
+            <circle class="gauge-hub" cx="36" cy="38" r="2.2" />
+          </svg>
         </div>
         <div class="split-line">
           <span class="lg"><i class="sw down"></i>{{ t("lifetime.direct") }} {{ fmtBps(overview?.rate?.direct_download_bps) }}</span>
@@ -567,28 +708,28 @@ const chart = computed(() => {
             <i v-for="g in chart.yTicks" :key="g.pos" :style="{ top: `${g.pos}%` }"></i>
           </div>
           <svg class="chart" preserveAspectRatio="none" viewBox="0 0 100 100">
-            <polyline
+            <path
               v-if="chart.has"
               class="line-up intl"
-              :points="chart.upIntl"
+              :d="chart.upIntl"
               fill="none"
             />
-            <polyline
+            <path
               v-if="chart.has"
               class="line-down intl"
-              :points="chart.downIntl"
+              :d="chart.downIntl"
               fill="none"
             />
-            <polyline
+            <path
               v-if="chart.has"
               class="line-up"
-              :points="chart.up"
+              :d="chart.up"
               fill="none"
             />
-            <polyline
+            <path
               v-if="chart.has"
               class="line-down"
-              :points="chart.down"
+              :d="chart.down"
               fill="none"
             />
           </svg>

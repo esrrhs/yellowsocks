@@ -5,15 +5,27 @@ import (
 	"encoding/binary"
 	"fmt"
 	goruntime "runtime"
+	"sync/atomic"
 	"time"
 
 	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 
 	"github.com/energye/systray"
+	"github.com/esrrhs/gohome/loggo"
 )
 
 //go:embed appicon.png
 var appIconPNG []byte
+
+// The library removes the icon only when its message loop handles the WM_CLOSE
+// that Quit posts; Quit itself just posts and returns. Exiting right afterwards
+// leaves the icon on the taskbar as a dead picture: it stays until the pointer
+// crosses it, and clicking it does nothing. A shutdown that waits for the loop
+// turns that ghost into a clean exit.
+var (
+	trayStarted atomic.Bool
+	trayExited  = make(chan struct{})
+)
 
 // runTray populates and serves the system tray menu. It runs in its own
 // goroutine started by App.startup. energye/systray is the community fork
@@ -25,6 +37,7 @@ var appIconPNG []byte
 // no tray at all.
 func runTray(a *App) {
 	stop := make(chan struct{})
+	trayStarted.Store(true)
 	systray.Run(func() {
 		systray.SetIcon(trayIcon())
 		systray.SetTooltip("YellowSocks")
@@ -113,6 +126,7 @@ func runTray(a *App) {
 			}
 		}()
 	}, func() { close(stop) })
+	close(trayExited)
 }
 
 // trayMenu groups the items refreshTray rewrites. One value instead of a
@@ -301,7 +315,17 @@ func icoFromPNG(png []byte) []byte {
 }
 
 // systrayQuit removes the tray icon; called from App.shutdown when the app
-// really exits.
+// really exits. Quit is asynchronous, so the caller waits for the loop to
+// finish (bounded) before Shutdown returns and the process goes away.
 func systrayQuit() {
 	systray.Quit()
+	if !trayStarted.Load() {
+		return
+	}
+	select {
+	case <-trayExited:
+		loggo.Info("[GUI] tray icon removed")
+	case <-time.After(3 * time.Second):
+		loggo.Warn("[GUI] tray loop did not stop in time; the icon may linger until the pointer crosses it")
+	}
 }
