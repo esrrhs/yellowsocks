@@ -28,6 +28,10 @@ the same engine.
   system proxy through a Wintun adapter and fake-ip DNS.
 - **Tray and background**: start/stop, proxy, TUN and routing mode from the
   menu; the window closes to the tray.
+- **Mutual restart**: a companion `yellowsocks-watchdog.exe` runs beside the
+  app; if either process exits, the other brings it back within seconds. An
+  update restarts both together so each binary is replaced, while a TUN
+  handover keeps the guard alive.
 - **Portable**: `yellowsocks-gui.exe`, `wintun.dll` and `config.yaml` in one
   folder; settings, logs and statistics stay beside them.
 

@@ -25,4 +25,10 @@ if [ -n "${version}" ]; then
 fi
 
 echo "==> yellow socks GUI ${version:-(default version)} (commit: ${commit}, built: ${built})"
-exec wails build -ldflags "${ldflags}" "$@"
+wails build -ldflags "${ldflags}" "$@"
+
+# The guard half of the mutual-restart pair: shipped next to the exe, it
+# restarts the app when it disappears and is restarted by it in turn
+# (see ../watchdog). windowsgui keeps it console-free like the app.
+echo "==> watchdog"
+(cd .. && go build -trimpath -ldflags "-H windowsgui" -o windows/build/bin/yellowsocks-watchdog.exe ./watchdog)

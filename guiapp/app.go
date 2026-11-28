@@ -241,6 +241,13 @@ func (a *App) Startup(ctx context.Context) {
 	go WatchShowRequests(func() { showMainWindow(a) })
 	// Drop restart.request into the data directory to swap in a fresh build.
 	go a.restartWatcher()
+	// The guard process that restarts this app when it disappears, and is
+	// restarted by it in turn. A marker left by a previous tray quit would
+	// make the guard exit on sight, so it goes before the guard is ensured,
+	// and the instance state tells the guard whether it needs to be elevated.
+	clearWatchdogStop()
+	writeInstanceState()
+	go a.watchdogLoop()
 	go a.proxyGuardLoop()
 	// The automatic self-check: once per minute while the engine runs, and
 	// once shortly after every engine start.
@@ -971,14 +978,41 @@ func (a *App) EngineStatus() EngineStatus {
 	return a.statusLocked()
 }
 
-// quitApp is the one real "exit now" path: stop the engine, then ask Wails to
-// exit. Callers are the tray menu, the TUN handover and the restart watcher.
-// The quitting flag must be set first, otherwise BeforeClose hides the window
-// instead of letting the process go, and Shutdown never runs.
-func (a *App) quitApp() {
+// requestQuit marks the exit as underway and reports whether this caller is
+// the one that started it. Several paths can trip at nearly the same moment
+// (tray quit, the guard's stop marker, the update handover); the flag must be
+// set before any teardown starts, and only the first caller may run it.
+func (a *App) requestQuit() bool {
 	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.quitting {
+		return false
+	}
 	a.quitting = true
-	a.mu.Unlock()
+	return true
+}
+
+// quitApp is the one real "exit now" path: stop the engine, then ask Wails to
+// exit. The quitting flag must be set first, otherwise BeforeClose hides the
+// window instead of letting the process go, and Shutdown never runs. The TUN
+// handover uses it as-is so the guard survives the swap.
+func (a *App) quitApp() {
+	if !a.requestQuit() {
+		return
+	}
+	_ = a.StopEngine()
+	runtime.Quit(a.ctx)
+}
+
+// quitWithWatchdog is quitApp for the paths that take the guard down too: the
+// stop marker goes down first so the guard exits instead of restarting us, and
+// whatever starts the app next (a relaunch, the update handover) clears the
+// marker and starts a fresh guard.
+func (a *App) quitWithWatchdog() {
+	if !a.requestQuit() {
+		return
+	}
+	stopWatchdog()
 	_ = a.StopEngine()
 	runtime.Quit(a.ctx)
 }

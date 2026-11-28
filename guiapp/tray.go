@@ -109,7 +109,7 @@ func runTray(a *App) {
 		m.rule.Click(func() { setModeFromTray(a, "rule", m) })
 		m.global.Click(func() { setModeFromTray(a, "global", m) })
 		m.direct.Click(func() { setModeFromTray(a, "direct", m) })
-		m.quit.Click(a.quitApp)
+		m.quit.Click(a.quitWithWatchdog)
 
 		refreshTray(a, m)
 

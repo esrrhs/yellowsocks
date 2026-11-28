@@ -8,6 +8,7 @@ require (
 	github.com/esrrhs/spp v0.15.1-0.20261117234239-7584e1843761
 	github.com/miekg/dns v1.1.73
 	golang.org/x/net v0.63.0
+	golang.org/x/sys v0.50.0
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -30,7 +31,6 @@ require (
 	github.com/xtaci/kcp-go v5.4.20+incompatible // indirect
 	golang.org/x/crypto v0.59.0 // indirect
 	golang.org/x/sync v0.25.0 // indirect
-	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/check.v1 v1.0.0-20201130134442-10cb98267c6c // indirect

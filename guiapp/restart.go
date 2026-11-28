@@ -57,6 +57,11 @@ func (a *App) restartWatcher() {
 // what --restarted tells it to wait out. Our own flags are passed through
 // except --hidden: a restart is an explicit act, so it should come back with a
 // window rather than silently landing in the tray.
+//
+// This path is how both binaries get updated, so the guard exits along with us
+// (quitWithWatchdog); a guard left running would keep the old watchdog binary
+// and the replacement could not start a fresh one. The replacement clears the
+// stop marker at Startup, then starts the new guard.
 func (a *App) restartForUpgrade() {
 	exe, err := os.Executable()
 	if err != nil {
@@ -79,7 +84,7 @@ func (a *App) restartForUpgrade() {
 	}
 	loggo.Info("[GUI] restart: replacement copy started (pid %d), shutting down", cmd.Process.Pid)
 	a.armForcedExit("restart")
-	a.quitApp()
+	a.quitWithWatchdog()
 }
 
 // armForcedExit guarantees the process goes away even if teardown hangs. The

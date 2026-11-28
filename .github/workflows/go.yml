@@ -165,10 +165,15 @@ jobs:
         shell: bash
         run: wails build -webview2 embed
 
+      - name: Build watchdog (Windows)
+        if: matrix.os == 'windows-latest'
+        shell: bash
+        run: go build -trimpath -ldflags "-H windowsgui" -o windows/build/bin/yellowsocks-watchdog.exe ./watchdog
+
       - name: Package (Windows)
         if: matrix.os == 'windows-latest'
         shell: pwsh
-        run: Compress-Archive -Path windows/build/bin/yellowsocks-gui.exe, config.example.yaml -DestinationPath yellowsocks-gui_${{ matrix.platform }}.zip
+        run: Compress-Archive -Path windows/build/bin/yellowsocks-gui.exe, windows/build/bin/yellowsocks-watchdog.exe, config.example.yaml -DestinationPath yellowsocks-gui_${{ matrix.platform }}.zip
 
       - name: Package (macOS)
         if: matrix.os == 'macos-latest'

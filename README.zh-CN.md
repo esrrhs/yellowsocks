@@ -25,6 +25,9 @@ Windows 桌面客户端与 Linux 命令行。
   Wintun 适配器和 fake-ip DNS 接管绕过系统代理的游戏和命令行工具。
 - **托盘与后台**：启动/停止、系统代理、TUN 和路由模式都能在托盘菜单里切换；
   关闭窗口即收进托盘。
+- **互相拉起**：随附的 `yellowsocks-watchdog.exe` 与主程序互为守护，任何一方
+  退出，另一方都会在几秒内把它拉起；更新时两者一起退出、一起换新，TUN 提权
+  交接则保持守护进程存活。
 - **便携**：`yellowsocks-gui.exe`、`wintun.dll` 和 `config.yaml` 放在一个文件夹
   即可运行，设置、日志和统计也保存在旁边。
 
@@ -44,4 +47,4 @@ sudo ./yellowsocks-cli -spp-server "your_spp_server:8888" -spp-proto tcp -spp-ke
 
 本地提供 DNS（`:53`）、DoH（`:8053`）、SOCKS5（`:1080`）和 HTTP（`:8080`）；
 监听 53 端口和 ICMP 上游需要 root。完整配置、参数列表、统计 API 和面板见
-[USAGE.md](USAGE.md)。
+[USAGE.zh-CN.md](USAGE.zh-CN.md)。
