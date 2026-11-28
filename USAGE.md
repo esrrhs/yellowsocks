@@ -1,5 +1,7 @@
 # Usage
 
+**English** | [简体中文](USAGE.zh-CN.md)
+
 Both clients run the same engine: the CLI exposes it directly on Linux, the
 Windows app adds a desktop UI, system proxy and TUN capture. The config file,
 the routing rules and the statistics API are identical.
@@ -254,8 +256,9 @@ not a substitute for the proxy.
 
 The Windows app (`windows/`) is the same engine behind a tray icon, a system
 proxy switch, auto-connect, launch-at-login and TUN capture. `config.yaml`,
-`wintun.dll` and `yellowsocks-gui.exe` in one directory are a complete
-installation; `settings.json`, the logs and `stats.json` land next to them.
+`wintun.dll`, `yellowsocks-gui.exe` and `yellowsocks-watchdog.exe` in one
+directory are a complete installation; `settings.json`, the logs and
+`stats.json` land next to them.
 
 ### TUN mode
 
@@ -293,18 +296,20 @@ down again, writing a full report to `tuntest-out.log`.
 
 ```bash
 cd windows
-wails build -o yellowsocks-gui.exe -ldflags "-H windowsgui -s -w"
+./build.sh
 ```
 
-Use `wails build`, not `go build`: it is what embeds the icon
-(`build/windows/icon.ico`) and the manifest, so the exe, the taskbar button and
-alt-tab all get the real icon instead of the generic Go one. `-o` picks the
-output name, which is also how you rebuild while a copy of the app is running —
-the running exe is locked and cannot be overwritten in place.
+`build.sh` runs `wails build` with the version metadata the About page shows,
+then builds `yellowsocks-watchdog.exe` next to the app. Use `wails build`, not
+`go build`: it is what embeds the icon (`build/windows/icon.ico`) and the
+manifest, so the exe, the taskbar button and alt-tab all get the real icon
+instead of the generic Go one. Arguments are passed through, and `-o` picks
+the output name — the running exe is locked and cannot be overwritten in
+place, so a copy under another name is how you rebuild while the app runs.
 
-The result is portable: `yellowsocks-gui.exe`, `wintun.dll` and `config.yaml`
-next to each other are a complete installation, settings and logs land in the
-same directory.
+The result is portable: `yellowsocks-gui.exe`, `yellowsocks-watchdog.exe`,
+`wintun.dll` and `config.yaml` next to each other are a complete installation,
+settings and logs land in the same directory.
 
 ## Profiling a running relay
 
