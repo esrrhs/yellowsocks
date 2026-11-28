@@ -269,6 +269,10 @@ export namespace stats {
 	    totals: Counters;
 	    direct: Counters;
 	    proxy: Counters;
+	    peak_up: number;
+	    peak_down: number;
+	    max_conns: number;
+	    active_sec: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new LifetimeStats(source);
@@ -279,6 +283,10 @@ export namespace stats {
 	        this.totals = this.convertValues(source["totals"], Counters);
 	        this.direct = this.convertValues(source["direct"], Counters);
 	        this.proxy = this.convertValues(source["proxy"], Counters);
+	        this.peak_up = source["peak_up"];
+	        this.peak_down = source["peak_down"];
+	        this.max_conns = source["max_conns"];
+	        this.active_sec = source["active_sec"];
 	    }
 	
 		convertValues(a: any, classs: any, asMap: boolean = false): any {
@@ -402,6 +410,32 @@ export namespace stats {
 		    }
 		    return a;
 		}
+	}
+	export class ProcessStat {
+	    name: string;
+	    icon?: string;
+	    upload_bytes: number;
+	    download_bytes: number;
+	    conns: number;
+	    direct_bytes: number;
+	    proxy_bytes: number;
+	    last_seen: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new ProcessStat(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.icon = source["icon"];
+	        this.upload_bytes = source["upload_bytes"];
+	        this.download_bytes = source["download_bytes"];
+	        this.conns = source["conns"];
+	        this.direct_bytes = source["direct_bytes"];
+	        this.proxy_bytes = source["proxy_bytes"];
+	        this.last_seen = source["last_seen"];
+	    }
 	}
 	
 	export class SeriesPoint {

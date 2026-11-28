@@ -38,6 +38,10 @@ export function GetLifetimeDomains(arg1) {
   return window['go']['guiapp']['App']['GetLifetimeDomains'](arg1);
 }
 
+export function GetLifetimeProcesses() {
+  return window['go']['guiapp']['App']['GetLifetimeProcesses']();
+}
+
 export function GetLifetimeStats() {
   return window['go']['guiapp']['App']['GetLifetimeStats']();
 }

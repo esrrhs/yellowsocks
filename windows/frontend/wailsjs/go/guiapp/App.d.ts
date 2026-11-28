@@ -23,6 +23,8 @@ export function GetLaunchAtLogin():Promise<boolean>;
 
 export function GetLifetimeDomains(arg1:number):Promise<Array<stats.DomainStat>>;
 
+export function GetLifetimeProcesses():Promise<Array<stats.ProcessStat>>;
+
 export function GetLifetimeStats():Promise<stats.LifetimeStats>;
 
 export function GetLogPath():Promise<string>;

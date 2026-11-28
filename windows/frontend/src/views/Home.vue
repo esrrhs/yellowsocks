@@ -164,35 +164,6 @@ async function setMode(mode: string) {
   }
 }
 
-// lineLegs lists the probe legs of one path for the strip: the domestic
-// line shows the direct check and its egress, the foreign line the proxy
-// check, the upstream and its egress. Unknown keys (future legs) are
-// ignored rather than guessed into a line.
-const lineLegKeys: Record<"direct" | "proxy", string[]> = {
-  direct: ["direct", "exitip_direct"],
-  proxy: ["proxied", "upstream", "exitip"],
-};
-function lineLegs(side: "direct" | "proxy") {
-  const items = probe.value?.items ?? [];
-  return lineLegKeys[side]
-    .map((k) => items.find((i) => i.key === k))
-    .filter((i): i is guiapp.ProbeItem => !!i);
-}
-
-// One line per leg in the strip; the per-leg detail sentences the old card
-// showed move into the strip's tooltip.
-const probeTip = computed(() => {
-  const p = probe.value;
-  if (!p) return "";
-  return p.items
-    .map((it) => {
-      const key = it.detail_key ? probeDetails[it.detail_key] : undefined;
-      const detail = key ? t(key) : it.detail || "";
-      return `${probeName(it)}: ${it.ok ? `${it.ms}ms` : t("probe.fail")}${detail ? ` · ${detail}` : ""}`;
-    })
-    .join("\n");
-});
-
 // The probe report carries no display text: Go reports which row it is (key)
 // and which sentence applies (detail_key), and the wording lives here, in both
 // languages. Raw details (a Go net error, an HTTP status) are shown verbatim
@@ -237,15 +208,16 @@ const exitPlace = computed(() => {
   return country || city;
 });
 
-// Same rendering for the domestic egress: country code localised, city
-// verbatim from the provider.
-const exitPlaceDirect = computed(() => {
-  const p = probe.value;
-  if (!p) return "";
-  const country = fmtCountry(p.exit_country_direct);
-  const city = (p.exit_city_direct ?? "").trim();
-  if (country && city) return `${country} · ${city}`;
-  return country || city;
+// The mode row's exit chip: the proxied egress address and the latency of
+// the check that saw it. Hidden until the engine has probed at least once.
+const exitLeg = computed(() => probe.value?.items.find((i) => i.key === "exitip"));
+const exitShown = computed(
+  () => !!status.value.running && !!probe.value && !!probe.value.exit_ip && !!exitLeg.value?.ok,
+);
+const exitText = computed(() => {
+  const leg = exitLeg.value!;
+  const place = exitPlace.value;
+  return `出口 ${leg.ms}ms · ${probe.value!.exit_ip}${place ? " · " + place : ""}`;
 });
 
 // UDP associations carry no single decision (each datagram is routed on its
@@ -448,42 +420,6 @@ const chart = computed(() => {
 
 <template>
   <section class="page">
-    <div class="probe-wrap">
-      <div class="probe-strip" v-if="status.running">
-        <div class="probe-line">
-          <span class="ps-label" :title="t('probe.hint')">{{ t("probe.title") }}</span>
-          <span class="ps-time" v-if="probe">{{ fmtHM(probe.at) }}</span>
-          <span class="ps-line-label">{{ t("lifetime.direct") }}</span>
-          <template v-if="probe">
-            <span class="ps-item" v-for="l in lineLegs('direct')" :key="l.key" :title="probeTip">
-              <i class="dot" :class="l.ok ? 'on' : 'err'"></i>
-              <span>{{ probeName(l) }}</span>
-              <span class="ps-ms" v-if="l.ok">{{ l.ms }}ms</span>
-            </span>
-            <span class="ps-exit" v-if="probe.exit_ip_direct" :title="probeTip">
-              {{ probe.exit_ip_direct }}
-              <template v-if="exitPlaceDirect"> · {{ exitPlaceDirect }}</template>
-            </span>
-          </template>
-          <span class="ps-state" v-else>{{ t("probe.idle") }}</span>
-        </div>
-        <div class="probe-line">
-          <span class="ps-line-label">{{ t("lifetime.proxy") }}</span>
-          <template v-if="probe">
-            <span class="ps-item" v-for="l in lineLegs('proxy')" :key="l.key" :title="probeTip">
-              <i class="dot" :class="l.ok ? 'on' : 'err'"></i>
-              <span>{{ probeName(l) }}</span>
-              <span class="ps-ms" v-if="l.ok">{{ l.ms }}ms</span>
-            </span>
-            <span class="ps-exit" v-if="probe.exit_ip" :title="probeTip">
-              {{ probe.exit_ip }}
-              <template v-if="exitPlace"> · {{ exitPlace }}</template>
-            </span>
-          </template>
-        </div>
-      </div>
-    </div>
-
     <div class="mode-row">
       <span class="mode-label">{{ t("mode.label") }}</span>
       <div class="seg">
@@ -503,6 +439,10 @@ const chart = computed(() => {
           {{ t("mode.direct") }}
         </button>
       </div>
+      <span class="mode-exit" v-if="exitShown">
+        <i class="dot on"></i>
+        <span>{{ exitText }}</span>
+      </span>
       <span class="mode-hint">
         {{
           proxyMode === "rule"

@@ -351,6 +351,15 @@ body {
    and pushed here as an event, so it stays current even while the window
    hides in the tray. Legs read as lamps + milliseconds; the per-leg detail
    sentences live in the strip's tooltip. */
+/* Self-check divider: a faceplate rule between the probe lines and the
+   mode row, restoring the top/bottom separation the status card used to
+   provide. */
+.probe-wrap {
+    margin-bottom: 14px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+}
+
 .probe-strip {
     display: flex;
     flex-direction: column;
@@ -2095,13 +2104,79 @@ body {
 
 /* Sidebar start/stop: the one control that matters from any page, parked
    between the nav and the theme switcher. */
+/* The start/stop button is the sidebar's bottom cap: flush with the outer
+   edges (negative margins cancel the sidebar's own padding), full width,
+   tall enough to read as the panel's base. */
 .sidebar-toggle-wrap {
-    padding: 8px 10px;
+    margin: 8px -10px -12px;
+    padding: 0;
 }
 
 .sidebar-toggle {
     width: 100%;
-    font-size: 13.5px;
+    font-size: 14px;
     font-weight: 600;
-    padding: 11px 8px;
+    padding: 15px 8px;
+    border: none;
+    border-top: 1px solid var(--line);
+    border-radius: 0;
+}
+
+/* The strip title and its timestamp pin to the right end of every line:
+   both rows end with the same element, so they align without the title
+   crowding the 国内 label. */
+.ps-right {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    white-space: nowrap;
+}
+
+
+
+/* The proxied egress sits at the right end of the mode row: a lamp, the
+   latency of the check that saw it, and the address with its location. */
+.mode-exit {
+    margin-left: auto;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    color: var(--text-2);
+    font-family: var(--mono);
+    font-size: 11px;
+    white-space: nowrap;
+}
+
+/* Stats page: the top-level tabs (totals / destination / application). The
+   accent underline matches the 国内/国外 sub-tabs inside the panels. */
+.stats-tabs {
+    display: flex;
+    gap: 2px;
+    margin-bottom: 14px;
+    border-bottom: 1px solid var(--line);
+}
+
+.stats-tab {
+    display: inline-flex;
+    padding: 7px 14px 8px;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-dim);
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+    box-shadow: inset 0 -2px 0 transparent;
+    transition: color 0.12s, background 0.12s;
+}
+
+.stats-tab:hover {
+    color: var(--text);
+    background: var(--raise);
+}
+
+.stats-tab.active {
+    color: var(--text);
+    box-shadow: inset 0 -2px 0 var(--accent);
 }
