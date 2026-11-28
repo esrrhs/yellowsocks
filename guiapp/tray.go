@@ -78,8 +78,14 @@ func runTray(a *App) {
 		// at all before: only the menu item was wired. The menu keeps its own
 		// entry as the discoverable equivalent, and the right click still
 		// opens the menu because only the left button is claimed here.
-		systray.SetOnClick(func(systray.IMenu) { showMainWindow(a) })
-		m.show.Click(func() { showMainWindow(a) })
+		//
+		// These handlers run on the tray's message-loop thread, inside its
+		// window procedure. Anything slow or blocking there does not just make
+		// the window late -- it stops the loop itself, and the icon answers no
+		// click until the app restarts. Every handler therefore only spawns a
+		// goroutine; showMainWindow and quitWithWatchdog do the actual work.
+		systray.SetOnClick(func(systray.IMenu) { go showMainWindow(a) })
+		m.show.Click(func() { go showMainWindow(a) })
 		m.start.Click(func() {
 			go func() {
 				_ = a.StartEngine()
@@ -109,7 +115,11 @@ func runTray(a *App) {
 		m.rule.Click(func() { setModeFromTray(a, "rule", m) })
 		m.global.Click(func() { setModeFromTray(a, "global", m) })
 		m.direct.Click(func() { setModeFromTray(a, "direct", m) })
-		m.quit.Click(a.quitWithWatchdog)
+		m.quit.Click(func() {
+			// Quit tears the engine down, which with TUN up can take seconds;
+			// the tray loop must not wait for that to unwind.
+			go a.quitWithWatchdog()
+		})
 
 		refreshTray(a, m)
 
@@ -125,6 +135,8 @@ func runTray(a *App) {
 				}
 			}
 		}()
+
+		go watchTrayLoop(stop)
 	}, func() { close(stop) })
 	close(trayExited)
 }
@@ -273,20 +285,45 @@ func trayRate(n int64) string {
 	return fmt.Sprintf("%.1f%s", v, units[i])
 }
 
-// showMainWindow raises the window from the tray. Unminimising is not enough
-// for a window that was closed to the tray (that one is hidden, not minimised),
-// and Windows will not hand the foreground to a process that is not already in
-// front of the user, so the always-on-top round trip is what actually pulls it
-// above whatever had focus.
+// trayShowInFlight keeps repeated clicks from piling up waiters behind a raise
+// that is already running (or stuck). It is a diagnostic and a throttle, not a
+// correctness lock: a show that finishes lets the next click through at once.
+var trayShowInFlight atomic.Bool
+
+// showMainWindow raises the window from the tray, from a goroutine of its own.
+// The Wails runtime calls below marshal to the window's UI thread and some of
+// them wait for it; running them on the tray message thread made one stuck
+// call take the whole tray down with it (the icon stays, clicks do nothing).
+// Unminimising is not enough for a window that was closed to the tray (that
+// one is hidden, not minimised), and Windows will not hand the foreground to
+// a process that is not already in front of the user, so the always-on-top
+// round trip is what actually pulls it above whatever had focus.
 func showMainWindow(a *App) {
 	ctx := a.ctx
 	if ctx == nil {
 		return
 	}
-	wailsruntime.WindowUnminimise(ctx)
-	wailsruntime.WindowShow(ctx)
-	wailsruntime.WindowSetAlwaysOnTop(ctx, true)
-	wailsruntime.WindowSetAlwaysOnTop(ctx, false)
+	if !trayShowInFlight.CompareAndSwap(false, true) {
+		loggo.Warn("[GUI] tray show: an earlier raise is still in flight")
+		return
+	}
+	defer trayShowInFlight.Store(false)
+
+	// A step that returns late names itself in the log; a step that never
+	// returns is caught by the tray watchdog and its goroutine dump instead.
+	step := func(name string, f func()) {
+		start := time.Now()
+		f()
+		if d := time.Since(start); d > 2*time.Second {
+			loggo.Warn("[GUI] tray show: %s took %s", name, d.Round(time.Millisecond))
+		}
+	}
+	step("unminimise", func() { wailsruntime.WindowUnminimise(ctx) })
+	step("show", func() { wailsruntime.WindowShow(ctx) })
+	step("topmost", func() {
+		wailsruntime.WindowSetAlwaysOnTop(ctx, true)
+		wailsruntime.WindowSetAlwaysOnTop(ctx, false)
+	})
 }
 
 // trayIcon returns icon bytes in the format the platform expects: Windows
