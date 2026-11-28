@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -450,12 +449,6 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 
 	loggo.Info("[SOCKS5] UDP ASSOCIATE ready on %s for client TCP %s", bndAddr, clientConn.RemoteAddr())
 
-	// One association carries datagrams for many destinations, so it is one
-	// statistics session; individual datagrams are attributed to their own
-	// target domain.
-	udpSess := s.cfg.Stats.Begin(stats.ProtoUDP, addrString(clientConn.RemoteAddr()), "", 0, stats.DecisionNone, "")
-	defer udpSess.End(nil)
-
 	assocClosed := atomic.Bool{}
 	activeClientUDP := atomic.Pointer[net.UDPAddr]{}
 
@@ -472,150 +465,6 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 			}
 		}
 	}()
-
-	// Upstream SPP UDP session tracking
-	var sppMu sync.Mutex
-	var sppTCPConn net.Conn
-	var sppUDPConn *net.UDPConn
-	var sppRelayUDP *net.UDPAddr
-	var sppRelease func()
-
-	closeSPP := func() {
-		sppMu.Lock()
-		defer sppMu.Unlock()
-		if sppTCPConn != nil {
-			_ = sppTCPConn.Close()
-			sppTCPConn = nil
-		}
-		if sppUDPConn != nil {
-			_ = sppUDPConn.Close()
-			sppUDPConn = nil
-		}
-		if sppRelease != nil {
-			sppRelease()
-			sppRelease = nil
-		}
-	}
-	defer closeSPP()
-
-	getOrCreateSPPUDPSession := func() (*net.UDPConn, *net.UDPAddr, error) {
-		sppMu.Lock()
-		defer sppMu.Unlock()
-		if sppUDPConn != nil && sppRelayUDP != nil {
-			return sppUDPConn, sppRelayUDP, nil
-		}
-		var sppAddr string
-		var nodeUser, nodePass, nodeName string
-		var release func()
-		if smart, ok := s.cfg.Upstream.(SmartUpstreamProvider); ok {
-			sppAddr, nodeUser, nodePass, nodeName, release = smart.PickNode()
-		} else if s.cfg.Upstream != nil {
-			sppAddr = s.cfg.Upstream.Socks5Addr()
-			nodeUser, nodePass = s.cfg.Upstream.Socks5Auth()
-		}
-		if sppAddr == "" {
-			if release != nil {
-				release()
-			}
-			return nil, nil, errors.New("no upstream SPP socks5 available")
-		}
-
-		tcpUpAddr, err := net.ResolveTCPAddr("tcp", sppAddr)
-		if err != nil {
-			if release != nil {
-				release()
-			}
-			return nil, nil, err
-		}
-		tcpUp, err := netdial.DialTCP(nil, tcpUpAddr, 10*time.Second)
-		if err != nil {
-			if release != nil {
-				release()
-			}
-			return nil, nil, err
-		}
-
-		user, pass := nodeUser, nodePass
-		if err := network.Sock5Handshake(tcpUp, 5000, user, pass); err != nil {
-			_ = tcpUp.Close()
-			if release != nil {
-				release()
-			}
-			return nil, nil, err
-		}
-
-		bnd, err := network.Sock5SetUDPRequest(tcpUp, "0.0.0.0", 0, 5000)
-		if err != nil {
-			_ = tcpUp.Close()
-			if release != nil {
-				release()
-			}
-			return nil, nil, err
-		}
-
-		bndH, bndP, err := net.SplitHostPort(bnd)
-		if err != nil {
-			_ = tcpUp.Close()
-			if release != nil {
-				release()
-			}
-			return nil, nil, err
-		}
-		p, _ := strconv.Atoi(bndP)
-		bndIP := net.ParseIP(bndH)
-		if bndIP == nil || bndIP.IsUnspecified() {
-			bndIP = tcpUp.RemoteAddr().(*net.TCPAddr).IP
-		}
-		relayTarget := &net.UDPAddr{IP: bndIP, Port: p}
-
-		uConn, err := net.ListenUDP("udp", nil)
-		if err != nil {
-			_ = tcpUp.Close()
-			if release != nil {
-				release()
-			}
-			return nil, nil, err
-		}
-		// The upstream relay socket sends to a real address (often the SPP
-		// server on the LAN); without the TUN-mode interface pin those sends
-		// would follow the routing table back into the virtual adapter.
-		if err := netdial.BindUDPConn(uConn); err != nil {
-			loggo.Warn("[SOCKS5] bind upstream UDP socket: %v", err)
-		}
-
-		sppTCPConn = tcpUp
-		sppUDPConn = uConn
-		sppRelayUDP = relayTarget
-		sppRelease = release
-		if nodeName != "" {
-			udpSess.SetNode(nodeName)
-		}
-
-		// Receive responses from SPP UDP relay and forward back to client
-		go func() {
-			defer common.CrashLog()
-			buf := make([]byte, 65535)
-			for {
-				n, rAddr, err := uConn.ReadFromUDP(buf)
-				if err != nil || assocClosed.Load() {
-					return
-				}
-				// Only the advertised relay endpoint may speak for the upstream;
-				// uConn is an unconnected socket, so any host reaching the ephemeral
-				// port could otherwise inject datagrams into the client's association.
-				if !sameUDPAddr(rAddr, relayTarget) {
-					continue
-				}
-				cAddr := activeClientUDP.Load()
-				if cAddr != nil && n > 0 {
-					_, _ = relayConn.WriteToUDP(buf[:n], cAddr)
-					udpSess.AddDatagram("", stats.DecisionProxy, 0, int64(n))
-				}
-			}
-		}()
-
-		return sppUDPConn, sppRelayUDP, nil
-	}
 
 	// Direct UDP sessions, one socket (plus a read goroutine) per target. Bounded
 	// by directUDPSessions: without a cap one association could pin an FD and
@@ -662,92 +511,68 @@ func (s *Socks5Server) handleUDPAssociate(clientConn net.Conn, targetHost string
 		if s.cfg.DNS != nil && s.cfg.DNS.TUNActive() && dstPort == 53 {
 			cAddr := activeClientUDP.Load()
 			if cAddr != nil {
-				go s.answerDNSDatagram(payload, dstHost, dstPort, relayConn, cAddr, udpSess, &assocClosed)
+				go s.answerDNSDatagram(payload, dstHost, dstPort, relayConn, cAddr, &assocClosed)
 			}
 			continue
 		}
 
-		decision, realHost := s.routeDecision(dstHost, dstPort)
+		// UDP relay is direct-only: every datagram dials its target through
+		// the physical path, and nothing is forwarded through the upstream.
+		// fake-ip targets have no real address to dial in-process (the
+		// resolver hands out fake addresses for proxied domains on purpose),
+		// so those datagrams are dropped and the application falls back to
+		// TCP, which still routes by domain through the proxy.
+		if s.cfg.DNS != nil && s.cfg.DNS.IsFakeIP(dstHost) {
+			continue
+		}
 		targetAddr := joinDialAddr(dstHost, dstPort)
 
-		if decision == router.Direct {
-			// The registry resolves the target once per association and hands
-			// back the same endpoint for every send and for the reply filter.
-			// Re-resolving a round-robin name (RFC 1794) on later datagrams
-			// could send them to a second peer whose replies the read loop
-			// would then drop.
-			sess, fresh, err := directSessions.get(targetAddr)
-			if err != nil {
-				loggo.Warn("[SOCKS5] direct UDP session for %s rejected: %v", targetAddr, err)
-				continue
-			}
-			if fresh {
-				go func(wantAddr *net.UDPAddr, conn *net.UDPConn, dec stats.Decision) {
-					defer common.CrashLog()
-					// Only datagrams from the target we sent to may be relayed; the
-					// outbound socket is unconnected, so anything else reaching its
-					// ephemeral port (a local process or off-path sender) would be
-					// forwarded with a spoofed source address.
-					buf := make([]byte, 65535)
-					for {
-						n, rAddr, err := conn.ReadFromUDP(buf)
-						if err != nil || assocClosed.Load() {
-							return
-						}
-						if !sameUDPAddr(rAddr, wantAddr) {
-							continue
-						}
-						cAddr := activeClientUDP.Load()
-						if cAddr != nil && n > 0 {
-							packed, err := network.Sock5PackUDP(rAddr.IP.String(), rAddr.Port, buf[:n])
-							if err == nil {
-								_, _ = relayConn.WriteToUDP(packed, cAddr)
-								udpSess.AddDatagram("", dec, 0, int64(n))
-							}
+		// The registry resolves the target once per association and hands
+		// back the same endpoint for every send and for the reply filter.
+		// Re-resolving a round-robin name (RFC 1794) on later datagrams
+		// could send them to a second peer whose replies the read loop
+		// would then drop.
+		sess, fresh, err := directSessions.get(targetAddr)
+		if err != nil {
+			loggo.Warn("[SOCKS5] direct UDP session for %s rejected: %v", targetAddr, err)
+			continue
+		}
+		if fresh {
+			go func(wantAddr *net.UDPAddr, conn *net.UDPConn) {
+				defer common.CrashLog()
+				// Only datagrams from the target we sent to may be relayed; the
+				// outbound socket is unconnected, so anything else reaching its
+				// ephemeral port (a local process or off-path sender) would be
+				// forwarded with a spoofed source address.
+				buf := make([]byte, 65535)
+				for {
+					n, rAddr, err := conn.ReadFromUDP(buf)
+					if err != nil || assocClosed.Load() {
+						return
+					}
+					if !sameUDPAddr(rAddr, wantAddr) {
+						continue
+					}
+					cAddr := activeClientUDP.Load()
+					if cAddr != nil && n > 0 {
+						packed, err := network.Sock5PackUDP(rAddr.IP.String(), rAddr.Port, buf[:n])
+						if err == nil {
+							_, _ = relayConn.WriteToUDP(packed, cAddr)
+							s.cfg.Stats.RecordUDPRelay(0, int64(n))
 						}
 					}
-				}(sess.addr, sess.conn, statsDecision(decision))
-			}
-			_, _ = sess.conn.WriteToUDP(payload, sess.addr)
-			// Name the datagram by the recovered peer, not the raw address:
-			// the domain counters and the association's displayed peer both
-			// benefit when our DNS (or a sniffed name) knows the destination.
-			udpSess.AddDatagram(joinDialAddr(realHost, dstPort), statsDecision(decision), int64(len(payload)), 0)
-		} else {
-			// Upstream SPP cannot route IPv6
-			if !s.cfg.EnableIPv6 && isIPv6Literal(dstHost) {
-				continue
-			}
-
-			// Proxy via SPP
-			sppUConn, sppRelayTarget, err := getOrCreateSPPUDPSession()
-			if err != nil {
-				loggo.Warn("[SOCKS5] SPP UDP session error for %s (%s): %v", targetAddr, realHost, err)
-				// The association survives a failed datagram, so record the
-				// error without closing the statistics session.
-				s.cfg.Stats.RecordError("socks5", dstHost, "SPP UDP session for %s: %v", targetAddr, err)
-				continue
-			}
-			// Forward the recovered domain to the upstream when available so
-			// it resolves remotely (mirrors the TCP CONNECT path); otherwise
-			// keep the original datagram verbatim.
-			outbound := pktBuf[:n]
-			if realHost != dstHost && net.ParseIP(realHost) == nil {
-				if repacked, perr := network.Sock5PackUDP(realHost, dstPort, payload); perr == nil {
-					outbound = repacked
 				}
-			}
-			if _, err := sppUConn.WriteToUDP(outbound, sppRelayTarget); err == nil {
-				udpSess.AddDatagram(joinDialAddr(realHost, dstPort), stats.DecisionProxy, int64(len(payload)), 0)
-			}
+			}(sess.addr, sess.conn)
 		}
+		_, _ = sess.conn.WriteToUDP(payload, sess.addr)
+		s.cfg.Stats.RecordUDPRelay(int64(len(payload)), 0)
 	}
 }
 
 // answerDNSDatagram resolves a captured :53 query in-process and writes the
 // reply back through the SOCKS5 UDP relay, sourcing it from the original
 // destination so tun2socks delivers it to the application socket that asked.
-func (s *Socks5Server) answerDNSDatagram(payload []byte, srcHost string, srcPort int, relay *net.UDPConn, client *net.UDPAddr, sess *stats.Session, closed *atomic.Bool) {
+func (s *Socks5Server) answerDNSDatagram(payload []byte, srcHost string, srcPort int, relay *net.UDPConn, client *net.UDPAddr, closed *atomic.Bool) {
 	defer common.CrashLog()
 	out := s.cfg.DNS.ResolvePayload(payload)
 	if out == nil {
@@ -766,10 +591,9 @@ func (s *Socks5Server) answerDNSDatagram(payload []byte, srcHost string, srcPort
 		return
 	}
 	_, _ = relay.WriteToUDP(packed, client)
-	// Count the query itself as upload, not just the answer as download: a
-	// hijacked DNS session with zero upload looked like a strange one-way
-	// stream on the connections page.
-	sess.AddDatagram(joinDialAddr(srcHost, srcPort), stats.DecisionDirect, int64(len(payload)), int64(len(out)))
+	// Count the query itself as upload, not just the answer, so the totals
+	// carry both directions of the exchange.
+	s.cfg.Stats.RecordUDPRelay(int64(len(payload)), int64(len(out)))
 }
 
 // defaultIdleTimeout closes proxied connections whose peer vanished without a

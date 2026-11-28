@@ -420,6 +420,8 @@ export namespace stats {
 	    direct_bytes: number;
 	    proxy_bytes: number;
 	    last_seen: number;
+	    upload_bps: number;
+	    download_bps: number;
 	
 	    static createFrom(source: any = {}) {
 	        return new ProcessStat(source);
@@ -435,6 +437,8 @@ export namespace stats {
 	        this.direct_bytes = source["direct_bytes"];
 	        this.proxy_bytes = source["proxy_bytes"];
 	        this.last_seen = source["last_seen"];
+	        this.upload_bps = source["upload_bps"];
+	        this.download_bps = source["download_bps"];
 	    }
 	}
 	

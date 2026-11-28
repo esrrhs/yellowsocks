@@ -37,6 +37,8 @@ export function GetNodes():Promise<Array<stats.NodeStat>>;
 
 export function GetOverview():Promise<stats.Overview>;
 
+export function GetProcesses():Promise<Array<stats.ProcessStat>>;
+
 export function GetProxyGuard():Promise<boolean>;
 
 export function GetProxyMode():Promise<string>;

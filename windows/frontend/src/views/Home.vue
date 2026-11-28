@@ -220,16 +220,6 @@ const exitText = computed(() => {
   return `出口 ${leg.ms}ms · ${probe.value!.exit_ip}${place ? " · " + place : ""}`;
 });
 
-// UDP associations carry no single decision (each datagram is routed on its
-// own), so they show up in the total but in neither half. Naming the
-// remainder keeps "104 connections" from looking like broken arithmetic
-// next to "domestic 9 / foreign 43".
-const connOther = computed(() => {
-  const total = overview.value?.active_conns ?? 0;
-  const split = (overview.value?.active_direct ?? 0) + (overview.value?.active_proxy ?? 0);
-  return Math.max(0, total - split);
-});
-
 function probeName(it: guiapp.ProbeItem): string {
   const key = probeNames[it.key];
   return key ? t(key) : it.key;
@@ -515,7 +505,6 @@ const chart = computed(() => {
         <div class="split-line">
           <span class="lg"><i class="sw dim"></i>{{ t("lifetime.direct") }} {{ overview?.active_direct ?? 0 }}</span>
           <span class="lg"><i class="sw dim intl"></i>{{ t("lifetime.proxy") }} {{ overview?.active_proxy ?? 0 }}</span>
-          <span v-if="connOther > 0" class="lg">{{ t("stat.connsUdp") }} {{ connOther }}</span>
         </div>
       </div>
       <div class="card stat">

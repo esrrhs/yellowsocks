@@ -1,11 +1,11 @@
 <script lang="ts" setup>
 import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from "vue";
-import { GetErrors, GetNodes, GetOverview, GetSessions } from "../../wailsjs/go/guiapp/App";
+import { GetErrors, GetNodes, GetOverview, GetProcesses, GetSessions } from "../../wailsjs/go/guiapp/App";
 import { stats } from "../../wailsjs/go/models";
 import { fmtBps, fmtBytes, fmtAge, fmtClock } from "../format";
 import { t } from "../i18n";
 
-type Tab = "conns" | "nodes" | "errors";
+type Tab = "conns" | "apps" | "nodes" | "errors";
 
 const tab = ref<Tab>("conns");
 const sessions = ref<stats.SessionView[]>([]);
@@ -15,11 +15,11 @@ const sessions = ref<stats.SessionView[]>([]);
 const liveTotal = ref(0);
 const nodes = ref<stats.NodeStat[]>([]);
 const errors = ref<stats.ErrorEntry[]>([]);
+const processes = ref<stats.ProcessStat[]>([]);
 const query = ref("");
-// "udp" is not a decision, it is the absence of one: a SOCKS5 UDP association
-// is routed per datagram, so it belongs to neither the proxy nor the direct
-// bucket. Without naming it here the counts simply would not add up.
-const decision = ref<"all" | "proxy" | "direct" | "udp">("all");
+// UDP associations are no longer recorded (UDP relay is direct-only and
+// unattributed), so the filter is just the routing decision.
+const decision = ref<"all" | "proxy" | "direct">("all");
 
 // Sorting is by the live rate (that is the number the cell leads with), with the
 // cumulative total as the tiebreaker so rows with an idle connection still land
@@ -48,6 +48,8 @@ async function refresh() {
       const [list, ov] = await Promise.all([GetSessions(), GetOverview()]);
       sessions.value = list ?? [];
       liveTotal.value = ov?.active_conns ?? sessions.value.length;
+    } else if (tab.value === "apps") {
+      processes.value = (await GetProcesses()) ?? [];
     } else if (tab.value === "nodes") {
       nodes.value = (await GetNodes()) ?? [];
     } else {
@@ -64,19 +66,16 @@ function switchTab(next: Tab) {
   void refresh();
 }
 
-// Per-filter totals, so the four chips visibly add up to "all". A list that
-// says 130 while proxy+direct only reach 46 reads like a broken filter.
+// Per-filter totals, so the chips visibly add up to "all". A list that says
+// 130 while proxy+direct only reach 46 reads like a broken filter.
 const counts = computed(() => {
   let proxy = 0;
   let direct = 0;
-  let udp = 0;
   for (const s of sessions.value) {
-    if (s.proto === "udp") udp++;
-    else if (s.decision === "proxy") proxy++;
+    if (s.decision === "proxy") proxy++;
     else if (s.decision === "direct") direct++;
-    else udp++;
   }
-  return { all: sessions.value.length, proxy, direct, udp };
+  return { all: sessions.value.length, proxy, direct };
 });
 
 // Never below the rows we actually hold: a stale overview must not make the
@@ -86,9 +85,7 @@ const totalCount = computed(() => Math.max(sessions.value.length, liveTotal.valu
 const filtered = computed(() => {
   const q = query.value.trim().toLowerCase();
   return sessions.value.filter((s) => {
-    if (decision.value === "udp") {
-      if (s.proto !== "udp" && s.decision) return false;
-    } else if (decision.value !== "all" && s.decision !== decision.value) {
+    if (decision.value !== "all" && s.decision !== decision.value) {
       return false;
     }
     if (!q) return true;
@@ -126,6 +123,48 @@ const visible = computed(() => {
   return rows;
 });
 
+// Application tab sorting: rate columns lead (same "who is using bandwidth"
+// question as the connections table) but the cumulative size columns sort
+// too, because "what moved the most today" is the other reason to open it.
+type AppSortKey = "name" | "upRate" | "upTotal" | "downRate" | "downTotal" | "conns";
+const appSortKey = ref<AppSortKey>("downRate");
+const appSortDir = ref<"asc" | "desc">("desc");
+
+function toggleAppSort(key: AppSortKey) {
+  if (appSortKey.value === key) {
+    appSortDir.value = appSortDir.value === "desc" ? "asc" : "desc";
+    return;
+  }
+  appSortKey.value = key;
+  appSortDir.value = key === "name" ? "asc" : "desc";
+}
+
+const visibleApps = computed(() => {
+  const rows = processes.value.slice();
+  const key = appSortKey.value;
+  const dir = appSortDir.value === "desc" ? -1 : 1;
+  rows.sort((a, b) => {
+    let d = 0;
+    if (key === "name") {
+      d = (a.name ?? "").localeCompare(b.name ?? "");
+    } else if (key === "upRate") {
+      d = (a.upload_bps ?? 0) - (b.upload_bps ?? 0);
+    } else if (key === "upTotal") {
+      d = (a.upload_bytes ?? 0) - (b.upload_bytes ?? 0);
+    } else if (key === "downRate") {
+      d = (a.download_bps ?? 0) - (b.download_bps ?? 0);
+    } else if (key === "downTotal") {
+      d = (a.download_bytes ?? 0) - (b.download_bytes ?? 0);
+    } else {
+      d = (a.conns ?? 0) - (b.conns ?? 0);
+    }
+    // Stable tie-break on the name so idle rows do not reshuffle every second.
+    if (d === 0) return (a.name ?? "").localeCompare(b.name ?? "");
+    return d * dir;
+  });
+  return rows;
+});
+
 const nodeTotals = computed(() => {
   let up = 0;
   let down = 0;
@@ -138,9 +177,7 @@ const nodeTotals = computed(() => {
 
 function decisionLabel(d: string): string {
   if (d === "proxy") return t("conn.proxy");
-  if (d === "direct") return t("conn.direct");
-  // No single decision: a UDP association routes each datagram on its own.
-  return t("conn.udp");
+  return t("conn.direct");
 }
 
 // Hostnames are longer than the column and have no spaces, so the browser
@@ -202,6 +239,13 @@ onUnmounted(() => {
       </button>
       <button
         class="tab"
+        :class="{ active: tab === 'apps' }"
+        @click="switchTab('apps')"
+      >
+        {{ t("conn.tabApps") }}
+      </button>
+      <button
+        class="tab"
         :class="{ active: tab === 'nodes' }"
         @click="switchTab('nodes')"
       >
@@ -235,12 +279,6 @@ onUnmounted(() => {
             @click="decision = 'direct'"
           >
             {{ t("conn.direct") }}<span class="seg-count">{{ counts.direct }}</span>
-          </button>
-          <button
-            :class="{ active: decision === 'udp' }"
-            @click="decision = 'udp'"
-          >
-            {{ t("conn.udp") }}<span class="seg-count">{{ counts.udp }}</span>
           </button>
         </div>
         <span class="toolbar-meta">
@@ -307,7 +345,7 @@ onUnmounted(() => {
                 <span v-else>{{ s.client || "—" }}</span>
               </td>
               <td>
-                <span class="tag" :class="s.decision || 'udp'">
+                <span class="tag" :class="s.decision || 'direct'">
                   {{ decisionLabel(s.decision) }}
                 </span>
               </td>
@@ -332,6 +370,83 @@ onUnmounted(() => {
               <td colspan="7" class="empty-row">
                 {{ sessions.length ? t("conn.noMatch") : t("conn.empty") }}
               </td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </template>
+
+    <template v-else-if="tab === 'apps'">
+      <div class="card table-card">
+        <table class="tbl tbl-fixed">
+          <colgroup>
+            <col style="width: 40%" />
+            <col style="width: 13%" />
+            <col style="width: 12%" />
+            <col style="width: 13%" />
+            <col style="width: 12%" />
+            <col style="width: 10%" />
+          </colgroup>
+          <thead>
+            <tr>
+              <th class="sortable" @click="toggleAppSort('name')">
+                {{ t("conn.colApp") }}
+                <span class="sort-mark" v-if="appSortKey === 'name'">{{
+                  appSortDir === "desc" ? "▾" : "▴"
+                }}</span>
+              </th>
+              <th class="right sortable" @click="toggleAppSort('upRate')">
+                {{ t("conn.colUpRate") }}
+                <span class="sort-mark" v-if="appSortKey === 'upRate'">{{
+                  appSortDir === "desc" ? "▾" : "▴"
+                }}</span>
+              </th>
+              <th class="right sortable" @click="toggleAppSort('upTotal')">
+                {{ t("conn.colUpTotal") }}
+                <span class="sort-mark" v-if="appSortKey === 'upTotal'">{{
+                  appSortDir === "desc" ? "▾" : "▴"
+                }}</span>
+              </th>
+              <th class="right sortable" @click="toggleAppSort('downRate')">
+                {{ t("conn.colDownRate") }}
+                <span class="sort-mark" v-if="appSortKey === 'downRate'">{{
+                  appSortDir === "desc" ? "▾" : "▴"
+                }}</span>
+              </th>
+              <th class="right sortable" @click="toggleAppSort('downTotal')">
+                {{ t("conn.colDownTotal") }}
+                <span class="sort-mark" v-if="appSortKey === 'downTotal'">{{
+                  appSortDir === "desc" ? "▾" : "▴"
+                }}</span>
+              </th>
+              <th class="right sortable" @click="toggleAppSort('conns')">
+                {{ t("conn.colAppConns") }}
+                <span class="sort-mark" v-if="appSortKey === 'conns'">{{
+                  appSortDir === "desc" ? "▾" : "▴"
+                }}</span>
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr v-for="a in visibleApps" :key="a.name">
+              <td class="mono wrap">
+                <span class="proc" :title="a.name">
+                  <img v-if="a.icon" :src="a.icon" class="proc-icon" alt="" />
+                  <span class="proc-name">{{ a.name }}</span>
+                </span>
+              </td>
+              <td class="right num wrap">
+                <span class="up">↑{{ fmtBps(a.upload_bps) }}</span>
+              </td>
+              <td class="right num dim">{{ fmtBytes(a.upload_bytes) }}</td>
+              <td class="right num wrap">
+                <span class="down">↓{{ fmtBps(a.download_bps) }}</span>
+              </td>
+              <td class="right num dim">{{ fmtBytes(a.download_bytes) }}</td>
+              <td class="right num dim">{{ a.conns ?? 0 }}</td>
+            </tr>
+            <tr v-if="!visibleApps.length">
+              <td colspan="6" class="empty-row">{{ t("conn.noApps") }}</td>
             </tr>
           </tbody>
         </table>

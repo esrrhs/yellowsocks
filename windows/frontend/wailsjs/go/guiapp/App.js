@@ -66,6 +66,10 @@ export function GetOverview() {
   return window['go']['guiapp']['App']['GetOverview']();
 }
 
+export function GetProcesses() {
+  return window['go']['guiapp']['App']['GetProcesses']();
+}
+
 export function GetProxyGuard() {
   return window['go']['guiapp']['App']['GetProxyGuard']();
 }

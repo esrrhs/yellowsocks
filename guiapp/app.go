@@ -18,7 +18,7 @@ import (
 	"github.com/esrrhs/yellowsocks/core/config"
 	"github.com/esrrhs/yellowsocks/core/router"
 	"github.com/esrrhs/yellowsocks/core/sppclient"
-"github.com/esrrhs/yellowsocks/core/stats"
+	"github.com/esrrhs/yellowsocks/core/stats"
 	"github.com/esrrhs/yellowsocks/core/version"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -45,7 +45,7 @@ type guiSettings struct {
 	// Language is the UI language ("zh" or "en"). The tray reads it too, so
 	// the menu speaks the same language as the window instead of always
 	// Chinese.
-	Language string `json:"language,omitempty"`
+	Language     string `json:"language,omitempty"`
 	AppliedPorts string `json:"sysproxy_applied_ports,omitempty"`
 }
 
@@ -109,26 +109,26 @@ type App struct {
 	lastCfg        core.EngineConfig
 	running        bool
 	quitting       bool
-	sysProxyWanted bool   // user intent, persisted in settings.json
-	sysProxyActive bool   // we registered the OS proxy and must undo it
-	autoStartCore  bool   // start the engine when the app launches
-	launchAtLogin  bool   // register the app to start with the OS login
+	sysProxyWanted bool // user intent, persisted in settings.json
+	sysProxyActive bool // we registered the OS proxy and must undo it
+	autoStartCore  bool // start the engine when the app launches
+	launchAtLogin  bool // register the app to start with the OS login
 	// launchAtLoginChecked marks the cache above as authoritative (the OS has
 	// been asked at least once); probing keeps concurrent callers from each
 	// spawning their own PowerShell query.
 	launchAtLoginChecked bool
 	launchAtLoginProbing bool
-	tunWanted      bool   // TUN mode intent, persisted in settings.json
-	tunActive      bool   // the virtual adapter is up and capturing traffic
-	tunErr         string // last TUN failure, surfaced in the UI
+	tunWanted            bool   // TUN mode intent, persisted in settings.json
+	tunActive            bool   // the virtual adapter is up and capturing traffic
+	tunErr               string // last TUN failure, surfaced in the UI
 	// tunRetries counts automatic rebuild attempts since the last success.
 	// A failure schedules the next attempt with exponential backoff; only
 	// exhausting the ladder hands the problem back to a manual click.
-	tunRetries int
-	proxyMode      string // "rule" | "global" | "direct", persisted in settings.json
-	proxyGuard     bool   // keep the OS proxy registration ours, persisted too
-	language       string // UI language ("zh" | "en"), shared by window and tray
-	appliedPorts   string // ports registered with the OS, for stale cleanup
+	tunRetries   int
+	proxyMode    string // "rule" | "global" | "direct", persisted in settings.json
+	proxyGuard   bool   // keep the OS proxy registration ours, persisted too
+	language     string // UI language ("zh" | "en"), shared by window and tray
+	appliedPorts string // ports registered with the OS, for stale cleanup
 
 	// tunApplyMu serializes bring-up and teardown of the adapter. Two paths
 	// race for it: StartEngine asynchronously restores the persisted TUN
@@ -160,9 +160,9 @@ type App struct {
 	// lifetimeProcesses mirrors the per-application table the same way.
 	lifetimeProcesses []stats.ProcessStat
 	// lifetime metrics (peaks, max concurrency, on-time) cached the same way.
-	lifetimePeakUp   int64
-	lifetimePeakDown int64
-	lifetimeMaxConns int64
+	lifetimePeakUp    int64
+	lifetimePeakDown  int64
+	lifetimeMaxConns  int64
 	lifetimeActiveSec int64
 
 	// probeKick wakes the self-check loop the moment the engine comes up, so
@@ -1164,6 +1164,19 @@ func (a *App) GetLifetimeProcesses() []stats.ProcessStat {
 		out = out[:500]
 	}
 	return out
+}
+
+// GetProcesses returns the live per-application table behind the connections
+// page's application tab: cumulative bytes plus the speeds sampled since the
+// previous call. The tab polls once a second, so the sampling window matches
+// what the table shows; nil while the engine is stopped.
+func (a *App) GetProcesses() []stats.ProcessStat {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.running || a.engine == nil {
+		return nil
+	}
+	return a.engine.Stats().Processes(500)
 }
 
 // GetNodes returns per-upstream-node traffic and health.

@@ -480,6 +480,86 @@ func TestUDPDatagrams(t *testing.T) {
 	}
 }
 
+// UDP relayed bytes are counted as direct traffic but never as a session:
+// UDP is direct-only by design and is not displayed in the app.
+func TestRecordUDPRelayCountsDirectWithoutSession(t *testing.T) {
+	c := newTestCollector()
+	c.RecordUDPRelay(120, 340)
+
+	ov := c.Overview()
+	if ov.Totals.Upload != 120 || ov.Totals.Download != 340 {
+		t.Fatalf("totals = %+v, want 120/340", ov.Totals)
+	}
+	if ov.Direct.Upload != 120 || ov.Direct.Download != 340 {
+		t.Fatalf("direct = %+v, want 120/340", ov.Direct)
+	}
+	if ov.Proxy.Upload != 0 || ov.Proxy.Download != 0 {
+		t.Fatalf("proxy = %+v, want zero", ov.Proxy)
+	}
+	if ov.Lifetime.Upload != 120 || ov.Lifetime.Download != 340 {
+		t.Fatalf("lifetime = %+v, want 120/340", ov.Lifetime)
+	}
+	if ov.LifetimeDirect.Upload != 120 || ov.LifetimeDirect.Download != 340 {
+		t.Fatalf("lifetime direct = %+v, want 120/340", ov.LifetimeDirect)
+	}
+	if ov.ActiveConns != 0 || len(c.ActiveSessions(ActiveOptions{})) != 0 {
+		t.Fatalf("udp bytes created a session: active=%d", ov.ActiveConns)
+	}
+	if d := c.Domains(10, "bytes"); len(d) != 0 {
+		t.Fatalf("udp bytes leaked into the domain table: %+v", d)
+	}
+}
+
+// Processes samples rates between calls: the first call only establishes the
+// baseline, a later call reports the bytes accrued over the interval, and an
+// idle interval decays the reported speed to zero.
+func TestProcessRatesSampledBetweenPolls(t *testing.T) {
+	c := newTestCollector()
+	c.addProcess("browser.exe", "data:image/png;base64,AA==", DecisionDirect, 100, 400)
+
+	first := c.Processes(10)
+	if len(first) != 1 || first[0].UploadBps != 0 || first[0].DownloadBps != 0 {
+		t.Fatalf("first sample must only baseline: %+v", first)
+	}
+
+	c.addProcess("browser.exe", "", DecisionDirect, 250, 750)
+	c.mu.Lock()
+	c.processes["browser.exe"].rateAt = time.Now().Add(-time.Second)
+	c.mu.Unlock()
+
+	got := c.Processes(10)[0]
+	if got.Upload != 350 || got.Download != 1150 {
+		t.Fatalf("totals = %d/%d, want 350/1150", got.Upload, got.Download)
+	}
+	// The interval is just over one second, so the speeds sit just under the
+	// bytes accrued in it.
+	if got.UploadBps < 200 || got.UploadBps > 250 {
+		t.Fatalf("upload bps = %d, want about 250", got.UploadBps)
+	}
+	if got.DownloadBps < 700 || got.DownloadBps > 750 {
+		t.Fatalf("download bps = %d, want about 750", got.DownloadBps)
+	}
+	if got.Icon == "" {
+		t.Fatal("icon lost while sampling rates")
+	}
+
+	// No new bytes since the previous sample: the rate must fall to zero
+	// instead of holding the last value forever.
+	c.mu.Lock()
+	c.processes["browser.exe"].rateAt = time.Now().Add(-time.Second)
+	c.mu.Unlock()
+	idle := c.Processes(10)[0]
+	if idle.UploadBps != 0 || idle.DownloadBps != 0 {
+		t.Fatalf("idle sample kept speeds: %+v", idle)
+	}
+}
+
+// Nil receivers stay safe, matching the rest of the collector methods.
+func TestRecordUDPRelayNilCollector(t *testing.T) {
+	var c *Collector
+	c.RecordUDPRelay(1, 1)
+}
+
 func TestSessionInstantaneousRate(t *testing.T) {
 	c := New(Config{HistoryMinutes: 10})
 	s := c.Begin(ProtoSOCKS5, "c", "dl.com", 443, DecisionProxy, "")

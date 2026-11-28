@@ -146,6 +146,38 @@ type ProcessStat struct {
 	DirectBytes int64  `json:"direct_bytes"`
 	ProxyBytes  int64  `json:"proxy_bytes"`
 	LastSeen    int64  `json:"last_seen"`
+	// UploadBps/DownloadBps are the speeds measured between the last two
+	// Processes samples. The sampling window is the caller's poll interval
+	// (the application tab polls once a second), so they answer "who is
+	// using the bandwidth right now". The persistence snapshot carries them
+	// too, but the first sample after a load only re-establishes the
+	// baseline, so a number from a previous run is never reported.
+	UploadBps   int64 `json:"upload_bps"`
+	DownloadBps int64 `json:"download_bps"`
+
+	rateAt   time.Time
+	rateUp   int64
+	rateDown int64
+}
+
+// sampleRate folds the bytes accrued since the previous sample into speeds.
+// A zero rateAt (a new entry, or one restored from disk) only establishes
+// the baseline: there is no trustworthy interval to divide by yet.
+func (p *ProcessStat) sampleRate(now time.Time) {
+	if p.rateAt.IsZero() {
+		p.rateAt = now
+		p.rateUp, p.rateDown = p.Upload, p.Download
+		p.UploadBps, p.DownloadBps = 0, 0
+		return
+	}
+	dt := now.Sub(p.rateAt)
+	if dt < minRateSample {
+		return
+	}
+	ms := dt.Milliseconds()
+	p.UploadBps = (p.Upload - p.rateUp) * 1000 / ms
+	p.DownloadBps = (p.Download - p.rateDown) * 1000 / ms
+	p.rateAt, p.rateUp, p.rateDown = now, p.Upload, p.Download
 }
 
 // Total returns upload + download.
@@ -179,21 +211,21 @@ type SessionView struct {
 	// HTTP Host header) when the client dialled an IP literal. Host stays the
 	// address that was actually used, because that is what the router and the
 	// byte counters saw; Domain only answers "where is this going" for a human.
-	Domain    string `json:"domain,omitempty"`
-	Port      int    `json:"port"`
-	Decision  string `json:"decision"`
-	Node      string `json:"node"`
+	Domain   string `json:"domain,omitempty"`
+	Port     int    `json:"port"`
+	Decision string `json:"decision"`
+	Node     string `json:"node"`
 	// Process identifies the OS process behind the session (icon as a data
 	// URL). Empty when the platform has no resolver or the owner could not
 	// be determined.
 	ProcessName string `json:"process_name,omitempty"`
 	ProcessIcon string `json:"process_icon,omitempty"`
 	Start       int64  `json:"start"` // unix seconds
-	AgeMs     int64  `json:"age_ms"`
-	Upload    int64  `json:"upload_bytes"`
-	Download  int64  `json:"download_bytes"`
-	UploadBps int64  `json:"upload_bps"`
-	DownBps   int64  `json:"download_bps"`
+	AgeMs       int64  `json:"age_ms"`
+	Upload      int64  `json:"upload_bytes"`
+	Download    int64  `json:"download_bytes"`
+	UploadBps   int64  `json:"upload_bps"`
+	DownBps     int64  `json:"download_bps"`
 }
 
 // Rate is a transfer speed sample in bytes per second.
@@ -235,24 +267,24 @@ type Config struct {
 type Collector struct {
 	cfg Config
 
-	mu       sync.RWMutex
-	start    time.Time
-	active   map[int64]*Session
-	totals   Counters
-	direct   Counters
-	proxy    Counters
+	mu     sync.RWMutex
+	start  time.Time
+	active map[int64]*Session
+	totals Counters
+	direct Counters
+	proxy  Counters
 	// Lifetime counters accumulate forever: they survive restarts via the
 	// snapshot and are never cleared by Reset. Direct is the domestic
 	// (China) share, Proxy the foreign share, as decided by the router.
 	lifetime       Counters
 	lifetimeDirect Counters
 	lifetimeProxy  Counters
-	dns       DNSStat
-	dnsNames  map[string]*DomainStat
-	domains   map[string]*DomainStat
-	processes map[string]*ProcessStat
-	nodes     map[string]*NodeStat
-	errs     []ErrorEntry
+	dns            DNSStat
+	dnsNames       map[string]*DomainStat
+	domains        map[string]*DomainStat
+	processes      map[string]*ProcessStat
+	nodes          map[string]*NodeStat
+	errs           []ErrorEntry
 
 	// History is a fixed-size ring of buckets plus the bucket being filled.
 	buckets []Bucket
@@ -277,8 +309,8 @@ type Collector struct {
 	peakAllDown int64
 	// maxConnsAll is the highest concurrent-connection count ever seen;
 	// activeSecAll accumulates the collector's on-time for lifetime averages.
-	maxConnsAll  int64
-	activeSecAll int64
+	maxConnsAll    int64
+	activeSecAll   int64
 	lastActiveTick time.Time
 
 	nextID atomic.Int64
@@ -318,16 +350,16 @@ func New(cfg Config) *Collector {
 
 	now := time.Now()
 	c := &Collector{
-		cfg:      cfg,
-		start:    now,
-		active:   make(map[int64]*Session),
-		dns:      DNSStat{ByType: map[string]int64{}, ByUpstream: map[string]int64{}},
+		cfg:       cfg,
+		start:     now,
+		active:    make(map[int64]*Session),
+		dns:       DNSStat{ByType: map[string]int64{}, ByUpstream: map[string]int64{}},
 		dnsNames:  make(map[string]*DomainStat),
 		domains:   make(map[string]*DomainStat),
 		processes: make(map[string]*ProcessStat),
 		nodes:     make(map[string]*NodeStat),
-		buckets:  make([]Bucket, 0, cfg.HistoryMinutes),
-		stopCh:   make(chan struct{}),
+		buckets:   make([]Bucket, 0, cfg.HistoryMinutes),
+		stopCh:    make(chan struct{}),
 	}
 	c.cur.T = alignUnix(now.Unix(), cfg.BucketInterval)
 	c.rateSec = now.Unix()
@@ -710,22 +742,22 @@ func (s *Session) view(now time.Time) SessionView {
 		viewDecision = *d
 	}
 	return SessionView{
-		ID:        s.id,
-		Proto:     string(s.proto),
-		Client:    s.client,
-		Host:      viewHost,
-		Domain:    s.Domain(),
-		Port:      s.port,
-		Decision:     string(viewDecision),
-		Node:         s.Node(),
-		ProcessName:  s.Process(),
-		ProcessIcon:  s.ProcessIcon(),
-		Start:        s.start.Unix(),
-		AgeMs:     age.Milliseconds(),
-		Upload:    up,
-		Download:  down,
-		UploadBps: upBps,
-		DownBps:   downBps,
+		ID:          s.id,
+		Proto:       string(s.proto),
+		Client:      s.client,
+		Host:        viewHost,
+		Domain:      s.Domain(),
+		Port:        s.port,
+		Decision:    string(viewDecision),
+		Node:        s.Node(),
+		ProcessName: s.Process(),
+		ProcessIcon: s.ProcessIcon(),
+		Start:       s.start.Unix(),
+		AgeMs:       age.Milliseconds(),
+		Upload:      up,
+		Download:    down,
+		UploadBps:   upBps,
+		DownBps:     downBps,
 	}
 }
 
@@ -1091,9 +1123,9 @@ func (c *Collector) pruneLocked(m map[string]*DomainStat) {
 // Overview is the live summary returned by the API.
 //
 // ActiveDirect and ActiveProxy split the live sessions by the router's
-// decision, the same domestic/foreign axis the traffic counters use. A UDP
-// association is decided per datagram (DecisionNone) and lands in neither
-// bucket, so the two may sum to less than ActiveConns.
+// decision, the same domestic/foreign axis the traffic counters use. UDP is
+// relayed direct-only and is not tracked as a session, so every live session
+// carries one of the two decisions and the split always sums to ActiveConns.
 type Overview struct {
 	Now            int64        `json:"now"`
 	StartTime      int64        `json:"start_time"`
@@ -1250,6 +1282,17 @@ func (c *Collector) SetSessionProcess(id int64, name, icon string) {
 	}
 }
 
+// RecordUDPRelay counts relayed UDP bytes straight into the totals and the
+// direct (domestic) path: UDP forwarding through upstreams is disabled by
+// design, so every relayed datagram is a direct datagram. No per-session
+// record is kept — UDP connections are not displayed anywhere.
+func (c *Collector) RecordUDPRelay(up, down int64) {
+	if c == nil {
+		return
+	}
+	c.addTraffic(up, down, DecisionDirect)
+}
+
 // addProcess merges traffic into the per-process table. UDP datagrams carry
 // no process and never reach here — the table is TCP-only by construction.
 func (c *Collector) addProcess(name, icon string, d Decision, up, down int64) {
@@ -1289,15 +1332,20 @@ func (c *Collector) ResetProcesses() {
 	c.mu.Unlock()
 }
 
-// Processes returns the process table, ordered by bytes.
+// Processes returns the process table, ordered by bytes. Each call also
+// advances the per-process rate sampling, so callers polling at a steady
+// interval get speeds over that interval; rapid extra calls inside
+// minRateSample reuse the previous sample.
 func (c *Collector) Processes(limit int) []ProcessStat {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	if limit <= 0 {
 		limit = 100
 	}
+	now := time.Now()
 	out := make([]ProcessStat, 0, len(c.processes))
 	for _, d := range c.processes {
+		d.sampleRate(now)
 		out = append(out, *d)
 	}
 	sort.Slice(out, func(i, j int) bool {

@@ -82,7 +82,8 @@ interface DestGroup {
 
 // One side of the split. Rows come out sorted by bytes, descending, with the
 // catch-all buckets pinned to the end: 其他 for unmatched domains, 未识别
-// for bare addresses (UDP datagrams, pre-SNI bytes, DoH-only clients).
+// for bare addresses (pre-SNI bytes, DoH-only clients). UDP is relayed
+// direct-only and counted in the totals, never in the per-destination view.
 function buildGroup(kind: "direct" | "proxy"): DestGroup {
   const bytesOf = (d: stats.DomainStat) =>
     kind === "direct" ? (d.direct_bytes ?? 0) : (d.proxy_bytes ?? 0);
@@ -153,7 +154,7 @@ const processes = ref<stats.ProcessStat[]>([]);
 
 // One side of the application view: rows are the attributed processes, and
 // the catch-all is TCP traffic whose process could not be determined (UDP
-// datagrams carry no process by design and stay out of this card).
+// is relayed direct-only and stays out of this card).
 function buildAppGroup(kind: "direct" | "proxy"): DestGroup {
   const bytesOf = (d: stats.ProcessStat) =>
     kind === "direct" ? (d.direct_bytes ?? 0) : (d.proxy_bytes ?? 0);
