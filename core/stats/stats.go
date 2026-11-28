@@ -157,7 +157,12 @@ type SessionView struct {
 	Port      int    `json:"port"`
 	Decision  string `json:"decision"`
 	Node      string `json:"node"`
-	Start     int64  `json:"start"` // unix seconds
+	// Process identifies the OS process behind the session (icon as a data
+	// URL). Empty when the platform has no resolver or the owner could not
+	// be determined.
+	ProcessName string `json:"process_name,omitempty"`
+	ProcessIcon string `json:"process_icon,omitempty"`
+	Start       int64  `json:"start"` // unix seconds
 	AgeMs     int64  `json:"age_ms"`
 	Upload    int64  `json:"upload_bytes"`
 	Download  int64  `json:"download_bytes"`
@@ -363,7 +368,11 @@ type Session struct {
 	// with. Atomics, because datagrams relay on several goroutines.
 	udpPeer     atomic.Pointer[string]
 	udpDecision atomic.Pointer[Decision]
-	start       time.Time
+	// process/icon identify the OS process behind the session, attributed
+	// once at accept time by an optional resolver. Icon is a data URL.
+	process atomic.Pointer[string]
+	icon    atomic.Pointer[string]
+	start   time.Time
 
 	upload      atomic.Int64
 	download    atomic.Int64
@@ -488,6 +497,43 @@ func (s *Session) AddDatagram(host string, d Decision, up, down int64) {
 		}
 	}
 	s.flush()
+}
+
+// SetProcess records the OS process behind the session (name plus an icon
+// data URL), attributed once by an optional resolver at accept time. The
+// first answer wins: the resolver itself caches, so a later lookup of the
+// same socket would only repeat it.
+func (s *Session) SetProcess(name, icon string) {
+	if s == nil || name == "" {
+		return
+	}
+	if s.process.CompareAndSwap(nil, &name) && icon != "" {
+		s.icon.Store(&icon)
+	}
+}
+
+// Process returns the attributed process name, or "" when unknown.
+func (s *Session) Process() string {
+	if s == nil {
+		return ""
+	}
+	p := s.process.Load()
+	if p == nil {
+		return ""
+	}
+	return *p
+}
+
+// ProcessIcon returns the process icon as a data URL, or "" when unknown.
+func (s *Session) ProcessIcon() string {
+	if s == nil {
+		return ""
+	}
+	p := s.icon.Load()
+	if p == nil {
+		return ""
+	}
+	return *p
 }
 
 // SetNode sets or updates the SPP upstream node associated with this session.
@@ -622,9 +668,11 @@ func (s *Session) view(now time.Time) SessionView {
 		Host:      viewHost,
 		Domain:    s.Domain(),
 		Port:      s.port,
-		Decision:  string(viewDecision),
-		Node:      s.Node(),
-		Start:     s.start.Unix(),
+		Decision:     string(viewDecision),
+		Node:         s.Node(),
+		ProcessName:  s.Process(),
+		ProcessIcon:  s.ProcessIcon(),
+		Start:        s.start.Unix(),
 		AgeMs:     age.Milliseconds(),
 		Upload:    up,
 		Download:  down,

@@ -72,6 +72,10 @@ type Socks5Config struct {
 	// IdleTimeout closes a proxied connection that transfers no data for this
 	// long. Zero defaults to defaultIdleTimeout.
 	IdleTimeout time.Duration
+	// ProcessResolver, when set, attributes each relayed session to the OS
+	// process that opened it (name + icon for the connections page). Nil
+	// disables the lookup entirely.
+	ProcessResolver ProcessResolver
 }
 
 // Socks5Server provides inbound SOCKS5 proxy supporting TCP and UDP with smart routing
@@ -330,6 +334,7 @@ func (s *Socks5Server) handleConnect(clientConn net.Conn, targetHost string, tar
 
 	sess := s.beginSession(stats.ProtoSOCKS5, addrString(clientConn.RemoteAddr()), realHost, targetPort, decision)
 	defer sess.End(nil)
+	attemptProcessAttribution(s.cfg.ProcessResolver, sess, clientConn.RemoteAddr(), targetHost, targetPort)
 
 	if decision == router.Direct {
 		outConn, err := netdial.DialTimeout("tcp", targetAddr, 10*time.Second)
@@ -761,7 +766,10 @@ func (s *Socks5Server) answerDNSDatagram(payload []byte, srcHost string, srcPort
 		return
 	}
 	_, _ = relay.WriteToUDP(packed, client)
-	sess.AddDatagram(joinDialAddr(srcHost, srcPort), stats.DecisionDirect, 0, int64(len(out)))
+	// Count the query itself as upload, not just the answer as download: a
+	// hijacked DNS session with zero upload looked like a strange one-way
+	// stream on the connections page.
+	sess.AddDatagram(joinDialAddr(srcHost, srcPort), stats.DecisionDirect, int64(len(payload)), int64(len(out)))
 }
 
 // defaultIdleTimeout closes proxied connections whose peer vanished without a
@@ -782,6 +790,24 @@ const relayCopyBufferSize = 32 * 1024
 // buffer does not allocate a slice header.
 var relayBufPool = sync.Pool{
 	New: func() any { return new([relayCopyBufferSize]byte) },
+}
+
+// attemptProcessAttribution asks the optional resolver who owns the client
+// socket and records the answer on the session. Lookup failures are silent:
+// a connection row can vanish before we read the table, and the column then
+// simply falls back to the raw client address.
+func attemptProcessAttribution(res ProcessResolver, sess *stats.Session, clientAddr net.Addr, targetHost string, targetPort int) {
+	if res == nil || sess == nil {
+		return
+	}
+	src, ok := clientAddr.(*net.TCPAddr)
+	if !ok {
+		return
+	}
+	name, icon := res.FindProcess(src.IP, src.Port, targetHost, targetPort)
+	if name != "" {
+		sess.SetProcess(name, icon)
+	}
 }
 
 // statsDecision converts a router decision into a statistics decision.

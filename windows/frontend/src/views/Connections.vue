@@ -96,6 +96,7 @@ const filtered = computed(() => {
       (s.host ?? "").toLowerCase().includes(q) ||
       (s.domain ?? "").toLowerCase().includes(q) ||
       (s.client ?? "").toLowerCase().includes(q) ||
+      (s.process_name ?? "").toLowerCase().includes(q) ||
       (s.node ?? "").toLowerCase().includes(q)
     );
   });
@@ -298,7 +299,13 @@ onUnmounted(() => {
                   {{ brk(s.host) }}:{{ s.port }}
                 </div>
               </td>
-              <td class="dim mono wrap">{{ s.client || "—" }}</td>
+              <td class="dim mono wrap">
+                <span v-if="s.process_name" class="proc" :title="s.client">
+                  <img v-if="s.process_icon" :src="s.process_icon" class="proc-icon" alt="" />
+                  <span class="proc-name">{{ s.process_name }}</span>
+                </span>
+                <span v-else>{{ s.client || "—" }}</span>
+              </td>
               <td>
                 <span class="tag" :class="s.decision || 'udp'">
                   {{ decisionLabel(s.decision) }}

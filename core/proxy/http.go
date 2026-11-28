@@ -70,6 +70,9 @@ type HTTPConfig struct {
 	// IdleTimeout closes a proxied connection that transfers no data for this
 	// long. Zero defaults to defaultIdleTimeout.
 	IdleTimeout time.Duration
+	// ProcessResolver, when set, attributes each CONNECT session to the OS
+	// process that opened it. Nil disables the lookup.
+	ProcessResolver ProcessResolver
 }
 
 // HTTPServer provides inbound HTTP and HTTPS (CONNECT) proxy with smart routing
@@ -433,6 +436,7 @@ func (s *HTTPServer) handleConnect(clientConn net.Conn, br *bufio.Reader, target
 
 	sess := s.beginSession(stats.ProtoHTTP, addrString(clientConn.RemoteAddr()), realHost, targetPort, decision)
 	defer sess.End(nil)
+	attemptProcessAttribution(s.cfg.ProcessResolver, sess, clientConn.RemoteAddr(), targetHost, targetPort)
 
 	if decision == router.Direct {
 		targetConn, err := netdial.DialTimeout("tcp", targetAddr, 10*time.Second)

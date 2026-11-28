@@ -17,7 +17,8 @@ import (
 	"github.com/esrrhs/yellowsocks/core"
 	"github.com/esrrhs/yellowsocks/core/config"
 	"github.com/esrrhs/yellowsocks/core/router"
-	"github.com/esrrhs/yellowsocks/core/stats"
+	"github.com/esrrhs/yellowsocks/core/sppclient"
+"github.com/esrrhs/yellowsocks/core/stats"
 	"github.com/esrrhs/yellowsocks/core/version"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -89,6 +90,13 @@ type EngineStatus struct {
 	AutoStartCore bool `json:"auto_start_core"`
 	LaunchAtLogin bool `json:"launch_at_login"`
 	ProxyGuard    bool `json:"proxy_guard"`
+	// TunRetrying says an automatic rebuild is scheduled after a failure:
+	// the chip shows "auto-retrying" instead of demanding a manual click.
+	TunRetrying bool `json:"tun_retrying"`
+	// TunPending says the intent is on but the adapter is still coming up
+	// (the boot bring-up takes several seconds): the chip shows the user's
+	// switch as on instead of flashing off while the adapter builds.
+	TunPending bool `json:"tun_pending"`
 }
 
 // App is the structure bound to the Wails frontend. Every exported method
@@ -113,6 +121,10 @@ type App struct {
 	tunWanted      bool   // TUN mode intent, persisted in settings.json
 	tunActive      bool   // the virtual adapter is up and capturing traffic
 	tunErr         string // last TUN failure, surfaced in the UI
+	// tunRetries counts automatic rebuild attempts since the last success.
+	// A failure schedules the next attempt with exponential backoff; only
+	// exhausting the ladder hands the problem back to a manual click.
+	tunRetries int
 	proxyMode      string // "rule" | "global" | "direct", persisted in settings.json
 	proxyGuard     bool   // keep the OS proxy registration ours, persisted too
 	language       string // UI language ("zh" | "en"), shared by window and tray
@@ -136,6 +148,10 @@ type App struct {
 	lifetimeAll    stats.Counters
 	lifetimeDirect stats.Counters
 	lifetimeProxy  stats.Counters
+	// processResolver attributes relayed connections to OS processes for
+	// the connections page; created once, refreshed per engine start with
+	// the current listener ports.
+	processResolver *processResolver
 	// lifetimeDomains mirrors the engine's per-destination table for the
 	// statistics page while the engine is stopped: seeded from the snapshot
 	// at boot, refreshed from the live collector on every poll, served from
@@ -163,11 +179,21 @@ func NewApp() *App {
 	// Rule-based routing is the default, and it has to be set here rather than
 	// left empty: the tray and the window read this before Startup has loaded
 	// the settings file, and an empty mode would render as "no mode selected".
-	return &App{
-		proxyMode:    router.ModeRule.String(),
-		shutdownDone: make(chan struct{}),
-		probeKick:    make(chan struct{}, 1),
+	a := &App{
+		proxyMode:       router.ModeRule.String(),
+		shutdownDone:    make(chan struct{}),
+		probeKick:       make(chan struct{}, 1),
+		processResolver: newProcessResolver(nil, nil),
 	}
+	// The resolver needs the live TUN state to pick its lookup strategy; the
+	// closure is safe to set after construction because it only fires once
+	// connections start flowing.
+	a.processResolver.tunActive = func() bool {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+		return a.tunActive
+	}
+	return a
 }
 
 // startup is called when the app starts. The context is saved so we can call
@@ -521,6 +547,55 @@ func (a *App) SetTunMode(on bool) error {
 	return a.applyTun()
 }
 
+// Automatic TUN rebuild: a failure — enable error or watchdog rollback —
+// schedules applyTun again with exponential backoff. Bring-up races the
+// physical network's own settling (routes, DNS, the resolver handoff), and
+// tonight's logs show a transient blip costing a manual click when the
+// watchdog was actually right to roll back. Only after the ladder runs out
+// does the failure land in the chip as a manual retry.
+const (
+	tunRetryMax  = 4
+	tunRetryBase = 5 * time.Second
+	tunRetryCap  = 60 * time.Second
+)
+
+// scheduleTunRetry arms one automatic applyTun re-run. The user's intent
+// (tunWanted) is the switch: turning TUN off or quitting cancels the chain,
+// and a non-elevated copy never auto-retries because its rebuild path is a
+// full elevated handover, which needs the user's own consent (UAC).
+func (a *App) scheduleTunRetry(reason string) {
+	a.mu.Lock()
+	if !a.tunWanted || a.quitting {
+		a.mu.Unlock()
+		return
+	}
+	a.tunRetries++
+	if a.tunRetries > tunRetryMax {
+		// The ladder is spent: clear the counter so the status flag stops
+		// claiming an auto-retry is pending, and hand the problem to the
+		// chip's manual retry.
+		a.tunRetries = 0
+		a.mu.Unlock()
+		loggo.Error("[GUI] TUN auto-retry gave up after %d attempts (%s); waiting for a manual retry", tunRetryMax, reason)
+		return
+	}
+	n := a.tunRetries
+	wait := tunRetryBase << (n - 1)
+	if wait > tunRetryCap {
+		wait = tunRetryCap
+	}
+	a.mu.Unlock()
+	loggo.Warn("[GUI] TUN failed (%s); automatic retry %d/%d in %v", reason, n, tunRetryMax, wait)
+	go func() {
+		select {
+		case <-time.After(wait):
+		case <-a.shutdownDone:
+			return
+		}
+		_ = a.applyTun()
+	}()
+}
+
 // applyTun brings the virtual adapter up. Must not hold a.mu: the elevated
 // relaunch quits the process and tunEnable has its own lock.
 func (a *App) applyTun() error {
@@ -530,6 +605,12 @@ func (a *App) applyTun() error {
 		return nil
 	}
 	a.mu.Lock()
+	// A pending auto-retry must not resurrect TUN after the user turned the
+	// intent off while it waited.
+	if !a.tunWanted {
+		a.mu.Unlock()
+		return errors.New("tun mode is not wanted")
+	}
 	running, cfg := a.running, a.lastCfg
 	a.mu.Unlock()
 	if !running {
@@ -586,6 +667,7 @@ func (a *App) applyTun() error {
 		a.tunErr = err.Error()
 		a.mu.Unlock()
 		a.emitStatus()
+		a.scheduleTunRetry(err.Error())
 		return err
 	}
 	// The adapter is up: flip the engine into TUN-mode DNS handling so every
@@ -606,6 +688,9 @@ func (a *App) applyTun() error {
 	if sysProxyRegistered {
 		_ = a.applySystemProxyLocked(false)
 	}
+	a.mu.Lock()
+	a.tunRetries = 0
+	a.mu.Unlock()
 	a.emitStatus()
 	loggo.Info("[GUI] TUN mode enabled")
 	return nil
@@ -696,6 +781,7 @@ func (a *App) tunParamsFrom(cfg core.EngineConfig) TunParams {
 		a.tunErr = "watchdog rollback: " + reason
 		a.mu.Unlock()
 		a.emitStatus()
+		a.scheduleTunRetry("watchdog rollback: " + reason)
 	}
 	return params
 }
@@ -982,6 +1068,19 @@ func (a *App) GetSessions() []stats.SessionView {
 	return a.engine.Stats().ActiveSessions(stats.ActiveOptions{Limit: 1000})
 }
 
+// GetNodeStatuses returns the live per-node availability from the manager's
+// real-request probes: SOCKS5 handshake plus an HTTP GET through the node
+// itself. Nil while the engine is stopped — without a manager there is
+// nothing to probe.
+func (a *App) GetNodeStatuses() []sppclient.NodeStatus {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if !a.running || a.engine == nil {
+		return nil
+	}
+	return a.engine.NodeStatuses()
+}
+
 // GetNodes returns per-upstream-node traffic and health.
 func (a *App) GetNodes() []stats.NodeStat {
 	a.mu.Lock()
@@ -1109,6 +1208,7 @@ func (a *App) loadEngineConfig() (core.EngineConfig, error) {
 	if err != nil {
 		return core.EngineConfig{}, err
 	}
+
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		data = []byte(defaultConfig)
@@ -1128,7 +1228,12 @@ func (a *App) loadEngineConfig() (core.EngineConfig, error) {
 		DNSListen: "127.0.0.1:1053",
 		StatsFile: statsPath(),
 	}
-	return fileCfg.MergeWithEngineConfig(base), nil
+	merged := fileCfg.MergeWithEngineConfig(base)
+	// The resolver needs the listener ports to exclude them from local-port
+	// lookups; they can change between engine restarts.
+	a.processResolver.UpdateListenPorts([]string{merged.Socks5Listen, merged.HTTPListen})
+	merged.ProcessResolver = a.processResolver
+	return merged, nil
 }
 
 func (a *App) statusLocked() EngineStatus {
@@ -1142,6 +1247,8 @@ func (a *App) statusLocked() EngineStatus {
 		AutoStartCore: a.autoStartCore,
 		LaunchAtLogin: a.launchAtLogin,
 		ProxyGuard:    a.proxyGuard,
+		TunRetrying:   a.tunWanted && !a.tunActive && a.tunRetries > 0,
+		TunPending:    a.tunWanted && !a.tunActive && a.tunErr == "",
 	}
 	if a.running {
 		st.Socks5 = a.lastCfg.Socks5Listen

@@ -34,6 +34,10 @@ type EngineConfig struct {
 	SPPRdnsQueryType string
 	SPPNodes         []*sppclient.Node
 
+	// ProcessResolver attributes relayed sessions to OS processes for the
+	// connections page. Platform-specific; nil on platforms without one.
+	ProcessResolver proxy.ProcessResolver
+
 	LocalSocks5 string // local SOCKS5 published by the SPP client
 
 	DNSListen   string
@@ -266,7 +270,8 @@ func (e *Engine) Start() error {
 			DNS:        e.dnsServer,
 			Upstream:   e.upstream,
 			Stats:      e.collector,
-			ActiveNode: e.activeNodeName,
+			ActiveNode:      e.activeNodeName,
+		ProcessResolver: e.cfg.ProcessResolver,
 			EnableIPv6: e.cfg.EnableIPv6,
 		})
 		if err := s5.Start(); err != nil {
@@ -287,7 +292,8 @@ func (e *Engine) Start() error {
 			Upstream:   e.upstream,
 			Stats:      e.collector,
 			ActiveNode: e.activeNodeName,
-			EnableIPv6: e.cfg.EnableIPv6,
+			EnableIPv6:  e.cfg.EnableIPv6,
+			ProcessResolver: e.cfg.ProcessResolver,
 		})
 		if err := hSrv.Start(); err != nil {
 			e.cleanupServices()
@@ -333,6 +339,16 @@ func (e *Engine) Start() error {
 }
 
 // activeNodeName reports the SPP node currently used for proxy traffic.
+// NodeStatuses exposes the live per-node probe state (TCP liveness plus
+// the real-request availability the nodes page displays). Nil when the
+// engine has no node pool (single socks5 upstream or not started).
+func (e *Engine) NodeStatuses() []sppclient.NodeStatus {
+	if e.sppManager == nil {
+		return nil
+	}
+	return e.sppManager.NodeStatuses()
+}
+
 func (e *Engine) activeNodeName() string {
 	if e.sppManager == nil {
 		return ""
