@@ -1,6 +1,15 @@
 package guiapp
 
-import "time"
+import (
+	"errors"
+	"time"
+)
+
+// errTunBringUpCanceled reports that the bring-up guard tore the state down
+// while enable() was still running, so nothing was installed and the retry the
+// guard scheduled is the recovery path. Declared here, not in the Windows file:
+// applyTun (shared code) inspects it on every platform.
+var errTunBringUpCanceled = errors.New("TUN bring-up was cancelled by the bring-up guard")
 
 // TunParams describes the engine endpoints the TUN stack forwards into.
 // The engine keeps making every routing decision (China direct vs proxy)

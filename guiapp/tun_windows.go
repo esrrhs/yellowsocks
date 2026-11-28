@@ -58,11 +58,16 @@ var wintunDLL []byte
 
 // tunBringUpDeadline bounds how long a single enable() may keep the OS in a
 // half-configured state before the bring-up guard force-rolls it back. The
-// normal bring-up takes a few seconds (UAC plus adapter creation); 60s only
-// ever triggers on a hung wintun call, a wedged tun2socks start or a stuck
-// route transaction — the cases where a deadlock would otherwise leave the
-// machine routed into a pipeline that never comes up.
-const tunBringUpDeadline = 60 * time.Second
+// normal bring-up takes a few seconds; on a loaded machine it can stretch far
+// past a minute (every step shells out to netsh/PowerShell), so the deadline
+// only sits above that and triggers on a genuinely hung wintun call or a stuck
+// route transaction.
+//
+// The guard is not the only way out: forceTeardown bumps the manager epoch, and
+// a bring-up that sees the bump unwinds itself instead of finalising on top of
+// the teardown (see enable's cancelled checks).
+const tunBringUpDeadline = 120 * time.Second
+
 
 // tunManager owns the tun2socks engine lifecycle and the Windows routing
 // state around it.
@@ -91,6 +96,13 @@ type tunManager struct {
 	// rollbackFn is the OnRollback callback of the current run, published so
 	// the forced teardown can report why the adapter disappeared.
 	rollbackFn atomic.Value // func(string)
+	// epoch increments on every teardown (forced or not). A bring-up captures
+	// it at start and unwinds itself when it changes: forceTeardown may fire
+	// while enable() is still between steps, and without this check the
+	// bring-up would finish installing state on top of the teardown and report
+	// success — leaving the app convinced TUN is on while the adapter is
+	// empty.
+	epoch atomic.Uint64
 }
 
 // dnsOverride remembers one interface's resolver list so it can be put back
@@ -161,6 +173,11 @@ func (m *tunManager) enable(params TunParams) (err error) {
 	m.stopped.Store(false)
 	m.hung.Store(false)
 	m.bringingUp.Store(true)
+	// The bring-up epoch: any teardown that happens from here on (the guard,
+	// a user toggle racing through forceTeardown) bumps it, and every check
+	// below turns that into a clean unwind instead of a half-installed state.
+	epoch := m.epoch.Load()
+	canceled := func() bool { return m.epoch.Load() != epoch }
 	// atomic.Value panics on a nil store, and the callback is published so
 	// the forced teardown can report a rollback it did not initiate.
 	rollback := params.OnRollback
@@ -242,6 +259,13 @@ func (m *tunManager) enable(params TunParams) (err error) {
 			"from": m.stackProxy,
 			"to":   params.Socks5Addr,
 		})
+	}
+	// Starting tun2socks is the slow step (on a loaded machine it can take
+	// most of a minute): re-check right after it before any routing state is
+	// touched.
+	if canceled() {
+		m.teardownLocked()
+		return errTunBringUpCanceled
 	}
 
 	// 3. The adapter now exists: grab its LUID for the routing config.
@@ -458,8 +482,22 @@ func (m *tunManager) enable(params TunParams) (err error) {
 		m.upstreamRT = append(m.upstreamRT, prefix)
 	}
 
+	// Final gate: if the guard (or a racing disable) tore the state down after
+	// the slow steps, publishing success now would overwrite that teardown's
+	// flags and leave the app convinced TUN is up on an empty adapter.
+	if canceled() {
+		m.teardownLocked()
+		loggo.Warn("[TUN] bring-up was cancelled by a concurrent teardown; state unwound")
+		return errTunBringUpCanceled
+	}
+	// Publish order matters: `active` first, `stopped` last. A forceTeardown
+	// landing between the two leaves `stopped` set, so the watchdog started
+	// below exits -- but that teardown also fired OnRollback, and the armed
+	// retry re-enables (applyTun checks the manager, not the flag). The reverse
+	// order would leave the adapter flushed, `stopped` cleared and no watchdog.
 	m.active.Store(true)
 	m.bringingUp.Store(false)
+	m.stopped.Store(false)
 	loggo.Info("[TUN] adapter %s up (%s/30, MTU %d); physical iface #%d via %s; upstream exceptions: %d",
 		tunAdapterName, tunIPv4, tunMTU, m.physIfIdx, m.physGw, len(m.upstreamRT))
 	m.startWatchdog(params)
@@ -485,6 +523,9 @@ func (m *tunManager) disable() error {
 // teardownLocked reverses enable() step by step. Safe on partially built
 // state: everything below tolerates nils. Callers hold m.mu.
 func (m *tunManager) teardownLocked() {
+	// Cancel any bring-up that is still between steps: it must not finish
+	// installing state after this teardown (see enable's cancelled checks).
+	m.epoch.Add(1)
 	m.stopped.Store(true)
 	netdial.SetBindInterface(0)
 
@@ -547,6 +588,10 @@ func (m *tunManager) forceTeardown(reason string) {
 	if m.stopped.Swap(true) && !m.active.Load() && !m.bringingUp.Load() {
 		return // already unwound and nothing was up
 	}
+	// First thing: cancel any in-flight bring-up. enable() checks the epoch
+	// after its slow steps and unwinds instead of finalising on top of this
+	// teardown.
+	m.epoch.Add(1)
 	m.hung.Store(true)
 	loggo.Error("[TUN] FORCED teardown: %s", reason)
 
@@ -577,9 +622,10 @@ func (m *tunManager) forceTeardown(reason string) {
 	m.bringingUp.Store(false)
 
 	// 4. Tell the UI why the adapter vanished so the user is not left with a
-	// silent "TUN on" indicator and no connectivity.
+	// silent "TUN on" indicator and no connectivity. The callback adds its own
+	// "watchdog rollback:" prefix, so the reason goes through bare here.
 	if fn, ok := m.rollbackFn.Load().(func(string)); ok && fn != nil {
-		go fn("watchdog rollback: " + reason)
+		go fn(reason)
 	}
 }
 
@@ -761,6 +807,11 @@ func physicalDefaultRoute(exclude wgwinipcfg.LUID) (uint32, netip.Addr, error) {
 // connection on the machine until manual cleanup.
 func (m *tunManager) startWatchdog(params TunParams) {
 	go func() {
+		// This watchdog belongs to exactly one bring-up: any teardown after it
+		// started (epoch bump) or an explicit stop retires it, so a stale loop
+		// can never fight a later enable's adapter.
+		epoch := m.epoch.Load()
+		stale := func() bool { return m.stopped.Load() || m.epoch.Load() != epoch }
 
 		rollback := func(reason string) {
 			loggo.Error("[TUN] watchdog rollback: %s", reason)
@@ -784,7 +835,7 @@ func (m *tunManager) startWatchdog(params TunParams) {
 		var lastErr error
 		for time.Since(soakStart) < deadline {
 			time.Sleep(interval)
-			if m.stopped.Load() {
+			if stale() {
 				return
 			}
 			if err := pipelineProbe(); err == nil {
@@ -814,7 +865,7 @@ func (m *tunManager) startWatchdog(params TunParams) {
 		proxyFailures := 0
 		for {
 			time.Sleep(15 * time.Second)
-			if m.stopped.Load() {
+			if stale() {
 				return
 			}
 			if err := pipelineProbe(); err != nil {

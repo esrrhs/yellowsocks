@@ -730,7 +730,11 @@ func (a *App) applyTun() error {
 		a.tunErr = err.Error()
 		a.mu.Unlock()
 		a.emitStatus()
-		a.scheduleTunRetry(err.Error())
+		// A guard cancellation has already armed a retry through OnRollback;
+		// arming another would burn two rungs of the ladder for one failure.
+		if !errors.Is(err, errTunBringUpCanceled) {
+			a.scheduleTunRetry(err.Error())
+		}
 		return err
 	}
 	// The adapter is up: flip the engine into TUN-mode DNS handling so every
