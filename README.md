@@ -35,6 +35,8 @@ the same engine.
 - **Portable**: `yellowsocks-gui.exe`, `wintun.dll` and `config.yaml` in one
   folder; settings, logs and statistics stay beside them.
 
+Page-by-page feature guide: [WINDOWS.md](WINDOWS.md).
+
 ## CLI
 
 Headless relay for Linux. Copy `config.example.yaml` to `config.yaml`, set the

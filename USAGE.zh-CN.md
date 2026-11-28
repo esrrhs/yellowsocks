@@ -219,7 +219,7 @@ api_origins: ["none"]                # 同源调用，无需 CORS
 
 ## Windows 客户端
 
-Windows 客户端（`windows/`）是同一引擎加上托盘图标、系统代理开关、自动连接、开机启动和 TUN 捕获。`config.yaml`、`wintun.dll`、`yellowsocks-gui.exe` 和 `yellowsocks-watchdog.exe` 放在同一目录就是完整安装；`settings.json`、日志和 `stats.json` 也落在旁边。
+Windows 客户端（`windows/`）是同一引擎加上托盘图标、系统代理开关、自动连接、开机启动和 TUN 捕获。`config.yaml`、`wintun.dll`、`yellowsocks-gui.exe` 和 `yellowsocks-watchdog.exe` 放在同一目录就是完整安装；`settings.json`、日志和 `stats.json` 也落在旁边。窗口的每个页面、开关与安全网详见 [Windows 客户端功能说明](WINDOWS.zh-CN.md)。
 
 ### TUN 模式
 
@@ -235,7 +235,7 @@ Windows 客户端可以通过 Wintun 适配器接管全部系统流量（tun2soc
 | --- | --- |
 | 链路探测 | 拉起后立即通过完整捕获链路做一次 HTTPS 请求，之后每 15 秒一次。连续三次失败回滚适配器，机器恢复自己的默认路由。 |
 | 国际探测 | 解析一个被代理的域名（必须是 fake-ip）并连接它。失败只上报，不回滚：上游挂了不能把正常的国内链路一起带下去。 |
-| 拉起保护 | `enable` 超过 60 秒未完成（wintun 调用卡死、路由事务卡住）时，独立的 goroutine 回收路由状态。 |
+| 拉起保护 | 拉起超过 120 秒仍未完成（wintun 调用卡死、路由事务卡住）时，独立的 goroutine 回收路由状态；感知到这次拆除的拉起流程会自行回卷，而不是在其上继续装状态。 |
 | 无锁强制拆除 | 卡住的拉起会持有状态锁，禁用操作会永久阻塞。禁用、保护器和退出都走一条不取该锁、从系统重新发现适配器的路径。 |
 | DNS 接管日志 | 接管前把被替换的 DNS 服务器列表写入 `tun-dns-state.json`，恢复后删除；遗留文件（崩溃、断电）由下一次拉起重放。 |
 | 进程绑定适配器 | 适配器是进程持有的 SwDevice，即使上面所有机制都没跑，硬崩溃也会带走它和它的路由。 |

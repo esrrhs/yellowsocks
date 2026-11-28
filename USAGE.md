@@ -258,7 +258,8 @@ The Windows app (`windows/`) is the same engine behind a tray icon, a system
 proxy switch, auto-connect, launch-at-login and TUN capture. `config.yaml`,
 `wintun.dll`, `yellowsocks-gui.exe` and `yellowsocks-watchdog.exe` in one
 directory are a complete installation; `settings.json`, the logs and
-`stats.json` land next to them.
+`stats.json` land next to them. Every page, switch and safety net of the
+window is described in the [Windows client feature guide](WINDOWS.md).
 
 ### TUN mode
 
@@ -282,7 +283,7 @@ Safety nets, in the order they engage:
 | --- | --- |
 | Pipeline probe | An HTTPS fetch through the full capture path right after bring-up, then every 15s. Three consecutive failures roll the adapter back so the machine returns to its own default route. |
 | International probe | Resolves a proxied name (must be a fake-ip) and connects to it. Failures are reported, never rolled back: a dead upstream must not take the working domestic path down with it. |
-| Bring-up guard | If `enable` has not finished within 60s (hung wintun call, wedged route transaction), an independent goroutine unwinds the routing state. |
+| Bring-up guard | If a bring-up is still unfinished after 120s (hung wintun call, wedged route transaction), an independent goroutine unwinds the routing state; the late bring-up winds itself back instead of finalising on top of the teardown. |
 | Lock-free forced teardown | A stuck bring-up holds the state lock; disabling would block forever on it. Disable, the guard and shutdown all fall back to a path that never takes that lock and re-discovers the adapter from the OS. |
 | DNS take-over journal | The resolver lists replaced by the take-over are written to `tun-dns-state.json` before they are touched and deleted after they are restored; a leftover file (crash, power loss) is replayed by the next bring-up. |
 | Process-bound adapter | The adapter is a SwDevice owned by the process, so it — and its routes — disappear with a hard crash even if none of the above ran. |

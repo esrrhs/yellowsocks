@@ -31,6 +31,8 @@ Windows 桌面客户端与 Linux 命令行。
 - **便携**：`yellowsocks-gui.exe`、`wintun.dll` 和 `config.yaml` 放在一个文件夹
   即可运行，设置、日志和统计也保存在旁边。
 
+逐页功能说明见 [WINDOWS.zh-CN.md](WINDOWS.zh-CN.md)。
+
 ## 命令行
 
 Linux 无头转发。复制 `config.example.yaml` 为 `config.yaml`，填好上游服务器，然后：
