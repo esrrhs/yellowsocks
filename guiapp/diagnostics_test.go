@@ -67,3 +67,16 @@ func TestNormCountry(t *testing.T) {
 		}
 	}
 }
+
+func TestParseIPIPText(t *testing.T) {
+	g := parseIPIPText("当前 IP:223.73.1.196  来自于:中国 广东 深圳  移动")
+	if g.ip != "223.73.1.196" || g.country != "CN" {
+		t.Fatalf("parsed %+v, want ip 223.73.1.196 country CN", g)
+	}
+	if g.city == "" {
+		t.Fatalf("location text lost: %+v", g)
+	}
+	if g := parseIPIPText("no address here"); g.ip != "" {
+		t.Fatalf("parsed %+v from a line without an address", g)
+	}
+}

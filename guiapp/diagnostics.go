@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -69,7 +70,13 @@ type ProbeReport struct {
 	ExitIP      string      `json:"exit_ip"`
 	ExitCountry string      `json:"exit_country"`
 	ExitCity    string      `json:"exit_city"`
-	Items       []ProbeItem `json:"items"`
+	// The direct path's egress: what the machine looks like to domestic
+	// sites. Shown next to the proxied exit, because "which address does
+	// the world see" has two honest answers on a split-tunnel setup.
+	ExitIPDirect      string      `json:"exit_ip_direct,omitempty"`
+	ExitCountryDirect string      `json:"exit_country_direct,omitempty"`
+	ExitCityDirect    string      `json:"exit_city_direct,omitempty"`
+	Items             []ProbeItem `json:"items"`
 }
 
 // runProbe executes the probe set once, caches the report and pushes it to
@@ -176,9 +183,9 @@ func (a *App) probeOnce() ProbeReport {
 		return report
 	}
 
-	items := make([]ProbeItem, 4)
+	items := make([]ProbeItem, 5)
 	var wg sync.WaitGroup
-	wg.Add(4)
+	wg.Add(5)
 
 	go func() {
 		defer wg.Done()
@@ -194,11 +201,19 @@ func (a *App) probeOnce() ProbeReport {
 	}()
 	go func() {
 		defer wg.Done()
-		item, geo := probeExit(httpAddr)
+		item, geo := probeExit(httpAddr, "exitip", geoSources)
 		items[3] = item
 		report.ExitIP = geo.ip
 		report.ExitCountry = geo.country
 		report.ExitCity = geo.city
+	}()
+	go func() {
+		defer wg.Done()
+		item, geo := probeExit("", "exitip_direct", directGeoSources)
+		items[4] = item
+		report.ExitIPDirect = geo.ip
+		report.ExitCountryDirect = geo.country
+		report.ExitCityDirect = geo.city
 	}()
 
 	wg.Wait()
@@ -262,14 +277,26 @@ type exitGeo struct {
 // only knows the country, and ipify only knows the address -- which is still
 // exactly what the row showed before location was added, so the worst case is
 // the old behaviour rather than a failure.
-var geoSources = []struct {
+type geoSource struct {
 	url   string
 	parse func(string) exitGeo
-}{
+}
+
+var geoSources = []geoSource{
 	{"https://ipinfo.io/json", parseIPInfo},
 	{"https://ipwho.is/", parseIPWho},
 	{"https://www.cloudflare.com/cdn-cgi/trace", parseCloudflareTrace},
 	{"https://api.ipify.org?format=json", parseIPOnly},
+}
+
+// directGeoSources serves the DIRECT path's echo. Every host here must be
+// one the router sends direct: a foreign-named echo (cloudflare, ipinfo)
+// lands in the proxy rule set and would report the proxy's exit — the
+// exact opposite of what this leg measures. ipip.net answers with the
+// address and a Chinese location line; 3322.org is a bare-address backup.
+var directGeoSources = []geoSource{
+	{"https://myip.ipip.net", parseIPIPText},
+	{"http://members.3322.org/dyndns/getip", parseIPOnly},
 }
 
 // probeExit resolves the address the traffic actually leaves from, plus where
@@ -278,19 +305,19 @@ var geoSources = []struct {
 // The legs run one after another, so the wait is bounded by geoBudget: the
 // report is only as fast as its slowest row, and one dead provider must not
 // stall the other three.
-func probeExit(proxyAddr string) (ProbeItem, exitGeo) {
+func probeExit(proxyAddr, key string, sources []geoSource) (ProbeItem, exitGeo) {
 	deadline := time.Now().Add(geoBudget)
 	var (
 		item ProbeItem
 		geo  exitGeo
 		got  bool // an address has been resolved
 	)
-	for i, src := range geoSources {
+	for i, src := range sources {
 		if i > 0 && time.Now().After(deadline) {
 			break
 		}
 		body := ""
-		leg := probeHTTPGetWithin("exitip", src.url, proxyAddr, &body, geoLegTimeout)
+		leg := probeHTTPGetWithin(key, src.url, proxyAddr, &body, geoLegTimeout)
 		if leg.OK {
 			if g := src.parse(body); g.ip != "" {
 				g.city = strings.TrimSpace(g.city)
@@ -317,7 +344,7 @@ func probeExit(proxyAddr string) (ProbeItem, exitGeo) {
 	if item.Key == "" {
 		// Unreachable in practice (the table is non-empty), but the row must
 		// never render blank.
-		item = ProbeItem{Key: "exitip"}
+		item = ProbeItem{Key: key}
 	}
 	return item, geo
 }
@@ -375,6 +402,35 @@ func parseCloudflareTrace(body string) exitGeo {
 		case "loc":
 			g.country = normCountry(v)
 		}
+	}
+	return g
+}
+
+// ipipRe pulls the address out of ipip.net's fixed line:
+// "当前 IP:1.2.3.4  来自于:中国 广东 深圳  移动".
+var ipipRe = regexp.MustCompile(`\b\d{1,3}(?:\.\d{1,3}){3}\b`)
+
+// parseIPIPText reads ipip.net's echo. The location text is Chinese-only,
+// which is fine: this leg exists for the domestic exit, and "CN" is what
+// the country can honestly be when the line says 中国.
+func parseIPIPText(body string) exitGeo {
+	ip := ipipRe.FindString(body)
+	if ip == "" {
+		return exitGeo{}
+	}
+	g := exitGeo{ip: ip}
+	if !strings.Contains(body, "中国") {
+		return g
+	}
+	g.country = "CN"
+	if i := strings.Index(body, "来自于"); i >= 0 {
+		loc := strings.Map(func(r rune) rune {
+			if r == ':' || r == ' ' {
+				return ' '
+			}
+			return r
+		}, body[i+len("来自于"):])
+		g.city = strings.TrimSpace(loc)
 	}
 	return g
 }
