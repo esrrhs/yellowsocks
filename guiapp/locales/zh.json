@@ -67,11 +67,15 @@
   "lifetime.proxy": "国外",
   "lifetime.total": "合计",
   "stats.title": "按目标归类",
+  "stats.tabTotals": "历史监控",
   "stats.hint": "按路由决策与目标域名汇总的永久流量。域名来自 DNS 劫持记录与 TLS SNI 嗅探;纯 IP 连接归入未识别地址;未收录的站点按一级域名(如 baidu.com、baidu.com.cn)归类。",
   "stats.other": "其他",
   "stats.unnamed": "未识别地址",
   "stats.showDomains": "{n} 个域名",
   "stats.noData": "还没有按目标归类的流量记录",
+  "stats.appTitle": "按应用程序",
+  "stats.appHint": "按发起连接的应用进程汇总(仅 TCP;UDP 数据报不携带进程信息)。归属来自连接表的进程探测。",
+  "stats.appNoData": "还没有按应用程序的流量记录",
   "nodes.errPort": "第 {n} 个 SOCKS5 节点缺少端口",
   "nodes.errServer": "第 {n} 个节点缺少地址",
   "nodes.errName": "第 {n} 个节点缺少名称",
@@ -233,5 +237,9 @@
   "tray.quit": "退出",
   "tray.tooltipExit": "YellowSocks · ↓ {down} ↑ {up} · {n} 连接 · 出口 {ip}",
   "tray.tooltipStopped": "YellowSocks · 已停止",
-  "tray.tooltipRate": "YellowSocks · ↓ {down} ↑ {up} · {n} 连接"
+  "tray.tooltipRate": "YellowSocks · ↓ {down} ↑ {up} · {n} 连接",
+  "stats.metricPeak": "峰值速度",
+  "stats.metricAvg": "平均速度",
+  "stats.metricMaxConns": "最大并发连接",
+  "stats.metricMaxConnsNote": "历史最高同时在连数量"
 }

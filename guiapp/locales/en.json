@@ -67,11 +67,15 @@
   "lifetime.proxy": "Foreign",
   "lifetime.total": "Total",
   "stats.title": "By destination",
+  "stats.tabTotals": "History",
   "stats.hint": "All-time traffic grouped by routing decision and destination. Names come from the DNS hijack record and TLS SNI sniffing; connections to a bare IP fall under unrecognised addresses, and unlisted sites group by their base domain (baidu.com, baidu.com.cn).",
   "stats.other": "Other",
   "stats.unnamed": "Unrecognised addresses",
   "stats.showDomains": "{n} domains",
   "stats.noData": "No per-destination traffic recorded yet",
+  "stats.appTitle": "By application",
+  "stats.appHint": "All-time traffic grouped by the process that opened the connections (TCP only; UDP datagrams carry no process). Attribution comes from the connection-table probe.",
+  "stats.appNoData": "No per-application traffic recorded yet",
   "nodes.errPort": "SOCKS5 node {n} is missing a port",
   "nodes.errServer": "Node {n} is missing an address",
   "nodes.errName": "Node {n} is missing a name",
@@ -233,5 +237,9 @@
   "tray.quit": "Quit",
   "tray.tooltipExit": "YellowSocks · ↓ {down} ↑ {up} · {n} connections · exit {ip}",
   "tray.tooltipStopped": "YellowSocks · stopped",
-  "tray.tooltipRate": "YellowSocks · ↓ {down} ↑ {up} · {n} connections"
+  "tray.tooltipRate": "YellowSocks · ↓ {down} ↑ {up} · {n} connections",
+  "stats.metricPeak": "Peak speed",
+  "stats.metricAvg": "Average speed",
+  "stats.metricMaxConns": "Max concurrent",
+  "stats.metricMaxConnsNote": "highest simultaneous connection count"
 }

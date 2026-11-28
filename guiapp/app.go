@@ -157,6 +157,13 @@ type App struct {
 	// at boot, refreshed from the live collector on every poll, served from
 	// the cache when the engine is gone.
 	lifetimeDomains []stats.DomainStat
+	// lifetimeProcesses mirrors the per-application table the same way.
+	lifetimeProcesses []stats.ProcessStat
+	// lifetime metrics (peaks, max concurrency, on-time) cached the same way.
+	lifetimePeakUp   int64
+	lifetimePeakDown int64
+	lifetimeMaxConns int64
+	lifetimeActiveSec int64
 
 	// probeKick wakes the self-check loop the moment the engine comes up, so
 	// the first report lands without waiting a full minute. Buffered, so a
@@ -238,6 +245,9 @@ func (a *App) Startup(ctx context.Context) {
 	// The automatic self-check: once per minute while the engine runs, and
 	// once shortly after every engine start.
 	go a.probeLoop()
+	// Catch-up attribution for connections whose process row was not ready
+	// (or was ambiguous) when they were accepted.
+	go a.processAttributionLoop()
 	// TUN mode needs the engine running; the boot flag alone is not enough.
 	wantEngine := st.AutoStartCore || st.TunMode
 	if wantEngine {
@@ -558,6 +568,44 @@ const (
 	tunRetryBase = 5 * time.Second
 	tunRetryCap  = 60 * time.Second
 )
+
+const (
+	attributionRetryInterval = 2 * time.Second
+	attributionMaxAge        = 30 * time.Second
+)
+
+// processAttributionLoop re-attempts process attribution for young sessions
+// that were accepted before their connection-table row was ready or while
+// the lookup was ambiguous. FindProcess caches misses for a couple of
+// seconds, so the loop stays cheap even with a burst of new connections.
+func (a *App) processAttributionLoop() {
+	ticker := time.NewTicker(attributionRetryInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-a.shutdownDone:
+			return
+		case <-ticker.C:
+			a.mu.Lock()
+			eng, res := a.engine, a.processResolver
+			a.mu.Unlock()
+			if eng == nil || res == nil {
+				continue
+			}
+			for _, v := range eng.Stats().SessionsNeedingProcess(attributionMaxAge) {
+				var srcIP net.IP
+				var srcPort int
+				if h, p, err := net.SplitHostPort(v.Client); err == nil {
+					srcIP = net.ParseIP(h)
+					srcPort, _ = strconv.Atoi(p)
+				}
+				if name, icon := res.FindProcess(srcIP, srcPort, v.Host, v.Port); name != "" {
+					eng.Stats().SetSessionProcess(v.ID, name, icon)
+				}
+			}
+		}
+	}
+}
 
 // scheduleTunRetry arms one automatic applyTun re-run. The user's intent
 // (tunWanted) is the switch: turning TUN off or quitting cancels the chain,
@@ -942,9 +990,14 @@ func (a *App) GetOverview() *stats.Overview {
 		return nil
 	}
 	o := a.engine.Stats().Overview()
+	ls := a.engine.Stats().LifetimeStats()
 	a.lifetimeAll = o.Lifetime
 	a.lifetimeDirect = o.LifetimeDirect
 	a.lifetimeProxy = o.LifetimeProxy
+	a.lifetimePeakUp = ls.PeakUp
+	a.lifetimePeakDown = ls.PeakDown
+	a.lifetimeMaxConns = ls.MaxConns
+	a.lifetimeActiveSec = ls.ActiveSec
 	return &o
 }
 
@@ -955,19 +1008,26 @@ func (a *App) loadLifetimeStats() {
 	a.mu.Lock()
 	a.lifetimeAll, a.lifetimeDirect, a.lifetimeProxy = all, direct, proxy
 	a.lifetimeDomains = stats.DomainTable(statsPath())
+	a.lifetimeProcesses = stats.ProcessTable(statsPath())
+	a.lifetimePeakUp, a.lifetimePeakDown, a.lifetimeMaxConns, a.lifetimeActiveSec = stats.LifetimeMetrics(statsPath())
 	a.mu.Unlock()
 }
 
 // GetLifetimeStats returns the permanent traffic record with its domestic
-// (direct) and foreign (proxy) shares. The counters survive restarts and
-// are never cleared except by ResetLifetimeStats.
+// (direct) and foreign (proxy) shares, plus the lifetime monitoring
+// metrics. The counters survive restarts and are never cleared except by
+// ResetLifetimeStats.
 func (a *App) GetLifetimeStats() stats.LifetimeStats {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	return stats.LifetimeStats{
-		Totals: a.lifetimeAll,
-		Direct: a.lifetimeDirect,
-		Proxy:  a.lifetimeProxy,
+		Totals:    a.lifetimeAll,
+		Direct:    a.lifetimeDirect,
+		Proxy:     a.lifetimeProxy,
+		PeakUp:    a.lifetimePeakUp,
+		PeakDown:  a.lifetimePeakDown,
+		MaxConns:  a.lifetimeMaxConns,
+		ActiveSec: a.lifetimeActiveSec,
 	}
 }
 
@@ -1002,8 +1062,11 @@ func (a *App) ResetLifetimeStats() error {
 		st := a.engine.Stats()
 		st.LifetimeReset()
 		st.ResetDomains()
+		st.ResetProcesses()
 		a.lifetimeAll, a.lifetimeDirect, a.lifetimeProxy = stats.Counters{}, stats.Counters{}, stats.Counters{}
 		a.lifetimeDomains = nil
+		a.lifetimeProcesses = nil
+		a.lifetimePeakUp, a.lifetimePeakDown, a.lifetimeMaxConns, a.lifetimeActiveSec = 0, 0, 0, 0
 		a.mu.Unlock()
 		return nil
 	}
@@ -1012,11 +1075,14 @@ func (a *App) ResetLifetimeStats() error {
 	c := stats.New(stats.Config{File: statsPath(), SaveInterval: 0})
 	c.LifetimeReset()
 	c.ResetDomains()
+	c.ResetProcesses()
 	err := c.Save()
 	c.Close()
 	a.mu.Lock()
 	a.lifetimeAll, a.lifetimeDirect, a.lifetimeProxy = stats.Counters{}, stats.Counters{}, stats.Counters{}
 	a.lifetimeDomains = nil
+	a.lifetimeProcesses = nil
+	a.lifetimePeakUp, a.lifetimePeakDown, a.lifetimeMaxConns, a.lifetimeActiveSec = 0, 0, 0, 0
 	a.mu.Unlock()
 	return err
 }
@@ -1079,6 +1145,25 @@ func (a *App) GetNodeStatuses() []sppclient.NodeStatus {
 		return nil
 	}
 	return a.engine.NodeStatuses()
+}
+
+// GetLifetimeProcesses returns the permanent per-application record behind
+// the statistics page's application view, split by routing decision like
+// the domain table. Served live while the engine runs, from the cached
+// snapshot copy while it is stopped; cleared by ResetLifetimeStats.
+func (a *App) GetLifetimeProcesses() []stats.ProcessStat {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.running && a.engine != nil {
+		out := a.engine.Stats().Processes(500)
+		a.lifetimeProcesses = out
+		return out
+	}
+	out := a.lifetimeProcesses
+	if len(out) > 500 {
+		out = out[:500]
+	}
+	return out
 }
 
 // GetNodes returns per-upstream-node traffic and health.

@@ -264,37 +264,45 @@ func tcpOwnerRows(visit func(localIP net.IP, localPort, remotePort uint16, remot
 // gets nothing rather than a guess.
 func findPIDByRemoteTCP(ip net.IP, port uint16) (uint32, bool) {
 	self := windows.GetCurrentProcessId()
-	var pid uint32
-	seen := map[uint32]bool{}
-	// The engine's own outbound sockets dial the SAME target the app did —
-	// without excluding self, every direct connection would attribute to
-	// yellowsocks-gui.exe instead of the application behind the tunnel.
+	owners := map[uint32]bool{}
 	err := tcpOwnerRows(func(_ net.IP, _, rPort uint16, rIP net.IP, owner uint32) {
-		if owner == self || seen[owner] {
-			return
-		}
 		if rPort == port && rIP.Equal(ip) {
-			seen[owner] = true
-			pid = owner
+			owners[owner] = true
 		}
 	})
-	if err != nil || len(seen) != 1 {
+	if err != nil {
 		return 0, false
 	}
-	return pid, true
+	// The engine's own outbound sockets dial the SAME target the app did.
+	// One owner wins outright — including self (the watchdog's own probes
+	// are honestly attributed to this process). Mixed owners: the app's row
+	// is the interesting one, so a unique non-self owner beats ambiguity.
+	if len(owners) == 1 {
+		for pid := range owners {
+			return pid, true
+		}
+	}
+	nonSelf := map[uint32]bool{}
+	for o := range owners {
+		if o != self {
+			nonSelf[o] = true
+		}
+	}
+	if len(nonSelf) == 1 {
+		for pid := range nonSelf {
+			return pid, true
+		}
+	}
+	return 0, false
 }
 
 // findPIDByLocalPort finds the owner of an established loopback socket by
 // its local port — the system-proxy client path.
 func findPIDByLocalPort(port uint16) (uint32, bool) {
-	self := windows.GetCurrentProcessId()
 	var pid uint32
 	seen := map[uint32]bool{}
 	err := tcpOwnerRows(func(lIP net.IP, lPort, _ uint16, _ net.IP, owner uint32) {
-		if owner == self || seen[owner] {
-			return
-		}
-		if lPort == port && (lIP.IsLoopback() || lIP.IsUnspecified()) {
+		if lPort == port && (lIP.IsLoopback() || lIP.IsUnspecified()) && !seen[owner] {
 			seen[owner] = true
 			pid = owner
 		}
