@@ -6,7 +6,6 @@
   "nav.stats": "统计",
   "nav.nodes": "节点",
   "nav.about": "关于",
-
   "engine.running": "代理运行中",
   "engine.stopped": "代理已停止",
   "engine.upstreamPending": "上游 {v},启动后生效",
@@ -14,7 +13,6 @@
   "engine.start": "启动代理",
   "engine.stop": "停止代理",
   "engine.working": "处理中...",
-
   "chip.systemProxy": "系统透明代理",
   "chip.autoConnect": "自动连接",
   "chip.launchAtLogin": "开机启动",
@@ -31,7 +29,6 @@
   "chip.tunPending": "授权后生效",
   "chip.tunIdle": "零配置全局代理",
   "chip.guardOn": "被改动后自动恢复",
-
   "mode.label": "分流模式",
   "mode.rule": "规则",
   "mode.global": "全局",
@@ -39,7 +36,6 @@
   "mode.ruleHint": "国内直连、国外走代理",
   "mode.globalHint": "除局域网/本机外全部走代理",
   "mode.directHint": "全部直连,不经过代理",
-
   "stat.conns": "活动连接",
   "stat.upRate": "上传速率",
   "stat.downRate": "下载速率",
@@ -47,14 +43,11 @@
   "stat.downTotal": "本次下载",
   "stat.uptime": "运行时长",
   "stat.connsUdp": "UDP 关联",
-
   "probe.title": "网络自检",
   "probe.run": "开始检测",
-  "probe.running": "检测中...",
   "probe.fail": "失败",
-    "probe.retest": "重测",
   "probe.idle": "启动代理后自动检测",
-"probe.exitIPValue": "出口 IP:{ip}",
+  "probe.exitIPValue": "出口 IP:{ip}",
   "probe.hint": "一次并行检查四条链路:国内直连、国外经代理、上游 SOCKS5、出口 IP",
   "probe.item.direct": "国内直连",
   "probe.item.proxied": "国外(经代理)",
@@ -65,15 +58,13 @@
   "probe.detail.notConfigured": "未配置上游服务器",
   "probe.detail.tcpOk": "TCP 连接成功",
   "probe.detail.unparsed": "返回内容无法识别",
-
   "lifetime.title": "累计流量(永久记录,重启与重置后仍保留)",
   "lifetime.reset": "清零",
   "lifetime.direct": "国内",
   "lifetime.proxy": "国外",
   "lifetime.total": "合计",
-
   "stats.title": "按目标归类",
-  "stats.hint": "按路由决策与目标域名汇总的永久流量。域名来自 DNS 劫持记录与 TLS SNI 嗅探;纯 IP 连接归入未识别地址。",
+  "stats.hint": "按路由决策与目标域名汇总的永久流量。域名来自 DNS 劫持记录与 TLS SNI 嗅探;纯 IP 连接归入未识别地址;未收录的站点按一级域名(如 baidu.com、baidu.com.cn)归类。",
   "stats.other": "其他",
   "stats.unnamed": "未识别地址",
   "stats.showDomains": "{n} 个域名",
@@ -97,13 +88,11 @@
   "nodes.add": "添加节点",
   "nodes.hint": "多节点按优先级自动切换:数值越小越优先(1 > 2),同级内带宽大的优先;首选恢复后自动抢占切回。SOCKS5 节点直接拨号,各自带用户名密码。保存后重启引擎生效;实时流量见连接页的节点子页。",
   "nodes.title": "上游节点",
-
   "chart.title": "近 30 分钟流量",
   "chart.up": "上传",
   "chart.down": "下载",
   "chart.empty": "暂无数据",
   "chart.noEngine": "引擎未运行",
-
   "conn.tabConns": "连接",
   "conn.tabNodes": "节点",
   "conn.tabErrors": "错误",
@@ -133,16 +122,13 @@
   "conn.colTime": "时间",
   "conn.colScope": "来源",
   "conn.noErrors": "没有错误记录",
-
   "logs.search": "在日志里搜索",
   "logs.rows": "{n} 行",
   "logs.empty": "没有日志(引擎未运行、或所选级别今天还没写过)",
   "logs.dir": "日志目录:{path} · 每秒自动刷新 · 向上滚动即暂停跟随",
-
   "theme.system": "跟随",
   "theme.dark": "深色",
   "theme.light": "浅色",
-
   "settings.title": "设置",
   "settings.form": "表单",
   "settings.yaml": "YAML 源码",
@@ -210,23 +196,19 @@
   "settings.ph.geoipPath": "GeoLite2-Country.mmdb 路径",
   "settings.ph.apiListen": "留空禁用,如 127.0.0.1:9090",
   "settings.ph.apiToken": "none 表示信任网络下免认证",
-
   "about.title": "关于",
   "about.version": "版本",
   "about.commit": "提交",
   "about.buildTime": "构建时间",
   "about.env": "运行环境",
   "about.github": "GitHub 项目主页",
-
   "fmt.uptimeDH": "{d}天{h}时",
   "fmt.uptimeHM": "{h}时{m}分",
   "fmt.uptimeMS": "{m}分{s}秒",
   "fmt.uptimeS": "{s}秒",
-
   "err.tunNeedRunning": "TUN 模式需要引擎处于运行状态,请先启动代理",
   "err.tunAuthIncomplete": "管理员授权未完成,TUN 模式未开启",
   "err.tunPortChanged": "TUN 引擎已在运行且上游 SOCKS5 端口已改变 ({from} → {to})；请退出应用后重新开启 TUN",
-
   "tray.stopped": "代理已停止",
   "tray.conns": "连接: {n}",
   "tray.show": "显示主界面",
@@ -242,7 +224,7 @@
   "tray.modeGlobal": "全局",
   "tray.modeDirect": "直连",
   "tray.quit": "退出",
-    "tray.tooltipExit": "YellowSocks · ↓ {down} ↑ {up} · {n} 连接 · 出口 {ip}",
-"tray.tooltipStopped": "YellowSocks · 已停止",
+  "tray.tooltipExit": "YellowSocks · ↓ {down} ↑ {up} · {n} 连接 · 出口 {ip}",
+  "tray.tooltipStopped": "YellowSocks · 已停止",
   "tray.tooltipRate": "YellowSocks · ↓ {down} ↑ {up} · {n} 连接"
 }

@@ -240,3 +240,50 @@ export function matchVendor(domain: string): Vendor | undefined {
 export function isAddrLiteral(key: string): boolean {
   return /^\d{1,3}(\.\d{1,3}){3}$/.test(key) || key.includes(":");
 }
+
+// ---- base-domain grouping for the "other" bucket ----
+
+// Multi-label public suffixes the base-domain split must keep together.
+// A plain last-two-labels cut would turn www.baidu.com.cn into com.cn;
+// these are the second-level suffixes that actually show up in traffic.
+// Anything not listed splits at the last dot pair.
+const multiSuffixes = new Set([
+  // China
+  "com.cn", "net.cn", "org.cn", "gov.cn", "edu.cn", "ac.cn", "mil.cn",
+  "com.hk", "org.hk", "net.hk", "edu.hk", "gov.hk",
+  "com.tw", "org.tw", "net.tw", "edu.tw", "gov.tw", "idv.tw",
+  // Asia
+  "co.jp", "or.jp", "ne.jp", "ac.jp", "ad.jp", "ed.jp", "go.jp", "gr.jp", "lg.jp",
+  "co.kr", "or.kr", "ne.kr", "re.kr", "go.kr", "pe.kr",
+  "com.sg", "net.sg", "org.sg", "edu.sg", "gov.sg", "per.sg",
+  "com.my", "net.my", "org.my", "edu.my", "gov.my",
+  "co.th", "or.th", "in.th", "ac.th", "go.th", "net.th",
+  "com.vn", "net.vn", "org.vn", "edu.vn", "gov.vn",
+  "co.id", "web.id", "or.id", "net.id", "go.id", "ac.id", "sch.id",
+  "com.ph", "net.ph", "org.ph", "edu.ph", "gov.ph",
+  "co.in", "net.in", "org.in", "firm.in", "gen.in", "ind.in", "ac.in", "gov.in",
+  "com.hk", "edu.hk", "gov.hk",
+  // Western
+  "co.uk", "org.uk", "me.uk", "net.uk", "ltd.uk", "plc.uk", "gov.uk", "ac.uk",
+  "com.au", "net.au", "org.au", "edu.au", "gov.au", "id.au", "asn.au",
+  "co.nz", "net.nz", "org.nz", "govt.nz", "ac.nz", "school.nz",
+  "com.br", "net.br", "org.br", "gov.br", "edu.br",
+  "com.ar", "com.mx", "com.tr", "com.sa", "com.ua",
+  "co.il", "org.il", "net.il", "ac.il", "gov.il",
+  "com.ru", "net.ru", "org.ru",
+]);
+
+// baseDomain cuts a host down to its registrable domain: the last two
+// labels, or the last three when the tail is a multi-label suffix —
+// "mail.google.com" → "google.com", "www.baidu.com.cn" → "baidu.com.cn".
+// This is what the stats page groups unlisted domains under.
+export function baseDomain(domain: string): string {
+  const d = domain.toLowerCase().replace(/\.$/, "");
+  const parts = d.split(".").filter(Boolean);
+  if (parts.length <= 2) return d;
+  const last2 = parts.slice(-2).join(".");
+  if (multiSuffixes.has(last2)) {
+    return parts.slice(-3).join(".");
+  }
+  return last2;
+}

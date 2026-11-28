@@ -7,7 +7,7 @@ import {
 } from "../../wailsjs/go/guiapp/App";
 import { stats } from "../../wailsjs/go/models";
 import { fmtBytes } from "../format";
-import { isAddrLiteral, matchVendor } from "../vendor-map";
+import { baseDomain, isAddrLiteral, matchVendor } from "../vendor-map";
 import { errText, locale, t } from "../i18n";
 
 const lifetime = ref<stats.LifetimeStats | null>(null);
@@ -82,14 +82,17 @@ function buildGroup(kind: "direct" | "proxy"): DestGroup {
     if (b <= 0) continue;
     const addr = isAddrLiteral(d.domain);
     const vendor = addr ? undefined : matchVendor(d.domain);
-    const id = addr ? "@addr" : vendor ? vendor.id : "@other";
+    // Unlisted sites group by their registrable domain — baidu.com.cn, not
+    // a pile of anonymous hosts — so the leftovers read as a ranking.
+    const base = addr ? "" : baseDomain(d.domain);
+    const id = addr ? "@addr" : vendor ? vendor.id : "d:" + base;
     const label = addr
       ? t("stats.unnamed")
       : vendor
         ? locale.value === "zh"
           ? vendor.zh
           : vendor.en
-        : t("stats.other");
+        : base;
 
     // Per-direction numbers are stored per entry, not per decision; when an
     // entry rode both paths, scale them by the share this side owns.
@@ -109,10 +112,9 @@ function buildGroup(kind: "direct" | "proxy"): DestGroup {
     total += b;
   }
 
-  // Named vendors rank by bytes; the catch-alls (其他, then 未识别地址)
-  // sit below them whatever their weight, so the list reads as a ranking of
-  // names with the leftovers summarised underneath.
-  const rank = (id: string) => (id === "@addr" ? 2 : id === "@other" ? 1 : 0);
+  // Everything ranks by traffic, largest first — vendor names and grouped
+  // base domains compete on the same scale; the unrecognised-address
+  // bucket pins last, since it is not a destination of its own.
   const rows = [...groups.entries()]
     .map(([id, g]): DestRow => ({
       id,
@@ -122,7 +124,11 @@ function buildGroup(kind: "direct" | "proxy"): DestGroup {
       down: g.down,
       members: g.members,
     }))
-    .sort((a, b) => (rank(a.id) !== rank(b.id) ? rank(a.id) - rank(b.id) : b.bytes - a.bytes));
+    .sort((a, b) => {
+      const ra = a.id === "@addr" ? 1 : 0;
+      const rb = b.id === "@addr" ? 1 : 0;
+      return ra - rb || b.bytes - a.bytes;
+    });
 
   return { total, rows };
 }

@@ -6,7 +6,6 @@
   "nav.stats": "Stats",
   "nav.nodes": "Nodes",
   "nav.about": "About",
-
   "engine.running": "Proxy running",
   "engine.stopped": "Proxy stopped",
   "engine.upstreamPending": "Upstream {v}, applies on start",
@@ -14,7 +13,6 @@
   "engine.start": "Start proxy",
   "engine.stop": "Stop proxy",
   "engine.working": "Working...",
-
   "chip.systemProxy": "System proxy",
   "chip.autoConnect": "Auto connect",
   "chip.launchAtLogin": "Launch at login",
@@ -31,7 +29,6 @@
   "chip.tunPending": "Needs authorisation",
   "chip.tunIdle": "Zero-config global proxy",
   "chip.guardOn": "Restored if changed",
-
   "mode.label": "Routing",
   "mode.rule": "Rule",
   "mode.global": "Global",
@@ -39,7 +36,6 @@
   "mode.ruleHint": "Domestic direct, foreign proxied",
   "mode.globalHint": "Everything proxied except LAN and loopback",
   "mode.directHint": "Everything direct, proxy bypassed",
-
   "stat.conns": "Active connections",
   "stat.upRate": "Upload rate",
   "stat.downRate": "Download rate",
@@ -47,14 +43,11 @@
   "stat.downTotal": "Session download",
   "stat.uptime": "Uptime",
   "stat.connsUdp": "UDP",
-
   "probe.title": "Connectivity check",
   "probe.run": "Run check",
-  "probe.running": "Checking...",
   "probe.fail": "Failed",
-    "probe.retest": "Retest",
   "probe.idle": "Runs automatically once the proxy starts",
-"probe.exitIPValue": "Exit IP: {ip}",
+  "probe.exitIPValue": "Exit IP: {ip}",
   "probe.hint": "Four legs in parallel: domestic direct, foreign via proxy, upstream SOCKS5, exit IP",
   "probe.item.direct": "Domestic direct",
   "probe.item.proxied": "Foreign (via proxy)",
@@ -65,15 +58,13 @@
   "probe.detail.notConfigured": "No upstream server configured",
   "probe.detail.tcpOk": "TCP connected",
   "probe.detail.unparsed": "Unrecognised response",
-
   "lifetime.title": "Lifetime traffic (kept across restarts and resets)",
   "lifetime.reset": "Reset",
   "lifetime.direct": "Domestic",
   "lifetime.proxy": "Foreign",
   "lifetime.total": "Total",
-
   "stats.title": "By destination",
-  "stats.hint": "All-time traffic grouped by routing decision and destination. Names come from the DNS hijack record and TLS SNI sniffing; connections to a bare IP fall under unrecognised addresses.",
+  "stats.hint": "All-time traffic grouped by routing decision and destination. Names come from the DNS hijack record and TLS SNI sniffing; connections to a bare IP fall under unrecognised addresses, and unlisted sites group by their base domain (baidu.com, baidu.com.cn).",
   "stats.other": "Other",
   "stats.unnamed": "Unrecognised addresses",
   "stats.showDomains": "{n} domains",
@@ -97,13 +88,11 @@
   "nodes.add": "Add node",
   "nodes.hint": "Multiple nodes fail over by priority: a lower number wins (1 > 2), bandwidth breaks ties inside a tier, and a recovered first tier preempts again. SOCKS5 nodes dial directly with their own credentials. Save, then restart the engine; live traffic per node is on the connections page.",
   "nodes.title": "Upstream nodes",
-
   "chart.title": "Last 30 minutes",
   "chart.up": "Up",
   "chart.down": "Down",
   "chart.empty": "No data yet",
   "chart.noEngine": "Engine not running",
-
   "conn.tabConns": "Connections",
   "conn.tabNodes": "Nodes",
   "conn.tabErrors": "Errors",
@@ -133,16 +122,13 @@
   "conn.colTime": "Time",
   "conn.colScope": "Scope",
   "conn.noErrors": "No errors recorded",
-
   "logs.search": "Search the log",
   "logs.rows": "{n} row|{n} rows",
   "logs.empty": "No lines (engine stopped, or this level has not been written today)",
   "logs.dir": "Log directory: {path} · refreshes every second · scrolling up pauses follow",
-
   "theme.system": "System",
   "theme.dark": "Dark",
   "theme.light": "Light",
-
   "settings.title": "Settings",
   "settings.form": "Form",
   "settings.yaml": "YAML source",
@@ -210,23 +196,19 @@
   "settings.ph.geoipPath": "Path to GeoLite2-Country.mmdb",
   "settings.ph.apiListen": "Empty disables it, e.g. 127.0.0.1:9090",
   "settings.ph.apiToken": "\"none\" trusts the local network",
-
   "about.title": "About",
   "about.version": "Version",
   "about.commit": "Commit",
   "about.buildTime": "Built",
   "about.env": "Environment",
   "about.github": "GitHub repository",
-
   "fmt.uptimeDH": "{d}d {h}h",
   "fmt.uptimeHM": "{h}h {m}m",
   "fmt.uptimeMS": "{m}m {s}s",
   "fmt.uptimeS": "{s}s",
-
   "err.tunNeedRunning": "TUN mode needs the proxy running — start it first",
   "err.tunAuthIncomplete": "Administrator authorisation was not completed; TUN mode is off",
   "err.tunPortChanged": "TUN is already running and the upstream SOCKS5 port changed ({from} → {to}); quit the app and enable TUN again",
-
   "tray.stopped": "Proxy stopped",
   "tray.conns": "Connections: {n}",
   "tray.show": "Show window",
@@ -242,7 +224,7 @@
   "tray.modeGlobal": "Global",
   "tray.modeDirect": "Direct",
   "tray.quit": "Quit",
-    "tray.tooltipExit": "YellowSocks · ↓ {down} ↑ {up} · {n} connections · exit {ip}",
-"tray.tooltipStopped": "YellowSocks · stopped",
+  "tray.tooltipExit": "YellowSocks · ↓ {down} ↑ {up} · {n} connections · exit {ip}",
+  "tray.tooltipStopped": "YellowSocks · stopped",
   "tray.tooltipRate": "YellowSocks · ↓ {down} ↑ {up} · {n} connections"
 }
