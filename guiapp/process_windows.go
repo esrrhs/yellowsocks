@@ -190,6 +190,16 @@ func (r *processResolver) UpdateListenPorts(addrs []string) {
 	r.mu.Unlock()
 }
 
+// processName is the cheap identity used to collapse several pids of one
+// application: the executable file name only, no icon extraction.
+func processName(pid uint32) string {
+	path, err := processImagePath(pid)
+	if err != nil || path == "" {
+		return ""
+	}
+	return filepath.Base(path)
+}
+
 // processIdentity resolves the exe name and icon for a PID, caching by path.
 func (r *processResolver) processIdentity(pid uint32) (string, string) {
 	path, err := processImagePath(pid)
@@ -291,40 +301,67 @@ func tcpOwnerRows(visit func(localIP net.IP, localPort, remotePort uint16, remot
 	return nil
 }
 
-// findPIDByRemoteTCP finds the PID(s) of established sockets whose remote
-// address is the dialed target. One unique owner wins; several different
-// owners on the same target mean the answer is ambiguous and the caller
-// gets nothing rather than a guess.
+// tunLocalAddr is the source address every freshly tunnel-captured flow
+// carries: the app's socket is bound to the TUN adapter's own address when the
+// packet enters the tunnel. Sockets on the physical address to the same
+// endpoint either bypassed the tunnel or are our own dials.
+var tunLocalAddr = net.ParseIP(tunIPv4)
+
+// findPIDByRemoteTCP finds the process behind a tunnel-captured flow: the
+// sockets headed for the same remote endpoint whose traffic entered the TUN.
+// One application commonly holds several of them (browser tabs, an IDE's
+// helper processes), so the answer is unique when every owner is the same
+// EXECUTABLE, not the same pid — the same app's pids collapse into one answer,
+// two different apps on one endpoint mean the flow cannot be attributed
+// without guessing.
 func findPIDByRemoteTCP(ip net.IP, port uint16) (uint32, bool) {
 	self := windows.GetCurrentProcessId()
 	owners := map[uint32]bool{}
-	err := tcpOwnerRows(func(_ net.IP, _, rPort uint16, rIP net.IP, owner uint32) {
-		if rPort == port && rIP.Equal(ip) {
+	collect := func(onTun bool) error {
+		return tcpOwnerRows(func(lIP net.IP, _ uint16, rPort uint16, rIP net.IP, owner uint32) {
+			if rPort != port || !rIP.Equal(ip) {
+				return
+			}
+			if onTun != lIP.Equal(tunLocalAddr) {
+				return
+			}
 			owners[owner] = true
-		}
-	})
-	if err != nil {
+		})
+	}
+	if err := collect(true); err != nil {
 		return 0, false
 	}
-	// The engine's own outbound sockets dial the SAME target the app did.
-	// One owner wins outright — including self (the watchdog's own probes
-	// are honestly attributed to this process). Mixed owners: the app's row
-	// is the interesting one, so a unique non-self owner beats ambiguity.
-	if len(owners) == 1 {
-		for pid := range owners {
+	if len(owners) == 0 {
+		// A socket established before the tunnel came up keeps its physical
+		// source address; its packets are still captured by destination.
+		if err := collect(false); err != nil {
+			return 0, false
+		}
+	}
+	byName := map[string]uint32{}
+	haveSelf := false
+	for pid := range owners {
+		if pid == self {
+			haveSelf = true
+			continue
+		}
+		name := processName(pid)
+		if name == "" {
+			continue
+		}
+		if _, ok := byName[name]; !ok {
+			byName[name] = pid
+		}
+	}
+	if len(byName) == 1 {
+		for _, pid := range byName {
 			return pid, true
 		}
 	}
-	nonSelf := map[uint32]bool{}
-	for o := range owners {
-		if o != self {
-			nonSelf[o] = true
-		}
-	}
-	if len(nonSelf) == 1 {
-		for pid := range nonSelf {
-			return pid, true
-		}
+	if len(byName) == 0 && haveSelf {
+		// Our own dials (the self-check fetches, the attribution retries'
+		// probes) are honestly attributed to this process.
+		return self, true
 	}
 	return 0, false
 }

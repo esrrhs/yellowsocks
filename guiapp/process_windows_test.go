@@ -85,3 +85,39 @@ func TestFindProcessUnknownClient(t *testing.T) {
 		}
 	}
 }
+
+// The remote-address lookup must answer for this very process: a socket that
+// does not ride the TUN address still proves the fallback scan, the
+// self-owner rule and the executable-level dedupe are wired correctly.
+func TestFindPIDByRemoteTCPOwnSocket(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+	accepted := make(chan net.Conn, 1)
+	go func() {
+		if c, err := ln.Accept(); err == nil {
+			accepted <- c
+		}
+	}()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+	select {
+	case c := <-accepted:
+		defer c.Close()
+	case <-time.After(2 * time.Second):
+		t.Fatal("accept timed out")
+	}
+	port := uint16(ln.Addr().(*net.TCPAddr).Port)
+	pid, ok := findPIDByRemoteTCP(net.ParseIP("127.0.0.1"), port)
+	if !ok {
+		t.Fatalf("dialed endpoint 127.0.0.1:%d not found in the TCP table", port)
+	}
+	if self := windows.GetCurrentProcessId(); pid != self {
+		t.Fatalf("owner pid = %d, want %d", pid, self)
+	}
+}
