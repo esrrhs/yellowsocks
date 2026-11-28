@@ -1,7 +1,8 @@
 <script lang="ts" setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, onActivated, onDeactivated, onMounted, onUnmounted, ref } from "vue";
 import { load as yamlLoad, dump as yamlDump } from "js-yaml";
-import { GetConfig, SaveConfig } from "../../wailsjs/go/guiapp/App";
+import { GetConfig, GetNodeStatuses, SaveConfig } from "../../wailsjs/go/guiapp/App";
+import { sppclient } from "../../wailsjs/go/models";
 import { errText, t } from "../i18n";
 
 // The upstream node pool. One place edits the config file's `nodes:` list:
@@ -15,6 +16,7 @@ import { errText, t } from "../i18n";
 // flat form, and leaving both is how double bookkeeping starts.
 
 interface NodeForm {
+  uid: number; // internal: stable expand/remove key across edits
   name: string;
   type: "spp" | "socks5";
   server: string;
@@ -32,6 +34,75 @@ const doc = ref<Record<string, unknown>>({});
 const nodes = ref<NodeForm[]>([]);
 const message = ref("");
 const error = ref("");
+
+let uidSeq = 0;
+const nextUID = () => ++uidSeq;
+const expanded = ref(new Set<number>());
+const toggleNode = (uid: number) => {
+  const next = new Set(expanded.value);
+  if (next.has(uid)) next.delete(uid);
+  else next.add(uid);
+  expanded.value = next;
+};
+const isOpen = (uid: number) => expanded.value.has(uid);
+// Live per-node probe state (real request through the node), keyed by node
+// name; refreshed on a slower clock than the connections page because each
+// probe performs a full SOCKS5 handshake plus an HTTP GET per node.
+const statuses = ref<Record<string, sppclient.NodeStatus>>({});
+let statusTimer: number | undefined;
+
+async function refreshStatuses() {
+  try {
+    const list = (await GetNodeStatuses()) ?? [];
+    const map: Record<string, sppclient.NodeStatus> = {};
+    for (const st of list) map[st.name] = st;
+    statuses.value = map;
+  } catch {
+    // engine stopped or binding unavailable: keep the last known state
+  }
+}
+
+function startStatusPolling() {
+  if (statusTimer) return;
+  statusTimer = window.setInterval(refreshStatuses, 3000);
+}
+function stopStatusPolling() {
+  if (statusTimer) window.clearInterval(statusTimer);
+  statusTimer = undefined;
+}
+
+let statusBooted = false;
+
+onMounted(async () => {
+  await load();
+  statusBooted = true;
+  await refreshStatuses();
+});
+
+onActivated(() => {
+  if (statusBooted) void refreshStatuses();
+  startStatusPolling();
+});
+
+onDeactivated(stopStatusPolling);
+
+onUnmounted(stopStatusPolling);
+
+function statusOf(name: string): sppclient.NodeStatus | undefined {
+  return statuses.value[name];
+}
+
+// nodeAddr is the collapsed row's one-line summary of where the node dials.
+function nodeAddr(n: NodeForm): string {
+  if (n.type === "socks5") {
+    return n.port ? `${n.server}:${n.port}` : n.server;
+  }
+  return n.server;
+}
+
+// True once at least one probe round has landed: before that the cards show
+// no verdict instead of a misleading "down".
+const statusesReady = computed(() => Object.keys(statuses.value).length > 0);
 
 const sppProtos = [
   "tcp", "udp", "rudp", "ricmp", "kcp", "quic", "rhttp", "rdns", "pingtunnel",
@@ -66,6 +137,7 @@ function seedFromFlat(d: Record<string, unknown>): NodeForm[] {
   if (proto === "socks5") {
     const [host, port] = splitHostPort(server);
     return [{
+      uid: nextUID(),
       name: t("nodes.mainName"),
       type: "socks5",
       server: host,
@@ -79,6 +151,7 @@ function seedFromFlat(d: Record<string, unknown>): NodeForm[] {
     }];
   }
   return [{
+    uid: nextUID(),
     name: t("nodes.mainName"),
     type: "spp",
     server,
@@ -98,6 +171,7 @@ function nodesFromDoc(d: Record<string, unknown>): NodeForm[] {
     return seedFromFlat(d);
   }
   return list.map((raw: any) => ({
+    uid: nextUID(),
     name: String(raw?.name ?? ""),
     type: String(raw?.type ?? "spp").toLowerCase() === "socks5" ? "socks5" : "spp",
     server: String(raw?.server ?? ""),
@@ -153,7 +227,8 @@ function addNode() {
   const used = new Set(nodes.value.map((n) => Number(n.priority) || 10));
   let p = 1;
   while (used.has(p)) p++;
-  nodes.value.push({
+  const n: NodeForm = {
+    uid: nextUID(),
     name: "",
     type: "socks5",
     server: "",
@@ -164,11 +239,17 @@ function addNode() {
     password: "",
     priority: String(p),
     bandwidth: "",
-  });
+  };
+  nodes.value.push(n);
+  // A fresh node is useless collapsed: open it for editing right away.
+  expanded.value = new Set([...expanded.value, n.uid]);
 }
 
-function removeNode(i: number) {
-  nodes.value.splice(i, 1);
+function removeNode(uid: number) {
+  nodes.value = nodes.value.filter((n) => n.uid !== uid);
+  const next = new Set(expanded.value);
+  next.delete(uid);
+  expanded.value = next;
 }
 
 function validate(): string {
@@ -243,6 +324,7 @@ const dirty = computed(() => pristine.value !== "" && serialize(nodes.value) !==
 onMounted(async () => {
   await load();
   pristine.value = serialize(nodes.value);
+  statusBooted = true;
 });
 </script>
 
@@ -265,42 +347,55 @@ onMounted(async () => {
           <span>{{ t("nodes.tier", { n: tier.priority }) }}</span>
           <span class="node-tier-note">{{ t("nodes.tierNote") }}</span>
         </div>
-        <div class="node-card" v-for="(n, i) in tier.items" :key="i" :class="{ socks5: n.type === 'socks5' }">
-          <div class="node-card-head">
-            <span class="node-type" :class="n.type === 'socks5' ? 'socks5' : 'spp'">
-              {{ n.type === "socks5" ? t("nodes.typeSocks5") : t("nodes.typeSpp") }}
-            </span>
-            <button class="node-del" :title="t('nodes.remove')" @click="removeNode(nodes.indexOf(n))">✕</button>
-          </div>
-          <div class="form-grid">
-            <label>{{ t("nodes.name") }}</label>
-            <input v-model="n.name" :placeholder="'My-Socks5'" />
+        <div class="node-list">
+          <div class="node-item" v-for="n in tier.items" :key="n.uid" :class="{ socks5: n.type === 'socks5', open: isOpen(n.uid) }">
+            <button class="node-row" @click="toggleNode(n.uid)">
+              <span class="node-caret">{{ isOpen(n.uid) ? "▾" : "▸" }}</span>
+              <span class="node-name">{{ n.name || t("nodes.unnamed") }}</span>
+              <span class="node-type" :class="n.type === 'socks5' ? 'socks5' : 'spp'">
+                {{ n.type === "socks5" ? t("nodes.typeSocks5") : t("nodes.typeSpp") }}
+              </span>
+              <span class="node-addr">{{ nodeAddr(n) }}</span>
+              <span class="node-status" v-if="statusOf(n.name)" :class="statusOf(n.name)!.real_ok ? 'ok' : 'down'">
+                <i class="dot" :class="statusOf(n.name)!.real_ok ? 'on' : 'err'"></i>
+                <span class="node-ms" v-if="statusOf(n.name)!.real_ok">{{ statusOf(n.name)!.real_ms }}ms</span>
+                <span v-else>{{ t("nodes.statusDown") }}</span>
+              </span>
+              <span class="node-status idle" v-else-if="statusesReady">{{ t("nodes.statusIdle") }}</span>
+              <button class="node-del" :title="t('nodes.remove')" @click.stop="removeNode(n.uid)">✕</button>
+            </button>
+            <div class="node-edit" v-if="isOpen(n.uid)">
+              <div class="form-grid">
+                <label>{{ t("nodes.name") }}</label>
+                <input v-model="n.name" :placeholder="'My-Socks5'" />
 
-            <label>{{ t("nodes.server") }}</label>
-            <input v-model="n.server" :placeholder="n.type === 'socks5' ? 'sh.example.com' : '1.2.3.4:8888'" />
+                <label>{{ t("nodes.server") }}</label>
+                <input v-model="n.server" :placeholder="n.type === 'socks5' ? 'sh.example.com' : '1.2.3.4:8888'" />
 
-            <template v-if="n.type === 'socks5'">
-              <label>{{ t("nodes.port") }}</label>
-              <input v-model="n.port" type="number" placeholder="1080" />
-              <label>{{ t("settings.sppUsername") }}</label>
-              <input v-model="n.username" :placeholder="t('settings.ph.authOptional')" />
-              <label>{{ t("settings.sppPassword") }}</label>
-              <input v-model="n.password" type="password" :placeholder="t('settings.ph.authOptional')" />
-            </template>
+                <template v-if="n.type === 'socks5'">
+                  <label>{{ t("nodes.port") }}</label>
+                  <input v-model="n.port" type="number" placeholder="1080" />
+                  <label>{{ t("settings.sppUsername") }}</label>
+                  <input v-model="n.username" :placeholder="t('settings.ph.authOptional')" />
+                  <label>{{ t("settings.sppPassword") }}</label>
+                  <input v-model="n.password" type="password" :placeholder="t('settings.ph.authOptional')" />
+                </template>
 
-            <template v-else>
-              <label>{{ t("settings.sppProto") }}</label>
-              <select v-model="n.server_proto">
-                <option v-for="p in sppProtos" :key="p" :value="p">{{ p }}</option>
-              </select>
-              <label>{{ t("settings.sppKey") }}</label>
-              <input v-model="n.key" :placeholder="t('settings.ph.authOptional')" />
-            </template>
+                <template v-else>
+                  <label>{{ t("settings.sppProto") }}</label>
+                  <select v-model="n.server_proto">
+                    <option v-for="p in sppProtos" :key="p" :value="p">{{ p }}</option>
+                  </select>
+                  <label>{{ t("settings.sppKey") }}</label>
+                  <input v-model="n.key" :placeholder="t('settings.ph.authOptional')" />
+                </template>
 
-            <label>{{ t("nodes.priority") }}</label>
-            <input v-model="n.priority" type="number" min="1" placeholder="1" />
-            <label>{{ t("nodes.bandwidth") }}</label>
-            <input v-model="n.bandwidth" type="number" min="1" placeholder="100" />
+                <label>{{ t("nodes.priority") }}</label>
+                <input v-model="n.priority" type="number" min="1" placeholder="1" />
+                <label>{{ t("nodes.bandwidth") }}</label>
+                <input v-model="n.bandwidth" type="number" min="1" placeholder="100" />
+              </div>
+            </div>
           </div>
         </div>
       </div>

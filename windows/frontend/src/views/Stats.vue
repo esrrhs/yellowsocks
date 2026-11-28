@@ -138,6 +138,10 @@ const proxyGroup = computed(() => buildGroup("proxy"));
 const hasData = computed(() => domains.value.length > 0);
 const groupOf = (side: "direct" | "proxy") => (side === "direct" ? directGroup.value : proxyGroup.value);
 
+// One side at a time: 国内 and 国外 are separate views, not two stacked
+// blocks — the card stays half as tall and the ranking reads on its own.
+const activeSide = ref<"direct" | "proxy">("direct");
+
 const expanded = ref(new Set<string>());
 function toggleRow(side: string, id: string) {
   const key = `${side}:${id}`;
@@ -236,36 +240,43 @@ onUnmounted(() => {
       <p class="hint">{{ t("stats.hint") }}</p>
 
       <template v-if="hasData">
-        <div class="dest-side" v-for="side in ['direct', 'proxy'] as const" :key="side">
-          <div class="dest-side-head">
-            <i class="sw" :class="side === 'direct' ? 'dim' : 'dim intl'"></i>
-            <span>{{ side === "direct" ? t("lifetime.direct") : t("lifetime.proxy") }}</span>
-            <span class="dest-side-total">{{ fmtBytes(groupOf(side).total) }}</span>
-          </div>
+        <div class="dest-tabs">
+          <button
+            v-for="side in ['direct', 'proxy'] as const"
+            :key="side"
+            class="dest-tab"
+            :class="{ active: activeSide === side }"
+            @click="activeSide = side"
+          >
+            {{ side === "direct" ? t("lifetime.direct") : t("lifetime.proxy") }}
+            <span class="dest-tab-total">{{ fmtBytes(groupOf(side).total) }}</span>
+          </button>
+        </div>
+        <div class="dest-side">
           <div class="dest-rows">
-            <template v-for="row in groupOf(side).rows" :key="side + row.id">
+            <template v-for="row in groupOf(activeSide).rows" :key="activeSide + row.id">
               <button
                 class="dest-row"
-                :class="{ open: isOpen(side, row.id), bare: row.id.startsWith('@') }"
-                @click="toggleRow(side, row.id)"
+                :class="{ open: isOpen(activeSide, row.id), bare: row.id.startsWith('@') }"
+                @click="toggleRow(activeSide, row.id)"
               >
                 <span class="dest-name">{{ row.label }}</span>
-                <span class="dest-share">{{ share(row.bytes, groupOf(side).total) }}</span>
+                <span class="dest-share">{{ share(row.bytes, groupOf(activeSide).total) }}</span>
                 <span class="dest-bytes">{{ fmtBytes(row.bytes) }}</span>
                 <span class="dest-updown">↑{{ fmtBytes(row.up) }} ↓{{ fmtBytes(row.down) }}</span>
-                <span class="dest-caret">{{ isOpen(side, row.id) ? "▾" : "▸" }}</span>
+                <span class="dest-caret">{{ isOpen(activeSide, row.id) ? "▾" : "▸" }}</span>
               </button>
-              <div class="dest-detail" v-if="isOpen(side, row.id)">
+              <div class="dest-detail" v-if="isOpen(activeSide, row.id)">
                 <div
                   class="dest-member"
                   v-for="m in topMembers(row.members, (d) =>
-                    side === 'direct' ? (d.direct_bytes ?? 0) : (d.proxy_bytes ?? 0),
+                    activeSide === 'direct' ? (d.direct_bytes ?? 0) : (d.proxy_bytes ?? 0),
                   )"
                   :key="m.domain"
                 >
                   <span class="dest-member-name" :title="m.domain">{{ m.domain }}</span>
                   <span class="dest-member-bytes">{{
-                    fmtBytes(side === "direct" ? (m.direct_bytes ?? 0) : (m.proxy_bytes ?? 0))
+                    fmtBytes(activeSide === "direct" ? (m.direct_bytes ?? 0) : (m.proxy_bytes ?? 0))
                   }}</span>
                 </div>
                 <div class="dest-more" v-if="row.members.length > 8">

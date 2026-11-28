@@ -50,6 +50,10 @@ export function GetLogs(arg1, arg2) {
   return window['go']['guiapp']['App']['GetLogs'](arg1, arg2);
 }
 
+export function GetNodeStatuses() {
+  return window['go']['guiapp']['App']['GetNodeStatuses']();
+}
+
 export function GetNodes() {
   return window['go']['guiapp']['App']['GetNodes']();
 }

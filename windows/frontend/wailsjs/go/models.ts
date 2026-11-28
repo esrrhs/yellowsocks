@@ -15,6 +15,8 @@ export namespace guiapp {
 	    auto_start_core: boolean;
 	    launch_at_login: boolean;
 	    proxy_guard: boolean;
+	    tun_retrying: boolean;
+	    tun_pending: boolean;
 	
 	    static createFrom(source: any = {}) {
 	        return new EngineStatus(source);
@@ -36,6 +38,8 @@ export namespace guiapp {
 	        this.auto_start_core = source["auto_start_core"];
 	        this.launch_at_login = source["launch_at_login"];
 	        this.proxy_guard = source["proxy_guard"];
+	        this.tun_retrying = source["tun_retrying"];
+	        this.tun_pending = source["tun_pending"];
 	    }
 	}
 	export class ProbeItem {
@@ -67,6 +71,9 @@ export namespace guiapp {
 	    exit_ip: string;
 	    exit_country: string;
 	    exit_city: string;
+	    exit_ip_direct?: string;
+	    exit_country_direct?: string;
+	    exit_city_direct?: string;
 	    items: ProbeItem[];
 	
 	    static createFrom(source: any = {}) {
@@ -79,6 +86,9 @@ export namespace guiapp {
 	        this.exit_ip = source["exit_ip"];
 	        this.exit_country = source["exit_country"];
 	        this.exit_city = source["exit_city"];
+	        this.exit_ip_direct = source["exit_ip_direct"];
+	        this.exit_country_direct = source["exit_country_direct"];
+	        this.exit_city_direct = source["exit_city_direct"];
 	        this.items = this.convertValues(source["items"], ProbeItem);
 	    }
 	
@@ -99,6 +109,43 @@ export namespace guiapp {
 		    }
 		    return a;
 		}
+	}
+
+}
+
+export namespace sppclient {
+	
+	export class NodeStatus {
+	    name: string;
+	    server: string;
+	    proto: string;
+	    priority: number;
+	    bandwidth: number;
+	    rtt_ms: number;
+	    alive: boolean;
+	    active: boolean;
+	    active_conns: number;
+	    real_ok: boolean;
+	    real_ms: number;
+	
+	    static createFrom(source: any = {}) {
+	        return new NodeStatus(source);
+	    }
+	
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.name = source["name"];
+	        this.server = source["server"];
+	        this.proto = source["proto"];
+	        this.priority = source["priority"];
+	        this.bandwidth = source["bandwidth"];
+	        this.rtt_ms = source["rtt_ms"];
+	        this.alive = source["alive"];
+	        this.active = source["active"];
+	        this.active_conns = source["active_conns"];
+	        this.real_ok = source["real_ok"];
+	        this.real_ms = source["real_ms"];
+	    }
 	}
 
 }
@@ -398,6 +445,8 @@ export namespace stats {
 	    port: number;
 	    decision: string;
 	    node: string;
+	    process_name?: string;
+	    process_icon?: string;
 	    start: number;
 	    age_ms: number;
 	    upload_bytes: number;
@@ -419,6 +468,8 @@ export namespace stats {
 	        this.port = source["port"];
 	        this.decision = source["decision"];
 	        this.node = source["node"];
+	        this.process_name = source["process_name"];
+	        this.process_icon = source["process_icon"];
 	        this.start = source["start"];
 	        this.age_ms = source["age_ms"];
 	        this.upload_bytes = source["upload_bytes"];

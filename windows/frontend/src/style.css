@@ -353,16 +353,28 @@ body {
    sentences live in the strip's tooltip. */
 .probe-strip {
     display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 4px 12px;
-    flex-basis: 100%;
-    margin-top: 10px;
-    padding-top: 9px;
-    border-top: 1px solid var(--line-soft);
+    flex-direction: column;
+    gap: 5px;
     font-family: var(--mono);
     font-size: 11px;
     color: var(--text-dim);
+}
+
+/* One row per path: the line label carries the 国内/国外 context, so the
+   exit legs on both rows can share the same word (出口) without ambiguity. */
+.probe-line {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 4px 12px;
+}
+
+.ps-line-label {
+    color: var(--text-3);
+    font-size: 10px;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    min-width: 30px;
 }
 
 .ps-label {
@@ -1342,33 +1354,82 @@ body {
     font-size: 10.5px;
 }
 
-.node-card {
-    border: 1px solid var(--line-soft);
-    border-radius: 3px;
-    padding: 8px 12px 10px;
-    margin-bottom: 8px;
-    background: var(--raise);
+.node-list {
+    border-top: 1px solid var(--line-soft);
 }
 
-.node-card-head {
+.node-item {
+    border-bottom: 1px solid var(--line-soft);
+}
+
+/* Collapsed row: name, type, address, live verdict — the whole edit form
+   stays hidden until the row is clicked. */
+.node-row {
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    margin-bottom: 6px;
+    gap: 10px;
+    width: 100%;
+    padding: 6px 2px;
+    border: none;
+    background: transparent;
+    font: inherit;
+    text-align: left;
+    color: var(--text-2);
+    cursor: pointer;
 }
 
-.node-type {
-    font-size: 10.5px;
+.node-row:hover {
+    background: var(--raise);
+    color: var(--text);
+}
+
+.node-row.open {
+    color: var(--text);
+}
+
+.node-caret {
+    flex: none;
+    width: 10px;
+    color: var(--text-3);
+    font-size: 10px;
+}
+
+.node-name {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12.5px;
+    color: var(--text);
+}
+
+.node-row .node-type {
+    flex: none;
+    font-size: 10px;
     letter-spacing: 0.05em;
     text-transform: uppercase;
     color: var(--text-3);
 }
 
-.node-type.socks5 {
+.node-row .node-type.socks5 {
     color: var(--accent);
 }
 
+.node-addr {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--mono);
+    font-size: 11px;
+    color: var(--text-3);
+}
+
 .node-del {
+    flex: none;
     border: none;
     background: transparent;
     color: var(--text-3);
@@ -1379,6 +1440,13 @@ body {
 
 .node-del:hover {
     color: var(--bad);
+}
+
+/* Expanded editor: indented under its row, panel background to read as a
+   belonging block. */
+.node-edit {
+    padding: 4px 2px 12px 20px;
+    background: var(--raise);
 }
 
 /* ---------- lifetime traffic ---------- */
@@ -1921,4 +1989,119 @@ body {
     margin-top: 10px;
     font-size: 11.5px;
     font-family: var(--mono);
+}
+
+/* Nodes page: live probe verdict on each card, sitting between the type
+   badge and the delete button so a glance answers 可不可用. */
+.node-status {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    color: var(--text-dim);
+}
+
+.node-status .dot {
+    width: 6px;
+    height: 6px;
+}
+
+.node-status.ok {
+    color: var(--ok);
+}
+
+.node-status.down {
+    color: var(--down);
+}
+
+.node-ms {
+    color: var(--text-3);
+    font-family: var(--mono);
+    font-size: 10.5px;
+}
+
+/* Stats page: 国内/国外 sub-tabs. The tab carries the side's total so the
+   ranking panel below can drop its own heading; one side at a time keeps
+   the card at half the height of the old stacked pairs. */
+.dest-tabs {
+    display: flex;
+    gap: 2px;
+    margin-bottom: 10px;
+    border-bottom: 1px solid var(--line);
+}
+
+.dest-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 7px 14px 8px;
+    border: none;
+    border-radius: 0;
+    background: transparent;
+    color: var(--text-dim);
+    font: inherit;
+    font-size: 12.5px;
+    cursor: pointer;
+    box-shadow: inset 0 -2px 0 transparent;
+    transition: color 0.12s, background 0.12s;
+}
+
+.dest-tab:hover {
+    color: var(--text);
+    background: var(--raise);
+}
+
+.dest-tab.active {
+    color: var(--text);
+    box-shadow: inset 0 -2px 0 var(--accent);
+}
+
+.dest-tab-total {
+    color: var(--text-3);
+    font-family: var(--mono);
+    font-size: 11px;
+    font-variant-numeric: tabular-nums;
+}
+
+/* Connections page: the attributed process (name + shell icon) replaces the
+   raw client address when the resolver knows it; hovering still shows the
+   address for anyone who needs the port. */
+.proc {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.proc-icon {
+    width: 15px;
+    height: 15px;
+    flex: none;
+}
+
+.proc-name {
+    color: var(--text);
+    font-family: var(--sans, inherit);
+}
+
+/* The start/stop action is the faceplate's main control: full label size,
+   generous padding, standing at the row's right edge. */
+.btn.big-toggle {
+    font-size: 14.5px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    padding: 11px 34px;
+    min-width: 132px;
+}
+
+/* Sidebar start/stop: the one control that matters from any page, parked
+   between the nav and the theme switcher. */
+.sidebar-toggle-wrap {
+    padding: 8px 10px;
+}
+
+.sidebar-toggle {
+    width: 100%;
+    font-size: 13.5px;
+    font-weight: 600;
+    padding: 11px 8px;
 }

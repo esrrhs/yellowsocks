@@ -7,7 +7,8 @@ import Logs from "./views/Logs.vue";
 import Stats from "./views/Stats.vue";
 import Settings from "./views/Settings.vue";
 import About from "./views/About.vue";
-import { GetLanguage, SetLanguage } from "../wailsjs/go/guiapp/App";
+import { GetLanguage, SetLanguage, StartEngine, StopEngine } from "../wailsjs/go/guiapp/App";
+import { EventsOn } from "../wailsjs/runtime/runtime";
 import { locale, setLocale, t, type Locale, type MsgKey } from "./i18n";
 
 // Drawn, not typed. The previous icons were the Unicode glyphs ⌂ ⇄ ☰ ⚙ ⓘ,
@@ -53,6 +54,26 @@ const pages: { id: string; key: MsgKey; paths: string[] }[] = [
   },
 ];
 const current = ref("home");
+
+// The sidebar's start/stop control follows the engine on its own
+// subscription: the button lives on every page, and the status event is the
+// same feed the home page listens to.
+const engRunning = ref(false);
+const engBusy = ref(false);
+
+async function toggleEngine() {
+  if (engBusy.value) return;
+  engBusy.value = true;
+  try {
+    if (engRunning.value) await StopEngine();
+    else await StartEngine();
+  } catch {
+    // failures surface through the engine:status event's error field and
+    // the home page's banner; the button just follows the state
+  } finally {
+    engBusy.value = false;
+  }
+}
 
 // One instance per page, kept alive across tab switches. The old v-if chain
 // tore the view down and rebuilt it on every switch, so the page came back
@@ -122,6 +143,10 @@ applyTheme();
 
 onMounted(async () => {
   mq.addEventListener("change", applyTheme);
+  EventsOn("engine:status", (st: { running?: boolean }) => {
+    engRunning.value = !!st.running;
+    engBusy.value = false;
+  });
   const saved = await GetLanguage().catch(() => "");
   if ((saved === "zh" || saved === "en") && saved !== locale.value) {
     setLocale(saved);
@@ -186,6 +211,16 @@ onUnmounted(() => {
             {{ l.label }}
           </button>
         </div>
+      </div>
+      <div class="sidebar-toggle-wrap">
+        <button
+          class="btn sidebar-toggle"
+          :class="engRunning ? 'danger' : 'primary'"
+          :disabled="engBusy"
+          @click="toggleEngine"
+        >
+          {{ engBusy ? t("engine.working") : engRunning ? t("engine.stop") : t("engine.start") }}
+        </button>
       </div>
     </aside>
     <main class="content">

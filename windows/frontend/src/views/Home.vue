@@ -17,8 +17,6 @@ import {
   SetProxyMode,
   SetSystemProxy,
   SetTunMode,
-  StartEngine,
-  StopEngine,
 } from "../../wailsjs/go/guiapp/App";
 import { EventsOn } from "../../wailsjs/runtime/runtime";
 import { guiapp, stats } from "../../wailsjs/go/models";
@@ -29,7 +27,6 @@ const status = ref(new guiapp.EngineStatus());
 const overview = ref<stats.Overview | null>(null);
 const series = ref<stats.SeriesPoint[]>([]);
 const actionError = ref("");
-const busy = ref(false);
 const autoStart = ref(false);
 const launchAtLogin = ref(false);
 const tunMode = ref(false);
@@ -96,23 +93,6 @@ async function bootstrap() {
   const lastProbe = await GetLastProbe().catch(() => null);
   if (lastProbe) probe.value = new guiapp.ProbeReport(lastProbe);
   await refresh();
-}
-
-async function toggle() {
-  busy.value = true;
-  actionError.value = "";
-  try {
-    if (status.value.running) {
-      await StopEngine();
-    } else {
-      await StartEngine();
-    }
-  } catch (e: any) {
-    actionError.value = errText(e);
-  } finally {
-    busy.value = false;
-    await refresh();
-  }
 }
 
 async function toggleSystemProxy() {
@@ -184,6 +164,21 @@ async function setMode(mode: string) {
   }
 }
 
+// lineLegs lists the probe legs of one path for the strip: the domestic
+// line shows the direct check and its egress, the foreign line the proxy
+// check, the upstream and its egress. Unknown keys (future legs) are
+// ignored rather than guessed into a line.
+const lineLegKeys: Record<"direct" | "proxy", string[]> = {
+  direct: ["direct", "exitip_direct"],
+  proxy: ["proxied", "upstream", "exitip"],
+};
+function lineLegs(side: "direct" | "proxy") {
+  const items = probe.value?.items ?? [];
+  return lineLegKeys[side]
+    .map((k) => items.find((i) => i.key === k))
+    .filter((i): i is guiapp.ProbeItem => !!i);
+}
+
 // One line per leg in the strip; the per-leg detail sentences the old card
 // showed move into the strip's tooltip.
 const probeTip = computed(() => {
@@ -207,6 +202,7 @@ const probeNames: Record<string, MsgKey> = {
   proxied: "probe.item.proxied",
   upstream: "probe.item.upstream",
   exitip: "probe.item.exitip",
+  exitip_direct: "probe.item.exitipDirect",
   engine: "probe.item.engine",
 };
 const probeDetails: Record<string, MsgKey> = {
@@ -222,6 +218,8 @@ const probeDetails: Record<string, MsgKey> = {
 // visible text next to the switch.
 const tunTitle = computed(() => {
   if (status.value.tun) return t("chip.tunActive");
+  if (status.value.tun_pending) return t("chip.tunStarting");
+  if (status.value.tun_retrying) return t("chip.tunRetrying");
   if (status.value.tun_error) return t("chip.tunRetry");
   if (tunMode.value) return t("chip.tunPending");
   return t("chip.tunIdle");
@@ -235,6 +233,17 @@ const exitPlace = computed(() => {
   if (!p) return "";
   const country = fmtCountry(p.exit_country);
   const city = (p.exit_city ?? "").trim();
+  if (country && city) return `${country} · ${city}`;
+  return country || city;
+});
+
+// Same rendering for the domestic egress: country code localised, city
+// verbatim from the provider.
+const exitPlaceDirect = computed(() => {
+  const p = probe.value;
+  if (!p) return "";
+  const country = fmtCountry(p.exit_country_direct);
+  const city = (p.exit_city_direct ?? "").trim();
   if (country && city) return `${country} · ${city}`;
   return country || city;
 });
@@ -439,51 +448,39 @@ const chart = computed(() => {
 
 <template>
   <section class="page">
-    <div class="status-card card">
-      <div class="status-main">
-        <span class="dot" :class="status.running ? 'on' : 'off'"></span>
-        <div>
-          <div class="status-title">
-            {{ status.running ? t("engine.running") : t("engine.stopped") }}
-          </div>
-          <div class="status-sub" v-if="status.running">
-            SOCKS5 {{ status.socks5 }} · HTTP {{ status.http }} · DNS
-            {{ status.dns }}
-          </div>
-          <div class="status-sub" v-else-if="status.spp_server">
-            {{
-              t("engine.upstreamPending", {
-                v: `${status.spp_server} (${status.spp_proto})`,
-              })
-            }}
-          </div>
-          <div class="status-sub" v-else>{{ t("engine.noUpstream") }}</div>
-        </div>
-      </div>
-      <button
-        class="btn"
-        :class="status.running ? 'danger' : 'primary'"
-        :disabled="busy"
-        @click="toggle"
-      >
-        {{ busy ? t("engine.working") : status.running ? t("engine.stop") : t("engine.start") }}
-      </button>
-
+    <div class="probe-wrap">
       <div class="probe-strip" v-if="status.running">
-        <span class="ps-label" :title="t('probe.hint')">{{ t("probe.title") }}</span>
-        <template v-if="probe">
-          <span class="ps-time">{{ fmtHM(probe.at) }}</span>
-          <span class="ps-item" v-for="it in probe.items" :key="it.key" :title="probeTip">
-            <i class="dot" :class="it.ok ? 'on' : 'err'"></i>
-            <span>{{ probeName(it) }}</span>
-            <span class="ps-ms" v-if="it.ok">{{ it.ms }}ms</span>
-          </span>
-          <span class="ps-exit" v-if="probe.exit_ip" :title="probeTip">
-            {{ probe.exit_ip }}
-            <template v-if="exitPlace"> · {{ exitPlace }}</template>
-          </span>
-        </template>
-        <span class="ps-state" v-else>{{ t("probe.idle") }}</span>
+        <div class="probe-line">
+          <span class="ps-label" :title="t('probe.hint')">{{ t("probe.title") }}</span>
+          <span class="ps-time" v-if="probe">{{ fmtHM(probe.at) }}</span>
+          <span class="ps-line-label">{{ t("lifetime.direct") }}</span>
+          <template v-if="probe">
+            <span class="ps-item" v-for="l in lineLegs('direct')" :key="l.key" :title="probeTip">
+              <i class="dot" :class="l.ok ? 'on' : 'err'"></i>
+              <span>{{ probeName(l) }}</span>
+              <span class="ps-ms" v-if="l.ok">{{ l.ms }}ms</span>
+            </span>
+            <span class="ps-exit" v-if="probe.exit_ip_direct" :title="probeTip">
+              {{ probe.exit_ip_direct }}
+              <template v-if="exitPlaceDirect"> · {{ exitPlaceDirect }}</template>
+            </span>
+          </template>
+          <span class="ps-state" v-else>{{ t("probe.idle") }}</span>
+        </div>
+        <div class="probe-line">
+          <span class="ps-line-label">{{ t("lifetime.proxy") }}</span>
+          <template v-if="probe">
+            <span class="ps-item" v-for="l in lineLegs('proxy')" :key="l.key" :title="probeTip">
+              <i class="dot" :class="l.ok ? 'on' : 'err'"></i>
+              <span>{{ probeName(l) }}</span>
+              <span class="ps-ms" v-if="l.ok">{{ l.ms }}ms</span>
+            </span>
+            <span class="ps-exit" v-if="probe.exit_ip" :title="probeTip">
+              {{ probe.exit_ip }}
+              <template v-if="exitPlace"> · {{ exitPlace }}</template>
+            </span>
+          </template>
+        </div>
       </div>
     </div>
 
@@ -547,13 +544,15 @@ const chart = computed(() => {
       </button>
       <button
         class="option-toggle"
-        :class="{ on: status.tun, err: !!status.tun_error }"
+        :class="{ on: status.tun || status.tun_pending, err: !!status.tun_error && !status.tun_retrying }"
         :title="tunTitle"
         @click="toggleTunMode"
       >
         <i class="tk"><i class="knob"></i></i>
         <span>{{ t("chip.tun") }}</span>
-        <span v-if="status.tun_error" class="tg-state">{{ t("chip.tunRetry") }}</span>
+        <span v-if="status.tun_pending && !status.tun" class="tg-state">{{ t("chip.tunStarting") }}</span>
+        <span v-else-if="status.tun_retrying" class="tg-state">{{ t("chip.tunRetrying") }}</span>
+        <span v-else-if="status.tun_error" class="tg-state">{{ t("chip.tunRetry") }}</span>
         <span v-else-if="!status.tun && tunMode" class="tg-state">{{ t("chip.tunPending") }}</span>
       </button>
       <button
