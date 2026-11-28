@@ -20,13 +20,17 @@ const query = ref("");
 // unattributed), so the filter is just the routing decision.
 const decision = ref<"all" | "proxy" | "direct">("all");
 
-// Sorting is by the live rate (that is the number the cell leads with), with the
-// cumulative total as the tiebreaker so rows with an idle connection still land
-// in a sensible place. Descending first because "who is using my bandwidth" is
-// the question this page answers.
-type SortKey = "up" | "down" | "age";
+// Every column sorts. Numeric columns lead with the live rate (that is the
+// number the cell leads with) and fall back to the cumulative total, so rows
+// with an idle connection still land in a sensible place; text columns sort
+// A→Z. Descending first for numbers because "who is using my bandwidth" is the
+// question this page answers.
+type SortKey = "host" | "client" | "decision" | "node" | "up" | "down" | "age";
 const sortKey = ref<SortKey>("down");
 const sortDir = ref<"asc" | "desc">("desc");
+
+const isTextSort = (key: SortKey) =>
+  key === "host" || key === "client" || key === "decision" || key === "node";
 
 function toggleSort(key: SortKey) {
   if (sortKey.value === key) {
@@ -34,7 +38,7 @@ function toggleSort(key: SortKey) {
     return;
   }
   sortKey.value = key;
-  sortDir.value = "desc";
+  sortDir.value = isTextSort(key) ? "asc" : "desc";
 }
 
 let timer: number | undefined;
@@ -107,7 +111,17 @@ const visible = computed(() => {
   const dir = sortDir.value === "desc" ? -1 : 1;
   rows.sort((a, b) => {
     let d = 0;
-    if (key === "up") {
+    if (key === "host") {
+      d = (a.domain || a.host || "").localeCompare(b.domain || b.host || "");
+    } else if (key === "client") {
+      // The cell shows the owning process when it is known, the raw client
+      // address otherwise; sorting follows what is on screen.
+      d = (a.process_name || a.client || "").localeCompare(b.process_name || b.client || "");
+    } else if (key === "decision") {
+      d = (a.decision ?? "").localeCompare(b.decision ?? "");
+    } else if (key === "node") {
+      d = (a.node ?? "").localeCompare(b.node ?? "");
+    } else if (key === "up") {
       d = (a.upload_bps ?? 0) - (b.upload_bps ?? 0) ||
         (a.upload_bytes ?? 0) - (b.upload_bytes ?? 0);
     } else if (key === "down") {
@@ -209,6 +223,50 @@ const destGroupOf = (side: "direct" | "proxy") =>
   side === "direct" ? destDirect.value : destProxy.value;
 const destGroup = computed(() => destGroupOf(destSide.value));
 const hasDestData = computed(() => sessions.value.length > 0);
+
+// Ordering for the destination rows. Every visible column sorts: the name, the
+// live rates split by direction, the combined rate the view defaults to, and
+// the cumulative bytes. The bare-address bucket is a summary of what was not
+// named, not a destination of its own, so it stays pinned last whatever the
+// order (the shared grouping already does this for its own default).
+type DestSortKey = "rate" | "up" | "down" | "sum" | "name";
+const destSortKey = ref<DestSortKey>("rate");
+const destSortDir = ref<"asc" | "desc">("desc");
+
+function toggleDestSort(key: DestSortKey) {
+  if (destSortKey.value === key) {
+    destSortDir.value = destSortDir.value === "desc" ? "asc" : "desc";
+    return;
+  }
+  destSortKey.value = key;
+  destSortDir.value = key === "name" ? "asc" : "desc";
+}
+
+const destRows = computed(() => {
+  const rows = destGroup.value.rows.slice();
+  const key = destSortKey.value;
+  const dir = destSortDir.value === "desc" ? -1 : 1;
+  rows.sort((a, b) => {
+    const ra = a.id === "@addr" ? 1 : 0;
+    const rb = b.id === "@addr" ? 1 : 0;
+    if (ra !== rb) return ra - rb;
+    let d = 0;
+    if (key === "name") {
+      d = a.label.localeCompare(b.label);
+    } else if (key === "up") {
+      d = a.upBps - b.upBps;
+    } else if (key === "down") {
+      d = a.downBps - b.downBps;
+    } else if (key === "sum") {
+      d = a.bytes - b.bytes;
+    } else {
+      d = a.upBps + a.downBps - (b.upBps + b.downBps) || a.bytes - b.bytes;
+    }
+    if (d === 0) return a.label.localeCompare(b.label);
+    return d * dir;
+  });
+  return rows;
+});
 
 const destExpanded = ref(new Set<string>());
 function toggleDestRow(id: string) {
@@ -323,10 +381,30 @@ onUnmounted(() => {
           </colgroup>
           <thead>
             <tr>
-              <th>{{ t("conn.colHost") }}</th>
-              <th>{{ t("conn.colClient") }}</th>
-              <th>{{ t("conn.colDecision") }}</th>
-              <th>{{ t("conn.colNode") }}</th>
+              <th class="sortable" @click="toggleSort('host')">
+                {{ t("conn.colHost") }}
+                <span class="sort-mark" v-if="sortKey === 'host'">{{
+                  sortDir === "desc" ? "▾" : "▴"
+                }}</span>
+              </th>
+              <th class="sortable" @click="toggleSort('client')">
+                {{ t("conn.colClient") }}
+                <span class="sort-mark" v-if="sortKey === 'client'">{{
+                  sortDir === "desc" ? "▾" : "▴"
+                }}</span>
+              </th>
+              <th class="sortable" @click="toggleSort('decision')">
+                {{ t("conn.colDecision") }}
+                <span class="sort-mark" v-if="sortKey === 'decision'">{{
+                  sortDir === "desc" ? "▾" : "▴"
+                }}</span>
+              </th>
+              <th class="sortable" @click="toggleSort('node')">
+                {{ t("conn.colNode") }}
+                <span class="sort-mark" v-if="sortKey === 'node'">{{
+                  sortDir === "desc" ? "▾" : "▴"
+                }}</span>
+              </th>
               <th class="right sortable" @click="toggleSort('up')">
                 {{ t("conn.colUp") }}
                 <span class="sort-mark" v-if="sortKey === 'up'">{{
@@ -522,9 +600,61 @@ onUnmounted(() => {
               </span>
             </button>
           </div>
+          <div class="dest-sort">
+            <button
+              class="dest-sort-btn"
+              :class="{ active: destSortKey === 'name' }"
+              @click="toggleDestSort('name')"
+            >
+              {{ t("conn.sortName") }}
+              <span class="sort-mark" v-if="destSortKey === 'name'">{{
+                destSortDir === "desc" ? "▾" : "▴"
+              }}</span>
+            </button>
+            <button
+              class="dest-sort-btn"
+              :class="{ active: destSortKey === 'rate' }"
+              @click="toggleDestSort('rate')"
+            >
+              {{ t("conn.sortRate") }}
+              <span class="sort-mark" v-if="destSortKey === 'rate'">{{
+                destSortDir === "desc" ? "▾" : "▴"
+              }}</span>
+            </button>
+            <button
+              class="dest-sort-btn"
+              :class="{ active: destSortKey === 'up' }"
+              @click="toggleDestSort('up')"
+            >
+              ↑{{ t("conn.colUp") }}
+              <span class="sort-mark" v-if="destSortKey === 'up'">{{
+                destSortDir === "desc" ? "▾" : "▴"
+              }}</span>
+            </button>
+            <button
+              class="dest-sort-btn"
+              :class="{ active: destSortKey === 'down' }"
+              @click="toggleDestSort('down')"
+            >
+              ↓{{ t("conn.colDown") }}
+              <span class="sort-mark" v-if="destSortKey === 'down'">{{
+                destSortDir === "desc" ? "▾" : "▴"
+              }}</span>
+            </button>
+            <button
+              class="dest-sort-btn"
+              :class="{ active: destSortKey === 'sum' }"
+              @click="toggleDestSort('sum')"
+            >
+              {{ t("conn.sortSum") }}
+              <span class="sort-mark" v-if="destSortKey === 'sum'">{{
+                destSortDir === "desc" ? "▾" : "▴"
+              }}</span>
+            </button>
+          </div>
           <div class="dest-side">
-            <div class="dest-rows" v-if="destGroup.rows.length">
-              <template v-for="row in destGroup.rows" :key="destSide + row.id">
+            <div class="dest-rows" v-if="destRows.length">
+              <template v-for="row in destRows" :key="destSide + row.id">
                 <button
                   class="dest-row"
                   :class="{ open: destOpen(row.id), bare: row.id.startsWith('@') }"
